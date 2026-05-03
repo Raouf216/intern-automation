@@ -21,6 +21,7 @@ services:
       - DOKTORABC_PASSWORD=${DOKTORABC_PASSWORD:-}
       - DOKTORABC_ROLE=${DOKTORABC_ROLE:-pharmacist}
       - DOKTORABC_HEADLESS=${DOKTORABC_HEADLESS:-true}
+      - DOKTORABC_DEBUG_SCREENSHOTS=${DOKTORABC_DEBUG_SCREENSHOTS:-true}
       - ARTIFACTS_DIR=/app/artifacts
     volumes:
       - web_scraper_artifacts:/app/artifacts

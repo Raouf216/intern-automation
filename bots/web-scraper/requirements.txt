@@ -1,0 +1,8 @@
+playwright
+httpx
+python-dotenv
+orjson
+tenacity
+beautifulsoup4
+lxml
+selectolax

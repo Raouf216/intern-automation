@@ -1,0 +1,34 @@
+services:
+  web-scraper:
+    container_name: web-scraper
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${WEB_SCRAPER_PORT:-8020}:8000"
+    environment:
+      - PORT=8000
+      - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Europe/Berlin}
+      - WEB_SCRAPER_API_KEY=${WEB_SCRAPER_API_KEY:-}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - DOKTORABC_LOGIN_URL=${DOKTORABC_LOGIN_URL:-}
+      - DOKTORABC_PRODUCTS_URL=${DOKTORABC_PRODUCTS_URL:-}
+      - DOKTORABC_USERNAME=${DOKTORABC_USERNAME:-}
+      - DOKTORABC_PASSWORD=${DOKTORABC_PASSWORD:-}
+      - DOKTORABC_HEADLESS=${DOKTORABC_HEADLESS:-true}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

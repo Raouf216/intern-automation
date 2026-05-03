@@ -19,7 +19,11 @@ services:
       - DOKTORABC_PRODUCTS_URL=${DOKTORABC_PRODUCTS_URL:-}
       - DOKTORABC_USERNAME=${DOKTORABC_USERNAME:-}
       - DOKTORABC_PASSWORD=${DOKTORABC_PASSWORD:-}
+      - DOKTORABC_ROLE=${DOKTORABC_ROLE:-pharmacist}
       - DOKTORABC_HEADLESS=${DOKTORABC_HEADLESS:-true}
+      - ARTIFACTS_DIR=/app/artifacts
+    volumes:
+      - web_scraper_artifacts:/app/artifacts
     healthcheck:
       test:
         [
@@ -32,3 +36,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+volumes:
+  web_scraper_artifacts:

@@ -1,12 +1,16 @@
 import json
 import os
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 
 STARTED_AT = time.time()
+ARTIFACTS_DIR = os.environ.get("ARTIFACTS_DIR", "/app/artifacts")
 
 CONFIG_KEYS = [
     "WEB_SCRAPER_API_KEY",
@@ -16,6 +20,7 @@ CONFIG_KEYS = [
     "DOKTORABC_PRODUCTS_URL",
     "DOKTORABC_USERNAME",
     "DOKTORABC_PASSWORD",
+    "DOKTORABC_ROLE",
     "DOKTORABC_HEADLESS",
 ]
 
@@ -32,7 +37,13 @@ def config_status():
         key: {
             "configured": bool(os.environ.get(key)),
             "value": os.environ.get(key)
-            if key in {"SUPABASE_URL", "DOKTORABC_LOGIN_URL", "DOKTORABC_PRODUCTS_URL", "DOKTORABC_HEADLESS"}
+            if key in {
+                "SUPABASE_URL",
+                "DOKTORABC_LOGIN_URL",
+                "DOKTORABC_PRODUCTS_URL",
+                "DOKTORABC_ROLE",
+                "DOKTORABC_HEADLESS",
+            }
             else None,
         }
         for key in CONFIG_KEYS
@@ -43,6 +54,100 @@ def require_job_key(handler):
     expected = os.environ.get("WEB_SCRAPER_API_KEY")
     provided = handler.headers.get("X-Web-Scraper-Key")
     return bool(expected) and provided == expected
+
+
+def required_env_values():
+    required_keys = [
+        "DOKTORABC_LOGIN_URL",
+        "DOKTORABC_PRODUCTS_URL",
+        "DOKTORABC_USERNAME",
+        "DOKTORABC_PASSWORD",
+        "DOKTORABC_ROLE",
+    ]
+    missing = [key for key in required_keys if not os.environ.get(key)]
+    return missing
+
+
+def click_role(page, role_name):
+    role_label = role_name.strip().lower()
+    role_candidates = {
+        "pharmacy": ["Pharmacy"],
+        "e-prescription": ["E-Prescription", "E Prescription", "EPrescription"],
+        "pharmacist": ["Pharmacist"],
+    }
+
+    labels = role_candidates.get(role_label, [role_name])
+    for label in labels:
+        try:
+            page.get_by_label(label, exact=True).check(timeout=2_000)
+            return label
+        except PlaywrightError:
+            pass
+
+    for label in labels:
+        try:
+            page.get_by_text(label, exact=True).click(timeout=2_000)
+            return label
+        except PlaywrightError:
+            pass
+
+    raise RuntimeError(f"Could not select DoktorABC role: {role_name}")
+
+
+def run_login_check():
+    missing = required_env_values()
+    if missing:
+        return {
+            "ok": False,
+            "error": "missing_env",
+            "missing": missing,
+        }
+
+    os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    screenshot_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-login-{timestamp}.png")
+    login_url = os.environ["DOKTORABC_LOGIN_URL"]
+    products_url = os.environ["DOKTORABC_PRODUCTS_URL"]
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
+        context = browser.new_context(viewport={"width": 1365, "height": 900})
+        page = context.new_page()
+
+        try:
+            page.goto(login_url, wait_until="domcontentloaded", timeout=60_000)
+            page.get_by_placeholder("Email").fill(os.environ["DOKTORABC_USERNAME"], timeout=15_000)
+            page.get_by_placeholder("Password").fill(os.environ["DOKTORABC_PASSWORD"], timeout=15_000)
+            selected_role = click_role(page, os.environ["DOKTORABC_ROLE"])
+            page.get_by_role("button", name="Login").click(timeout=15_000)
+
+            try:
+                page.wait_for_url(lambda url: "login" not in url.lower(), timeout=30_000)
+            except PlaywrightTimeoutError:
+                pass
+
+            try:
+                page.goto(products_url, wait_until="networkidle", timeout=60_000)
+            except PlaywrightTimeoutError:
+                page.goto(products_url, wait_until="domcontentloaded", timeout=60_000)
+
+            page.screenshot(path=screenshot_path, full_page=True)
+
+            current_url = page.url
+            title = page.title()
+            login_still_visible = page.get_by_role("button", name="Login").count() > 0
+
+            return {
+                "ok": not login_still_visible and "login" not in current_url.lower(),
+                "selected_role": selected_role,
+                "current_url": current_url,
+                "title": title,
+                "login_still_visible": login_still_visible,
+                "screenshot_path": screenshot_path,
+            }
+        finally:
+            context.close()
+            browser.close()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -61,16 +166,12 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        if self.path == "/browser-check":
-            self.handle_browser_check()
-            return
-
         self.respond(
             404,
             {
                 "ok": False,
                 "error": "not_found",
-                "available_paths": ["/health", "/browser-check", "/jobs/product-prices"],
+                "available_paths": ["/health", "/jobs/product-prices"],
             },
         )
 
@@ -83,27 +184,9 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(401, {"ok": False, "error": "unauthorized"})
             return
 
-        self.respond(
-            501,
-            {
-                "ok": False,
-                "error": "not_implemented",
-                "message": "DoktorABC product price scraping is scaffolded, but selectors/login flow still need to be implemented.",
-                "next_step": "Inspect DoktorABC product page with Playwright, then map rows to products/product_prices.",
-                "config": config_status(),
-            },
-        )
-
-    def handle_browser_check(self):
         try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
-                page = browser.new_page()
-                page.goto("data:text/html,<title>browser-ok</title><h1>ok</h1>")
-                title = page.title()
-                browser.close()
-
-            self.respond(200, {"ok": title == "browser-ok", "browser": "chromium", "title": title})
+            result = run_login_check()
+            self.respond(200 if result.get("ok") else 500, result)
         except Exception as exc:
             self.respond(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
 

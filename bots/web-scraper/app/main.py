@@ -19,7 +19,7 @@ SESSION_STATE_PATH = os.environ.get(
 app = FastAPI(title="web-scraper")
 
 
-PRODUCT_CELL_COUNT = 11
+MIN_PRODUCT_CELL_COUNT = 11
 
 
 def bool_env(name, default=True):
@@ -168,7 +168,7 @@ def extract_first_visible_product_row(page):
         cells_locator = row.locator("td")
         cell_count = cells_locator.count()
 
-        if cell_count != PRODUCT_CELL_COUNT:
+        if cell_count < MIN_PRODUCT_CELL_COUNT:
             continue
 
         cells = [
@@ -186,6 +186,54 @@ def extract_first_visible_product_row(page):
         }
 
     return None
+
+
+def inspect_visible_product_rows(page, limit=20):
+    rows = page.locator("tr")
+    row_count = rows.count()
+    inspected_rows = []
+    td_count_summary = {}
+
+    for row_index in range(row_count):
+        row = rows.nth(row_index)
+        cells_locator = row.locator("td")
+        headers_locator = row.locator("th")
+        cell_count = cells_locator.count()
+        header_count = headers_locator.count()
+
+        td_count_summary[str(cell_count)] = td_count_summary.get(str(cell_count), 0) + 1
+
+        if len(inspected_rows) >= limit and cell_count == 0:
+            continue
+
+        cells = [
+            clean_cell_text(cells_locator.nth(cell_index).inner_text())
+            for cell_index in range(cell_count)
+        ]
+        headers = [
+            clean_cell_text(headers_locator.nth(header_index).inner_text())
+            for header_index in range(header_count)
+        ]
+
+        inspected_rows.append(
+            {
+                "row_index": row_index,
+                "td_count": cell_count,
+                "th_count": header_count,
+                "headers": headers,
+                "cells": cells,
+                "row_text_preview": clean_cell_text(row.inner_text())[:500],
+            }
+        )
+
+        if len(inspected_rows) >= limit and cell_count > 0:
+            break
+
+    return {
+        "visible_tr_count": row_count,
+        "td_count_summary": td_count_summary,
+        "rows": inspected_rows,
+    }
 
 
 def login_and_screenshot():
@@ -241,7 +289,7 @@ def login_and_sample_product_row():
                     "current_url": page.url,
                     "reused_session": reused_session,
                     "session_state_path": SESSION_STATE_PATH,
-                    "error": "No visible product row with 11 td cells was found.",
+                    "error": "No visible product row with at least 11 td cells was found.",
                     "visible_tr_count": page.locator("tr").count(),
                 }
 
@@ -275,6 +323,30 @@ def login_and_check_session():
                 "reused_session": reused_session,
                 "session_state_path": SESSION_STATE_PATH,
                 "visible_tr_count": page.locator("tr").count(),
+            }
+        finally:
+            if context:
+                context.close()
+            browser.close()
+
+
+def login_and_debug_rows():
+    print("trying to inspect DoktorABC table rows ...", flush=True)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
+        context = None
+
+        try:
+            context, page, reused_session = open_authenticated_products_page(browser)
+            row_debug = inspect_visible_product_rows(page)
+
+            return {
+                "ok": True,
+                "current_url": page.url,
+                "reused_session": reused_session,
+                "session_state_path": SESSION_STATE_PATH,
+                **row_debug,
             }
         finally:
             if context:
@@ -317,6 +389,17 @@ def product_prices_sample():
 def product_prices_session_check():
     try:
         return login_and_check_session()
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.post("/jobs/product-prices/debug-rows")
+def product_prices_debug_rows():
+    try:
+        return login_and_debug_rows()
     except Exception as exc:
         return JSONResponse(
             status_code=500,

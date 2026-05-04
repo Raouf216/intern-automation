@@ -10,6 +10,10 @@ from playwright.sync_api import sync_playwright
 
 STARTED_AT = time.time()
 ARTIFACTS_DIR = os.environ.get("ARTIFACTS_DIR", "/app/artifacts")
+SESSION_STATE_PATH = os.environ.get(
+    "DOKTORABC_SESSION_STATE_PATH",
+    os.path.join(ARTIFACTS_DIR, "doktorabc-storage-state.json"),
+)
 
 
 app = FastAPI(title="web-scraper")
@@ -25,6 +29,14 @@ def bool_env(name, default=True):
         return default
 
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def doktorabc_products_url():
+    return os.environ.get("DOKTORABC_PRODUCTS_URL") or os.environ["DOKTORABC_LOGIN_URL"]
+
+
+def wait_for_products_page(page, timeout=60_000):
+    page.get_by_text("Add/Decrease", exact=True).first.wait_for(timeout=timeout)
 
 
 def clean_cell_text(value):
@@ -71,6 +83,67 @@ def parse_availability(value):
         return False
 
     return None
+
+
+def open_saved_session(browser):
+    if not os.path.exists(SESSION_STATE_PATH):
+        return None
+
+    print("trying saved DoktorABC session ...", flush=True)
+
+    context = browser.new_context(
+        storage_state=SESSION_STATE_PATH,
+        viewport={"width": 1365, "height": 900},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(doktorabc_products_url(), wait_until="domcontentloaded")
+        wait_for_products_page(page, timeout=15_000)
+
+        return context, page, True
+    except Exception as exc:
+        context.close()
+        print(f"saved DoktorABC session is expired or invalid: {type(exc).__name__}", flush=True)
+        return None
+
+
+def open_fresh_session(browser, before_login_path=None):
+    print("trying fresh DoktorABC login ...", flush=True)
+
+    context = browser.new_context(viewport={"width": 1365, "height": 900})
+    page = context.new_page()
+
+    page.goto(os.environ["DOKTORABC_LOGIN_URL"], wait_until="domcontentloaded")
+
+    page.get_by_placeholder("Email").fill(os.environ["DOKTORABC_USERNAME"])
+    page.get_by_placeholder("Password").fill(os.environ["DOKTORABC_PASSWORD"])
+
+    page.get_by_text("Pharmacist", exact=True).click()
+
+    if before_login_path:
+        page.screenshot(path=before_login_path, full_page=True)
+
+    page.get_by_role("button", name="Login").click()
+    wait_for_products_page(page)
+
+    session_state_dir = os.path.dirname(SESSION_STATE_PATH)
+
+    if session_state_dir:
+        os.makedirs(session_state_dir, exist_ok=True)
+
+    context.storage_state(path=SESSION_STATE_PATH)
+
+    return context, page, False
+
+
+def open_authenticated_products_page(browser, before_login_path=None):
+    saved_session = open_saved_session(browser)
+
+    if saved_session is not None:
+        return saved_session
+
+    return open_fresh_session(browser, before_login_path=before_login_path)
 
 
 def product_from_cells(cells):
@@ -122,60 +195,43 @@ def login_and_screenshot():
     before_login_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-before-login-{timestamp}.png")
     after_login_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-after-login-{timestamp}.png")
 
-    print("trying to login ...", flush=True)
+    print("trying to open DoktorABC supplies page ...", flush=True)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
-
-        context = browser.new_context(viewport={"width": 1365, "height": 900})
-        page = context.new_page()
+        context = None
 
         try:
-            page.goto(os.environ["DOKTORABC_LOGIN_URL"], wait_until="domcontentloaded")
-
-            page.get_by_placeholder("Email").fill(os.environ["DOKTORABC_USERNAME"])
-            page.get_by_placeholder("Password").fill(os.environ["DOKTORABC_PASSWORD"])
-
-            page.get_by_text("Pharmacist", exact=True).click()
-            page.screenshot(path=before_login_path, full_page=True)
-            page.get_by_role("button", name="Login").click()#login
-
-            page.get_by_text("Add/Decrease", exact=True).first.wait_for(timeout=60_000)
-
-            
+            context, page, reused_session = open_authenticated_products_page(
+                browser,
+                before_login_path=before_login_path,
+            )
 
             page.screenshot(path=after_login_path, full_page=True)
 
             return {
                 "ok": True,
                 "current_url": page.url,
-                "before_login_path": before_login_path,
+                "reused_session": reused_session,
+                "session_state_path": SESSION_STATE_PATH,
+                "before_login_path": None if reused_session else before_login_path,
                 "after_login_path": after_login_path,
             }
         finally:
-            context.close()
+            if context:
+                context.close()
             browser.close()
 
 
 def login_and_sample_product_row():
-    print("trying to login and read one product row ...", flush=True)
+    print("trying to open DoktorABC and read one product row ...", flush=True)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
-
-        context = browser.new_context(viewport={"width": 1365, "height": 900})
-        page = context.new_page()
+        context = None
 
         try:
-            page.goto(os.environ["DOKTORABC_LOGIN_URL"], wait_until="domcontentloaded")
-
-            page.get_by_placeholder("Email").fill(os.environ["DOKTORABC_USERNAME"])
-            page.get_by_placeholder("Password").fill(os.environ["DOKTORABC_PASSWORD"])
-
-            page.get_by_text("Pharmacist", exact=True).click()
-            page.get_by_role("button", name="Login").click()
-
-            page.get_by_text("Add/Decrease", exact=True).first.wait_for(timeout=60_000)
+            context, page, reused_session = open_authenticated_products_page(browser)
 
             product_row = extract_first_visible_product_row(page)
 
@@ -183,6 +239,8 @@ def login_and_sample_product_row():
                 return {
                     "ok": False,
                     "current_url": page.url,
+                    "reused_session": reused_session,
+                    "session_state_path": SESSION_STATE_PATH,
                     "error": "No visible product row with 11 td cells was found.",
                     "visible_tr_count": page.locator("tr").count(),
                 }
@@ -190,11 +248,37 @@ def login_and_sample_product_row():
             return {
                 "ok": True,
                 "current_url": page.url,
+                "reused_session": reused_session,
+                "session_state_path": SESSION_STATE_PATH,
                 "visible_tr_count": page.locator("tr").count(),
                 **product_row,
             }
         finally:
-            context.close()
+            if context:
+                context.close()
+            browser.close()
+
+
+def login_and_check_session():
+    print("trying to open DoktorABC supplies page for session check ...", flush=True)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
+        context = None
+
+        try:
+            context, page, reused_session = open_authenticated_products_page(browser)
+
+            return {
+                "ok": True,
+                "current_url": page.url,
+                "reused_session": reused_session,
+                "session_state_path": SESSION_STATE_PATH,
+                "visible_tr_count": page.locator("tr").count(),
+            }
+        finally:
+            if context:
+                context.close()
             browser.close()
 
 
@@ -222,6 +306,17 @@ def product_prices():
 def product_prices_sample():
     try:
         return login_and_sample_product_row()
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.post("/jobs/product-prices/session-check")
+def product_prices_session_check():
+    try:
+        return login_and_check_session()
     except Exception as exc:
         return JSONResponse(
             status_code=500,

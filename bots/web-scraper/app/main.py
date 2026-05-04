@@ -48,7 +48,8 @@ def login_and_screenshot():
             page.screenshot(path=before_login_path, full_page=True)
             page.get_by_role("button", name="Login").click()#login
 
-            page.get_by_text("Add/Decrease", exact=True).wait_for(timeout=60_000)
+            page.get_by_text("Add/Decrease", exact=True).first.wait_for(timeout=60_000)
+
             
 
             page.screenshot(path=after_login_path, full_page=True)

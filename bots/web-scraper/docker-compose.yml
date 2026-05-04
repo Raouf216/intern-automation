@@ -6,6 +6,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     init: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${WEB_SCRAPER_PORT:-8020}:8000"
     environment:

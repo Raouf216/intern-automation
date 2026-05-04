@@ -225,6 +225,66 @@ def sync_products_to_supabase(products):
     }
 
 
+def response_preview(response):
+    return {
+        "status_code": response.status_code,
+        "body": response.text[:1000],
+    }
+
+
+def supabase_debug_check():
+    debug_product = {
+        "product_name": "__debug_product__",
+        "pzn": "__debug_pzn__",
+        "strain": "debug",
+        "quantity": 0,
+        "price_per_g_incl_vat": 0,
+        "additional_cost": 0,
+        "site_price": 0,
+        "availability": False,
+    }
+    debug_pzn = quote(debug_product["pzn"], safe="")
+    steps = []
+
+    timeout = httpx.Timeout(20, connect=5)
+
+    with httpx.Client(timeout=timeout) as client:
+        read_response = client.get(
+            supabase_table_url(),
+            headers=supabase_headers(),
+            params={"select": "pzn", "limit": "1"},
+        )
+        steps.append({"name": "read_table", **response_preview(read_response)})
+
+        if read_response.status_code >= 400:
+            return {"ok": False, "step": "read_table", "steps": steps}
+
+        upsert_response = client.post(
+            f"{supabase_table_url()}?on_conflict=pzn",
+            headers={
+                **supabase_headers(),
+                "Prefer": "resolution=merge-duplicates,return=representation",
+            },
+            json=[debug_product],
+        )
+        steps.append({"name": "upsert_debug_row", **response_preview(upsert_response)})
+
+        if upsert_response.status_code >= 400:
+            return {"ok": False, "step": "upsert_debug_row", "steps": steps}
+
+        delete_response = client.delete(
+            supabase_table_url(),
+            headers=supabase_headers(),
+            params={"pzn": f"eq.{debug_pzn}"},
+        )
+        steps.append({"name": "delete_debug_row", **response_preview(delete_response)})
+
+        if delete_response.status_code >= 400:
+            return {"ok": False, "step": "delete_debug_row", "steps": steps}
+
+    return {"ok": True, "steps": steps}
+
+
 def open_saved_session(browser):
     if not os.path.exists(SESSION_STATE_PATH):
         return None
@@ -713,6 +773,17 @@ def product_prices_session_check():
 def product_prices_debug_rows():
     try:
         return login_and_debug_rows()
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.post("/jobs/product-prices/supabase-check")
+def product_prices_supabase_check():
+    try:
+        return supabase_debug_check()
     except Exception as exc:
         return JSONResponse(
             status_code=500,

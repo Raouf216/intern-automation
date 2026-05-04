@@ -27,7 +27,8 @@ def login_and_screenshot():
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    screenshot_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-{timestamp}.png")
+    before_login_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-before-login-{timestamp}.png")
+    after_login_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-after-login-{timestamp}.png")
 
     print("trying to login ...", flush=True)
 
@@ -45,17 +46,18 @@ def login_and_screenshot():
 
             page.get_by_text("Pharmacist", exact=True).click()
             page.wait_for_timeout(10_000)
-            page.screenshot(path=screenshot_path, full_page=True)
+            page.screenshot(path=before_login_path, full_page=True)#screen1
             page.get_by_role("button", name="Login").click()
 
             page.goto(os.environ["DOKTORABC_PRODUCTS_URL"], wait_until="domcontentloaded")
             page.wait_for_timeout(10_000)
-            page.screenshot(path=screenshot_path, full_page=True)
+            page.screenshot(path=after_login_path, full_page=True)#screen2
 
             return {
                 "ok": True,
                 "current_url": page.url,
-                "screenshot_path": screenshot_path,
+                "before_login_path": before_login_path,
+                "after_login_path": after_login_path,
             }
         finally:
             context.close()

@@ -1,8 +1,11 @@
 import os
 import re
 import time
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
+from urllib.parse import quote
 
+import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from playwright.sync_api import sync_playwright
@@ -20,6 +23,24 @@ app = FastAPI(title="web-scraper")
 
 
 MIN_PRODUCT_CELL_COUNT = 11
+SUPABASE_SCHEMA = os.environ.get("SUPABASE_SCHEMA", "private")
+SUPABASE_PRODUCTS_TABLE = os.environ.get("SUPABASE_PRODUCTS_TABLE", "doktorabc_products")
+PRODUCT_FIELDS = [
+    "product_name",
+    "pzn",
+    "strain",
+    "quantity",
+    "price_per_g_incl_vat",
+    "additional_cost",
+    "site_price",
+    "availability",
+]
+NUMERIC_PRODUCT_FIELDS = {
+    "quantity",
+    "price_per_g_incl_vat",
+    "additional_cost",
+    "site_price",
+}
 
 
 def bool_env(name, default=True):
@@ -83,6 +104,125 @@ def parse_availability(value):
         return False
 
     return None
+
+
+def required_env(name):
+    value = os.environ.get(name)
+
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+
+    return value
+
+
+def decimal_equal(left, right):
+    if left is None and right is None:
+        return True
+
+    if left is None or right is None:
+        return False
+
+    try:
+        return Decimal(str(left)) == Decimal(str(right))
+    except (InvalidOperation, ValueError):
+        return False
+
+
+def product_values_equal(existing_product, scraped_product):
+    for field_name in PRODUCT_FIELDS:
+        existing_value = existing_product.get(field_name)
+        scraped_value = scraped_product.get(field_name)
+
+        if field_name in NUMERIC_PRODUCT_FIELDS:
+            if not decimal_equal(existing_value, scraped_value):
+                return False
+        elif field_name == "availability":
+            if existing_value != scraped_value:
+                return False
+        else:
+            if (existing_value or "") != (scraped_value or ""):
+                return False
+
+    return True
+
+
+def supabase_table_url():
+    supabase_url = required_env("SUPABASE_URL").rstrip("/")
+    table_name = quote(SUPABASE_PRODUCTS_TABLE, safe="")
+
+    return f"{supabase_url}/rest/v1/{table_name}"
+
+
+def supabase_headers():
+    service_role_key = required_env("SUPABASE_SERVICE_ROLE_KEY")
+
+    return {
+        "apikey": service_role_key,
+        "Authorization": f"Bearer {service_role_key}",
+        "Accept-Profile": SUPABASE_SCHEMA,
+        "Content-Profile": SUPABASE_SCHEMA,
+        "Content-Type": "application/json",
+    }
+
+
+def fetch_existing_supabase_products():
+    response = httpx.get(
+        supabase_table_url(),
+        headers=supabase_headers(),
+        params={"select": ",".join(PRODUCT_FIELDS)},
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    return {str(product["pzn"]): product for product in response.json()}
+
+
+def upsert_supabase_products(products):
+    if not products:
+        return
+
+    response = httpx.post(
+        f"{supabase_table_url()}?on_conflict=pzn",
+        headers={
+            **supabase_headers(),
+            "Prefer": "resolution=merge-duplicates,return=minimal",
+        },
+        json=products,
+        timeout=60,
+    )
+    response.raise_for_status()
+
+
+def sync_products_to_supabase(products):
+    existing_products = fetch_existing_supabase_products()
+    products_to_upsert = []
+    inserted = 0
+    updated = 0
+    unchanged = 0
+
+    for product in products:
+        existing_product = existing_products.get(product["pzn"])
+
+        if existing_product is None:
+            inserted += 1
+            products_to_upsert.append(product)
+            continue
+
+        if product_values_equal(existing_product, product):
+            unchanged += 1
+            continue
+
+        updated += 1
+        products_to_upsert.append(product)
+
+    upsert_supabase_products(products_to_upsert)
+
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "unchanged": unchanged,
+        "sent_to_supabase": len(products_to_upsert),
+    }
 
 
 def open_saved_session(browser):
@@ -156,6 +296,121 @@ def product_from_cells(cells):
         "additional_cost": parse_decimal(cells[8]),
         "site_price": parse_decimal(cells[9]),
         "availability": parse_availability(cells[10]),
+    }
+
+
+def product_is_valid(product):
+    return (
+        bool(product["product_name"])
+        and bool(product["pzn"])
+        and product["quantity"] is not None
+        and product["price_per_g_incl_vat"] is not None
+        and product["additional_cost"] is not None
+        and product["site_price"] is not None
+        and product["availability"] is not None
+    )
+
+
+def products_from_visible_rows(page):
+    rows = page.locator("tr")
+    row_count = rows.count()
+    products_by_pzn = {}
+    invalid_products = []
+
+    for row_index in range(row_count):
+        row = rows.nth(row_index)
+        cells_locator = row.locator("td")
+        cell_count = cells_locator.count()
+
+        if cell_count < MIN_PRODUCT_CELL_COUNT:
+            continue
+
+        cells = [
+            clean_cell_text(cells_locator.nth(cell_index).inner_text())
+            for cell_index in range(cell_count)
+        ]
+        product = product_from_cells(cells)
+
+        if not product["pzn"]:
+            continue
+
+        if not product_is_valid(product):
+            invalid_products.append(
+                {
+                    "row_index": row_index,
+                    "raw_cells": cells,
+                    "product": product,
+                }
+            )
+            continue
+
+        products_by_pzn[product["pzn"]] = product
+
+    return products_by_pzn, invalid_products
+
+
+def scroll_products_page(page):
+    page.mouse.wheel(0, 1600)
+    return page.evaluate(
+        """
+        () => {
+          const scrollableElements = Array.from(document.querySelectorAll('*'))
+            .filter((element) => {
+              const style = window.getComputedStyle(element);
+              const overflowY = style.overflowY;
+              return (
+                (overflowY === 'auto' || overflowY === 'scroll') &&
+                element.scrollHeight > element.clientHeight + 20
+              );
+            });
+
+          for (const element of scrollableElements) {
+            element.scrollTop = Math.min(
+              element.scrollTop + Math.floor(element.clientHeight * 0.9),
+              element.scrollHeight
+            );
+          }
+
+          window.scrollBy(0, Math.floor(window.innerHeight * 0.9));
+
+          return scrollableElements.length;
+        }
+        """
+    )
+
+
+def scrape_all_product_rows(page, max_scroll_rounds=80, stable_round_limit=5):
+    products_by_pzn = {}
+    invalid_products = []
+    stable_rounds = 0
+    scroll_rounds = 0
+
+    for scroll_round in range(max_scroll_rounds + 1):
+        visible_products, visible_invalid_products = products_from_visible_rows(page)
+        previous_count = len(products_by_pzn)
+
+        products_by_pzn.update(visible_products)
+        invalid_products.extend(visible_invalid_products)
+
+        if len(products_by_pzn) == previous_count:
+            stable_rounds += 1
+        else:
+            stable_rounds = 0
+
+        if stable_rounds >= stable_round_limit:
+            break
+
+        scroll_rounds = scroll_round + 1
+        scroll_products_page(page)
+        page.wait_for_timeout(700)
+
+    products = sorted(products_by_pzn.values(), key=lambda product: product["pzn"])
+
+    return {
+        "products": products,
+        "invalid_products": invalid_products,
+        "scroll_rounds": scroll_rounds,
+        "visible_tr_count": page.locator("tr").count(),
     }
 
 
@@ -354,6 +609,64 @@ def login_and_debug_rows():
             browser.close()
 
 
+def login_scrape_and_sync_products():
+    print("trying to scrape and sync DoktorABC products ...", flush=True)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
+        context = None
+
+        try:
+            context, page, reused_session = open_authenticated_products_page(browser)
+            scrape_result = scrape_all_product_rows(page)
+            products = scrape_result["products"]
+            invalid_products = scrape_result["invalid_products"]
+
+            if invalid_products:
+                return {
+                    "ok": False,
+                    "current_url": page.url,
+                    "reused_session": reused_session,
+                    "session_state_path": SESSION_STATE_PATH,
+                    "error": "Scrape found invalid product rows. Supabase was not changed.",
+                    "invalid_count": len(invalid_products),
+                    "invalid_examples": invalid_products[:5],
+                    "scraped_valid_count": len(products),
+                    "scroll_rounds": scrape_result["scroll_rounds"],
+                    "visible_tr_count": scrape_result["visible_tr_count"],
+                }
+
+            if not products:
+                return {
+                    "ok": False,
+                    "current_url": page.url,
+                    "reused_session": reused_session,
+                    "session_state_path": SESSION_STATE_PATH,
+                    "error": "No valid products were scraped. Supabase was not changed.",
+                    "scroll_rounds": scrape_result["scroll_rounds"],
+                    "visible_tr_count": scrape_result["visible_tr_count"],
+                }
+
+            supabase_result = sync_products_to_supabase(products)
+
+            return {
+                "ok": True,
+                "current_url": page.url,
+                "reused_session": reused_session,
+                "session_state_path": SESSION_STATE_PATH,
+                "supabase_schema": SUPABASE_SCHEMA,
+                "supabase_table": SUPABASE_PRODUCTS_TABLE,
+                "scraped": len(products),
+                "scroll_rounds": scrape_result["scroll_rounds"],
+                "visible_tr_count": scrape_result["visible_tr_count"],
+                **supabase_result,
+            }
+        finally:
+            if context:
+                context.close()
+            browser.close()
+
+
 @app.get("/health")
 def health():
     return {
@@ -366,7 +679,7 @@ def health():
 @app.post("/jobs/product-prices")
 def product_prices():
     try:
-        return login_and_screenshot()
+        return login_scrape_and_sync_products()
     except Exception as exc:
         return JSONResponse(
             status_code=500,

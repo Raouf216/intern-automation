@@ -297,6 +297,24 @@ HTML = """
         --shadow: 0 22px 60px rgba(74, 19, 28, 0.16);
       }
 
+      body[data-theme="night"] {
+        color-scheme: dark;
+        --bg: #101418;
+        --panel: #171c22;
+        --text: #eef2f7;
+        --muted: #a8b3c3;
+        --line: #303946;
+        --primary: #f04452;
+        --primary-dark: #c91528;
+        --primary-soft: rgba(240, 68, 82, 0.14);
+        --danger: #ff8a7d;
+        --ok: #68d391;
+        --clinical: rgba(20, 184, 166, 0.14);
+        --clinical-deep: #5eead4;
+        --ink: #f8fafc;
+        --shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+      }
+
       * {
         box-sizing: border-box;
       }
@@ -311,6 +329,12 @@ HTML = """
         color: var(--text);
       }
 
+      body[data-theme="night"] {
+        background:
+          linear-gradient(135deg, rgba(13, 18, 24, 0.96) 0%, rgba(28, 22, 28, 0.94) 46%, rgba(10, 32, 34, 0.94) 100%),
+          url("data:image/svg+xml,%3Csvg width='96' height='96' viewBox='0 0 96 96' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' stroke='%235eead4' stroke-opacity='.08' stroke-width='2'%3E%3Cpath d='M48 18v60M18 48h60'/%3E%3C/g%3E%3C/svg%3E");
+      }
+
       main {
         width: min(1180px, calc(100% - 28px));
         margin: 0 auto;
@@ -318,7 +342,7 @@ HTML = """
       }
 
       .shell {
-        background: rgba(255, 255, 255, 0.96);
+        background: color-mix(in srgb, var(--panel) 96%, transparent);
         border: 1px solid rgba(201, 21, 40, 0.14);
         border-radius: 8px;
         box-shadow: var(--shadow);
@@ -334,6 +358,40 @@ HTML = """
         background: linear-gradient(90deg, #ffffff 0%, #fff7f5 54%, #f2fbf9 100%);
       }
 
+      body[data-theme="night"] header {
+        background: linear-gradient(90deg, #171c22 0%, #201a20 54%, #112729 100%);
+      }
+
+      .theme-toggle {
+        margin-left: auto;
+        min-width: 132px;
+        min-height: 42px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 0 14px;
+        border: 1px solid rgba(201, 21, 40, 0.18);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.86);
+        color: var(--ink);
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+        font-size: 13px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      body[data-theme="night"] .theme-toggle {
+        border-color: rgba(94, 234, 212, 0.24);
+        background: rgba(15, 23, 42, 0.82);
+        color: var(--text);
+      }
+
+      .theme-icon {
+        font-size: 16px;
+        line-height: 1;
+      }
+
       .brand-mark {
         width: 76px;
         height: 76px;
@@ -344,6 +402,11 @@ HTML = """
         border-radius: 8px;
         background: #fff;
         box-shadow: inset 0 0 0 1px rgba(201, 21, 40, 0.12), 0 10px 26px rgba(201, 21, 40, 0.16);
+      }
+
+      body[data-theme="night"] .brand-mark {
+        background: #111827;
+        box-shadow: inset 0 0 0 1px rgba(240, 68, 82, 0.22), 0 10px 26px rgba(0, 0, 0, 0.34);
       }
 
       .brand-a {
@@ -426,9 +489,20 @@ HTML = """
         box-shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
       }
 
+      body[data-theme="night"] .upload-panel {
+        border-color: rgba(240, 68, 82, 0.18);
+        background: linear-gradient(180deg, rgba(23, 28, 34, 0.98) 0%, rgba(28, 25, 31, 0.98) 100%);
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+      }
+
       .upload-panel[data-tone="clinical"] {
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(241, 250, 248, 0.98) 100%);
         border-color: rgba(15, 118, 110, 0.22);
+      }
+
+      body[data-theme="night"] .upload-panel[data-tone="clinical"] {
+        background: linear-gradient(180deg, rgba(22, 29, 34, 0.98) 0%, rgba(12, 36, 38, 0.98) 100%);
+        border-color: rgba(94, 234, 212, 0.2);
       }
 
       .panel-title {
@@ -482,7 +556,7 @@ HTML = """
         border-radius: 8px;
         padding: 0 15px;
         color: var(--text);
-        background: #fff;
+        background: var(--panel);
         font: inherit;
         font-weight: 700;
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
@@ -515,9 +589,18 @@ HTML = """
         transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, transform 120ms ease;
       }
 
+      body[data-theme="night"] .dropzone {
+        background: linear-gradient(180deg, #171c22 0%, #211b21 100%);
+      }
+
       .upload-panel[data-tone="clinical"] .dropzone {
         border-color: #2c9a8e;
         background: linear-gradient(180deg, #fff 0%, #f3fbfa 100%);
+      }
+
+      body[data-theme="night"] .upload-panel[data-tone="clinical"] .dropzone {
+        border-color: #3dd6c4;
+        background: linear-gradient(180deg, #171c22 0%, #10292b 100%);
       }
 
       .dropzone[data-active="true"] {
@@ -760,6 +843,12 @@ HTML = """
 
         header {
           align-items: flex-start;
+          flex-wrap: wrap;
+        }
+
+        .theme-toggle {
+          width: 100%;
+          margin-left: 0;
         }
 
         .brand-mark {
@@ -798,6 +887,10 @@ HTML = """
             <h1>Rats-Apotheke</h1>
             <p class="subtitle">BLIESKASTEL</p>
           </div>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Darstellung wechseln">
+            <span id="theme-icon" class="theme-icon">L</span>
+            <span id="theme-label">Light</span>
+          </button>
         </header>
 
         <div class="content">
@@ -895,7 +988,24 @@ HTML = """
 
     <script>
       const toast = document.querySelector("#toast");
+      const themeToggle = document.querySelector("#theme-toggle");
+      const themeIcon = document.querySelector("#theme-icon");
+      const themeLabel = document.querySelector("#theme-label");
       let toastTimer;
+
+      function applyTheme(theme) {
+        document.body.dataset.theme = theme;
+        themeIcon.textContent = theme === "night" ? "N" : "L";
+        themeLabel.textContent = theme === "night" ? "Night" : "Light";
+        localStorage.setItem("upload-ui-theme", theme);
+      }
+
+      const savedTheme = localStorage.getItem("upload-ui-theme") || "light";
+      applyTheme(savedTheme === "night" ? "night" : "light");
+
+      themeToggle.addEventListener("click", () => {
+        applyTheme(document.body.dataset.theme === "night" ? "light" : "night");
+      });
 
       const today = new Date();
       const localToday = new Date(today.getTime() - today.getTimezoneOffset() * 60000)

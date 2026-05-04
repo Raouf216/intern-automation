@@ -1,0 +1,1131 @@
+import os
+import time
+from datetime import date
+from pathlib import Path
+from urllib.parse import quote
+
+import httpx
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.requests import Request
+
+
+STARTED_AT = time.time()
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_STORAGE_BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "oed-files")
+SUPABASE_STORAGE_PREFIX = os.environ.get("SUPABASE_STORAGE_PREFIX", "oed").strip("/")
+UPLOAD_PASSWORD = os.environ.get("UPLOAD_PASSWORD", "")
+ABRECHNUNG_STORAGE_BUCKET = os.environ.get("ABRECHNUNG_STORAGE_BUCKET", "abrechnung-files")
+ABRECHNUNG_STORAGE_PREFIX = os.environ.get("ABRECHNUNG_STORAGE_PREFIX", "doktorabc-abrechnung").strip("/")
+ABRECHNUNG_UPLOAD_PASSWORD = os.environ.get("ABRECHNUNG_UPLOAD_PASSWORD", "")
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "20"))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+ALLOWED_EXTENSIONS = {
+    item.strip().lower()
+    for item in os.environ.get("ALLOWED_EXTENSIONS", ".xlsx,.xls").split(",")
+    if item.strip()
+}
+
+app = FastAPI(title="file-upload-ui")
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    print(f"Unhandled error on {request.method} {request.url.path}: {type(exc).__name__}: {exc}", flush=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "ok": False,
+            "detail": f"Internal server error: {type(exc).__name__}: {exc}",
+        },
+    )
+
+
+def oed_filename(selected_date: date, extension: str) -> str:
+    return f"oed_{selected_date.isoformat()}{extension}"
+
+
+def abrechnung_filename(period_from: date, period_to: date, extension: str) -> str:
+    return f"doktorabc_abrechnung_{period_from.isoformat()}_bis_{period_to.isoformat()}{extension}"
+
+
+def storage_path(filename: str, prefix: str) -> str:
+    if prefix:
+        return f"{prefix}/{filename}"
+    return filename
+
+
+def require_config():
+    missing = []
+    if not SUPABASE_URL:
+        missing.append("SUPABASE_URL")
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        missing.append("SUPABASE_SERVICE_ROLE_KEY")
+    if missing:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Missing required environment variable(s): {', '.join(missing)}",
+        )
+
+
+def require_password(password: str | None, expected_password: str, label: str):
+    if not expected_password:
+        raise HTTPException(status_code=500, detail=f"{label} upload password is not configured.")
+    if expected_password and password != expected_password:
+        raise HTTPException(status_code=401, detail="Wrong upload password.")
+
+
+def parse_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Choose a valid date.") from exc
+
+
+async def read_limited_file(upload: UploadFile) -> bytes:
+    contents = await upload.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Choose an Excel file.")
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File is too large. Maximum size is {MAX_UPLOAD_MB} MB.",
+        )
+    return contents
+
+
+def validate_extension(filename: str) -> str:
+    extension = Path(filename).suffix.lower()
+    if extension not in ALLOWED_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_EXTENSIONS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only these file types are allowed: {allowed}.",
+        )
+    return extension
+
+
+async def upload_to_supabase(
+    bucket: str,
+    object_path: str,
+    contents: bytes,
+    content_type: str,
+    replace_existing: bool,
+    duplicate_message: str,
+):
+    require_config()
+    encoded_path = quote(object_path, safe="/")
+    url = (
+        f"{SUPABASE_URL}/storage/v1/object/"
+        f"{quote(bucket, safe='')}/{encoded_path}"
+    )
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": content_type or "application/octet-stream",
+        "x-upsert": "true" if replace_existing else "false",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(url, headers=headers, content=contents)
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach Supabase Storage at {SUPABASE_URL}: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    if response.is_success:
+        return
+
+    try:
+        error_detail = response.json()
+    except ValueError:
+        error_detail = response.text
+
+    error_text = str(error_detail).lower()
+    is_duplicate = response.status_code == 409 or (
+        response.status_code == 400
+        and ("already exists" in error_text or "duplicate" in error_text)
+    )
+    if is_duplicate and not replace_existing:
+        raise HTTPException(status_code=409, detail=duplicate_message)
+
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "message": "Supabase Storage upload failed.",
+            "status_code": response.status_code,
+            "supabase_error": error_detail,
+        },
+    )
+
+
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "service": "file-upload-ui",
+        "uptime_seconds": round(time.time() - STARTED_AT, 3),
+        "configured": bool(
+            SUPABASE_URL
+            and SUPABASE_SERVICE_ROLE_KEY
+            and UPLOAD_PASSWORD
+            and ABRECHNUNG_UPLOAD_PASSWORD
+        ),
+        "oed_password_configured": bool(UPLOAD_PASSWORD),
+        "abrechnung_password_configured": bool(ABRECHNUNG_UPLOAD_PASSWORD),
+        "oed_bucket": SUPABASE_STORAGE_BUCKET,
+        "oed_prefix": SUPABASE_STORAGE_PREFIX,
+        "abrechnung_bucket": ABRECHNUNG_STORAGE_BUCKET,
+        "abrechnung_prefix": ABRECHNUNG_STORAGE_PREFIX,
+    }
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    return HTML
+
+
+@app.post("/upload")
+async def upload_file(
+    upload_date: str = Form(...),
+    file: UploadFile = File(...),
+    password: str | None = Form(default=None),
+    replace_existing: bool = Form(default=False),
+):
+    require_password(password, UPLOAD_PASSWORD, "OED")
+
+    selected_date = parse_date(upload_date)
+    extension = validate_extension(file.filename or "")
+    contents = await read_limited_file(file)
+    filename = oed_filename(selected_date, extension)
+    object_path = storage_path(filename, SUPABASE_STORAGE_PREFIX)
+
+    await upload_to_supabase(
+        bucket=SUPABASE_STORAGE_BUCKET,
+        object_path=object_path,
+        contents=contents,
+        content_type=file.content_type or "application/octet-stream",
+        replace_existing=replace_existing,
+        duplicate_message="A file for this date already exists. Enable replace and try again.",
+    )
+
+    return {
+        "ok": True,
+        "filename": filename,
+        "bucket": SUPABASE_STORAGE_BUCKET,
+        "path": object_path,
+        "size_bytes": len(contents),
+    }
+
+
+@app.post("/upload-abrechnung")
+async def upload_abrechnung_file(
+    period_from: str = Form(...),
+    period_to: str = Form(...),
+    file: UploadFile = File(...),
+    password: str | None = Form(default=None),
+):
+    require_password(password, ABRECHNUNG_UPLOAD_PASSWORD, "DoktorABC Abrechnung")
+
+    start_date = parse_date(period_from)
+    end_date = parse_date(period_to)
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="The end date must be after the start date.")
+
+    extension = validate_extension(file.filename or "")
+    contents = await read_limited_file(file)
+    filename = abrechnung_filename(start_date, end_date, extension)
+    object_path = storage_path(filename, ABRECHNUNG_STORAGE_PREFIX)
+
+    await upload_to_supabase(
+        bucket=ABRECHNUNG_STORAGE_BUCKET,
+        object_path=object_path,
+        contents=contents,
+        content_type=file.content_type or "application/octet-stream",
+        replace_existing=False,
+        duplicate_message="A DoktorABC Abrechnung file for this period already exists.",
+    )
+
+    return {
+        "ok": True,
+        "filename": filename,
+        "bucket": ABRECHNUNG_STORAGE_BUCKET,
+        "path": object_path,
+        "size_bytes": len(contents),
+    }
+
+
+@app.api_route("/{path_name:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def not_found(path_name):
+    return JSONResponse(status_code=404, content={"ok": False, "error": "not_found"})
+
+
+def main():
+    import uvicorn
+
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+HTML = """
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rats-Apotheke Upload</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f4f2;
+        --panel: #ffffff;
+        --text: #18202f;
+        --muted: #667085;
+        --line: #e3d8d4;
+        --primary: #c91528;
+        --primary-dark: #9f1020;
+        --primary-soft: #fff0f1;
+        --danger: #b42318;
+        --ok: #027a48;
+        --clinical: #e8f3f1;
+        --clinical-deep: #0f766e;
+        --ink: #0f172a;
+        --shadow: 0 22px 60px rgba(74, 19, 28, 0.16);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: Arial, Helvetica, sans-serif;
+        background:
+          linear-gradient(135deg, rgba(255, 255, 255, 0.92) 0%, rgba(251, 244, 242, 0.88) 42%, rgba(237, 247, 245, 0.9) 100%),
+          url("data:image/svg+xml,%3Csvg width='96' height='96' viewBox='0 0 96 96' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' stroke='%230f766e' stroke-opacity='.09' stroke-width='2'%3E%3Cpath d='M48 18v60M18 48h60'/%3E%3C/g%3E%3C/svg%3E");
+        color: var(--text);
+      }
+
+      main {
+        width: min(1180px, calc(100% - 28px));
+        margin: 0 auto;
+        padding: 42px 0;
+      }
+
+      .shell {
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid rgba(201, 21, 40, 0.14);
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 26px 28px 22px;
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(90deg, #ffffff 0%, #fff7f5 54%, #f2fbf9 100%);
+      }
+
+      .brand-mark {
+        width: 76px;
+        height: 76px;
+        flex: 0 0 auto;
+        position: relative;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: inset 0 0 0 1px rgba(201, 21, 40, 0.12), 0 10px 26px rgba(201, 21, 40, 0.16);
+      }
+
+      .brand-a {
+        width: 52px;
+        height: 52px;
+        position: relative;
+        background: var(--primary);
+        clip-path: polygon(50% 0, 94% 28%, 94% 82%, 74% 82%, 74% 44%, 50% 29%, 26% 44%, 26% 82%, 6% 82%, 6% 28%);
+      }
+
+      .brand-a::before,
+      .brand-a::after {
+        content: "";
+        position: absolute;
+        background: #fff;
+        left: 50%;
+        top: 43%;
+        transform: translate(-50%, -50%);
+        border-radius: 2px;
+      }
+
+      .brand-a::before {
+        width: 25px;
+        height: 8px;
+      }
+
+      .brand-a::after {
+        width: 8px;
+        height: 25px;
+      }
+
+      .brand-copy {
+        display: grid;
+        gap: 3px;
+        min-width: 0;
+      }
+
+      h1,
+      h2 {
+        margin: 0;
+        color: var(--ink);
+        letter-spacing: 0;
+      }
+
+      h1 {
+        font-size: 34px;
+        font-weight: 800;
+      }
+
+      h2 {
+        font-size: 22px;
+        font-weight: 800;
+      }
+
+      .subtitle {
+        margin: 0;
+        color: #697386;
+        font-size: 18px;
+        font-weight: 700;
+        letter-spacing: 6px;
+      }
+
+      .content {
+        padding: 28px;
+      }
+
+      .upload-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 22px;
+        align-items: start;
+      }
+
+      .upload-panel {
+        min-height: 100%;
+        padding: 20px;
+        border: 1px solid rgba(217, 200, 197, 0.9);
+        border-radius: 8px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(255, 249, 248, 0.98) 100%);
+        box-shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
+      }
+
+      .upload-panel[data-tone="clinical"] {
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(241, 250, 248, 0.98) 100%);
+        border-color: rgba(15, 118, 110, 0.22);
+      }
+
+      .panel-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+
+      .panel-badge {
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        background: var(--primary-soft);
+        color: var(--primary);
+        font-size: 17px;
+        font-weight: 900;
+      }
+
+      .upload-panel[data-tone="clinical"] .panel-badge {
+        background: var(--clinical);
+        color: var(--clinical-deep);
+      }
+
+      form {
+        display: grid;
+        gap: 18px;
+      }
+
+      label {
+        display: grid;
+        gap: 8px;
+        color: #344054;
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .date-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      input[type="date"],
+      input[type="password"] {
+        width: 100%;
+        height: 50px;
+        border: 1px solid #d9c8c5;
+        border-radius: 8px;
+        padding: 0 15px;
+        color: var(--text);
+        background: #fff;
+        font: inherit;
+        font-weight: 700;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+        transition: border-color 120ms ease, box-shadow 120ms ease;
+      }
+
+      input[type="date"]:focus,
+      input[type="password"]:focus {
+        outline: none;
+        border-color: var(--primary);
+        box-shadow: 0 0 0 4px rgba(201, 21, 40, 0.12);
+      }
+
+      .upload-panel[data-tone="clinical"] input[type="date"]:focus,
+      .upload-panel[data-tone="clinical"] input[type="password"]:focus {
+        border-color: var(--clinical-deep);
+        box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.12);
+      }
+
+      .dropzone {
+        display: grid;
+        place-items: center;
+        min-height: 186px;
+        padding: 22px;
+        border: 1.5px dashed #d1404e;
+        border-radius: 8px;
+        background: linear-gradient(180deg, #fff 0%, #fff8f8 100%);
+        cursor: pointer;
+        text-align: center;
+        transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+      }
+
+      .upload-panel[data-tone="clinical"] .dropzone {
+        border-color: #2c9a8e;
+        background: linear-gradient(180deg, #fff 0%, #f3fbfa 100%);
+      }
+
+      .dropzone[data-active="true"] {
+        border-color: var(--primary);
+        background: var(--primary-soft);
+        box-shadow: 0 0 0 4px rgba(201, 21, 40, 0.1);
+        transform: translateY(-1px);
+      }
+
+      .upload-panel[data-tone="clinical"] .dropzone[data-active="true"] {
+        border-color: var(--clinical-deep);
+        background: var(--clinical);
+        box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.1);
+      }
+
+      .file-icon {
+        width: 58px;
+        height: 58px;
+        margin: 0 auto 12px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        background: var(--primary-soft);
+        color: var(--primary);
+        border: 1px solid rgba(201, 21, 40, 0.16);
+        font-size: 28px;
+        font-weight: 800;
+      }
+
+      .upload-panel[data-tone="clinical"] .file-icon {
+        background: var(--clinical);
+        color: var(--clinical-deep);
+        border-color: rgba(15, 118, 110, 0.16);
+      }
+
+      .drop-title {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .drop-meta,
+      .filename-preview {
+        margin: 6px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+        overflow-wrap: anywhere;
+      }
+
+      input[type="file"] {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .row.single-action {
+        justify-content: flex-end;
+      }
+
+      .check {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        color: #344054;
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .check input {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--primary);
+      }
+
+      button {
+        min-height: 52px;
+        border: 1px solid rgba(111, 12, 24, 0.24);
+        border-radius: 8px;
+        padding: 0 22px;
+        background: linear-gradient(180deg, #df1f34 0%, var(--primary) 100%);
+        color: white;
+        font: inherit;
+        font-weight: 800;
+        cursor: pointer;
+        box-shadow: 0 12px 24px rgba(201, 21, 40, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+      }
+
+      .upload-panel[data-tone="clinical"] button {
+        border-color: rgba(7, 89, 82, 0.24);
+        background: linear-gradient(180deg, #129080 0%, var(--clinical-deep) 100%);
+        box-shadow: 0 12px 24px rgba(15, 118, 110, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      button:not(:disabled):hover {
+        background: linear-gradient(180deg, #d51b30 0%, var(--primary-dark) 100%);
+        box-shadow: 0 14px 28px rgba(201, 21, 40, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        transform: translateY(-1px);
+      }
+
+      .upload-panel[data-tone="clinical"] button:not(:disabled):hover {
+        background: linear-gradient(180deg, #0f8275 0%, #0b5f58 100%);
+        box-shadow: 0 14px 28px rgba(15, 118, 110, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      }
+
+      button:not(:disabled):active {
+        transform: translateY(0);
+      }
+
+      .status {
+        min-height: 46px;
+        display: none;
+        align-items: center;
+        border-radius: 8px;
+        padding: 12px 14px;
+        font-size: 14px;
+        line-height: 1.35;
+        animation: status-pop 180ms ease;
+      }
+
+      .status[data-kind="ok"] {
+        display: flex;
+        background: #ecfdf3;
+        color: var(--ok);
+      }
+
+      .status[data-kind="error"] {
+        display: flex;
+        background: #fef3f2;
+        color: var(--danger);
+        border: 1px solid rgba(180, 35, 24, 0.16);
+      }
+
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 24px;
+        z-index: 10;
+        width: min(460px, calc(100% - 28px));
+        min-height: 54px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 14px 18px;
+        border-radius: 8px;
+        background: #7f1d1d;
+        color: white;
+        box-shadow: 0 18px 42px rgba(127, 29, 29, 0.35);
+        font-size: 15px;
+        font-weight: 800;
+        text-align: center;
+        transform: translateX(-50%);
+      }
+
+      .toast[data-visible="true"] {
+        display: flex;
+        animation: toast-pop 260ms ease;
+      }
+
+      .field-error {
+        border-color: var(--primary) !important;
+        box-shadow: 0 0 0 4px rgba(201, 21, 40, 0.14) !important;
+        animation: shake 220ms ease;
+      }
+
+      @keyframes status-pop {
+        from {
+          opacity: 0.65;
+          transform: translateY(4px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @keyframes toast-pop {
+        0% {
+          opacity: 0;
+          transform: translate(-50%, 8px) scale(0.98);
+        }
+        100% {
+          opacity: 1;
+          transform: translate(-50%, 0) scale(1);
+        }
+      }
+
+      @keyframes shake {
+        0%, 100% {
+          transform: translateX(0);
+        }
+        35% {
+          transform: translateX(-5px);
+        }
+        70% {
+          transform: translateX(5px);
+        }
+      }
+
+      @media (max-width: 900px) {
+        .upload-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 560px) {
+        main {
+          width: min(100% - 18px, 680px);
+          padding: 18px 0;
+        }
+
+        header,
+        .content {
+          padding-left: 18px;
+          padding-right: 18px;
+        }
+
+        h1 {
+          font-size: 27px;
+        }
+
+        h2 {
+          font-size: 20px;
+        }
+
+        header {
+          align-items: flex-start;
+        }
+
+        .brand-mark {
+          width: 62px;
+          height: 62px;
+        }
+
+        .brand-a {
+          width: 43px;
+          height: 43px;
+        }
+
+        .subtitle {
+          font-size: 14px;
+          letter-spacing: 4px;
+        }
+
+        .date-row {
+          grid-template-columns: 1fr;
+        }
+
+        button {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="shell">
+        <header>
+          <div class="brand-mark" aria-hidden="true">
+            <div class="brand-a"></div>
+          </div>
+          <div class="brand-copy">
+            <h1>Rats-Apotheke</h1>
+            <p class="subtitle">BLIESKASTEL</p>
+          </div>
+        </header>
+
+        <div class="content">
+          <div class="upload-grid">
+            <section class="upload-panel">
+              <div class="panel-title">
+                <div class="panel-badge">O</div>
+                <h2>OED Upload</h2>
+              </div>
+
+              <form id="oed-form">
+                <label>
+                  Datum
+                  <input id="oed-date" name="upload_date" type="date" required />
+                </label>
+
+                <label>
+                  Excel-Datei
+                  <div id="oed-dropzone" class="dropzone" role="button" tabindex="0">
+                    <div>
+                      <div class="file-icon">X</div>
+                      <p id="oed-drop-title" class="drop-title">Datei auswaehlen</p>
+                      <p class="drop-meta">.xlsx oder .xls</p>
+                      <p id="oed-preview" class="filename-preview"></p>
+                    </div>
+                  </div>
+                  <input id="oed-file" name="file" type="file" accept=".xlsx,.xls" required />
+                </label>
+
+                <label>
+                  Passwort
+                  <input id="oed-password" name="password" type="password" autocomplete="current-password" />
+                </label>
+
+                <div class="row">
+                  <label class="check">
+                    <input id="oed-replace-existing" name="replace_existing" type="checkbox" />
+                    Vorhandene Datei ersetzen
+                  </label>
+                  <button id="oed-submit" type="submit" disabled>Hochladen</button>
+                </div>
+
+                <div id="oed-status" class="status" aria-live="polite"></div>
+              </form>
+            </section>
+
+            <section class="upload-panel" data-tone="clinical">
+              <div class="panel-title">
+                <div class="panel-badge">D</div>
+                <h2>DoktorABC Abrechnung</h2>
+              </div>
+
+              <form id="abrechnung-form">
+                <div class="date-row">
+                  <label>
+                    Von
+                    <input id="abrechnung-from" name="period_from" type="date" required />
+                  </label>
+                  <label>
+                    Bis
+                    <input id="abrechnung-to" name="period_to" type="date" required />
+                  </label>
+                </div>
+
+                <label>
+                  Excel-Datei
+                  <div id="abrechnung-dropzone" class="dropzone" role="button" tabindex="0">
+                    <div>
+                      <div class="file-icon">X</div>
+                      <p id="abrechnung-drop-title" class="drop-title">Datei auswaehlen</p>
+                      <p class="drop-meta">.xlsx oder .xls</p>
+                      <p id="abrechnung-preview" class="filename-preview"></p>
+                    </div>
+                  </div>
+                  <input id="abrechnung-file" name="file" type="file" accept=".xlsx,.xls" required />
+                </label>
+
+                <label>
+                  Passwort
+                  <input id="abrechnung-password" name="password" type="password" autocomplete="current-password" />
+                </label>
+
+                <div class="row single-action">
+                  <button id="abrechnung-submit" type="submit" disabled>Abrechnung hochladen</button>
+                </div>
+
+                <div id="abrechnung-status" class="status" aria-live="polite"></div>
+              </form>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+    <div id="toast" class="toast" role="alert" aria-live="assertive"></div>
+
+    <script>
+      const toast = document.querySelector("#toast");
+      let toastTimer;
+
+      const today = new Date();
+      const localToday = new Date(today.getTime() - today.getTimezoneOffset() * 60000)
+        .toISOString()
+        .slice(0, 10);
+      const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+      const localFirstDay = new Date(firstDay.getTime() - firstDay.getTimezoneOffset() * 60000)
+        .toISOString()
+        .slice(0, 10);
+
+      function fileExtension(fileInput) {
+        if (!fileInput.files.length) return ".xlsx";
+        const parts = fileInput.files[0].name.split(".");
+        return parts.length > 1 ? "." + parts.pop().toLowerCase() : ".xlsx";
+      }
+
+      function setStatus(statusBox, kind, text) {
+        statusBox.dataset.kind = kind;
+        statusBox.textContent = text;
+        statusBox.style.animation = "none";
+        statusBox.offsetHeight;
+        statusBox.style.animation = "";
+      }
+
+      function showToast(text) {
+        clearTimeout(toastTimer);
+        toast.dataset.visible = "false";
+        toast.textContent = text;
+        toast.offsetHeight;
+        toast.dataset.visible = "true";
+        toastTimer = setTimeout(() => {
+          toast.dataset.visible = "false";
+        }, 3200);
+      }
+
+      function markPasswordError(passwordInput) {
+        passwordInput.classList.remove("field-error");
+        passwordInput.offsetHeight;
+        passwordInput.classList.add("field-error");
+        passwordInput.focus();
+        setTimeout(() => {
+          passwordInput.classList.remove("field-error");
+        }, 900);
+      }
+
+      function parseResultError(result) {
+        const detail = result.detail || result.error || "Upload fehlgeschlagen.";
+        return typeof detail === "string" ? detail : JSON.stringify(detail);
+      }
+
+      function attachDropzone(controller) {
+        function pickFile() {
+          controller.fileInput.click();
+        }
+
+        controller.dropzone.addEventListener("click", pickFile);
+        controller.dropzone.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            pickFile();
+          }
+        });
+
+        ["dragenter", "dragover"].forEach((eventName) => {
+          controller.dropzone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            controller.dropzone.dataset.active = "true";
+          });
+        });
+
+        ["dragleave", "drop"].forEach((eventName) => {
+          controller.dropzone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            controller.dropzone.dataset.active = "false";
+          });
+        });
+
+        controller.dropzone.addEventListener("drop", (event) => {
+          const file = event.dataTransfer.files[0];
+          if (!file) return;
+          controller.fileInput.files = event.dataTransfer.files;
+          controller.refresh();
+        });
+      }
+
+      function createUploadController(config) {
+        const controller = {
+          form: document.querySelector(config.form),
+          fileInput: document.querySelector(config.fileInput),
+          dropzone: document.querySelector(config.dropzone),
+          dropTitle: document.querySelector(config.dropTitle),
+          preview: document.querySelector(config.preview),
+          passwordInput: document.querySelector(config.passwordInput),
+          submitButton: document.querySelector(config.submitButton),
+          statusBox: document.querySelector(config.statusBox),
+          refresh() {
+            const targetName = config.targetName();
+            this.preview.textContent = this.fileInput.files.length
+              ? `${this.fileInput.files[0].name} -> ${targetName}`
+              : `Zielname: ${targetName}`;
+            this.dropTitle.textContent = this.fileInput.files.length
+              ? this.fileInput.files[0].name
+              : "Datei auswaehlen";
+            this.submitButton.disabled = !config.isReady();
+          },
+        };
+
+        attachDropzone(controller);
+        controller.fileInput.addEventListener("change", () => controller.refresh());
+        config.watch.forEach((input) => input.addEventListener("input", () => controller.refresh()));
+
+        controller.form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          controller.submitButton.disabled = true;
+          setStatus(controller.statusBox, "ok", "Upload laeuft...");
+
+          try {
+            const data = config.formData();
+            const response = await fetch(config.endpoint, { method: "POST", body: data });
+            const contentType = response.headers.get("content-type") || "";
+            const result = contentType.includes("application/json")
+              ? await response.json()
+              : { detail: await response.text() };
+
+            if (!response.ok || !result.ok) {
+              const message = parseResultError(result);
+              const isPasswordError = response.status === 401 || message.toLowerCase().includes("password");
+              if (isPasswordError) {
+                markPasswordError(controller.passwordInput);
+                showToast(`${config.label}: falsches Passwort. Bitte erneut pruefen.`);
+                throw new Error("Falsches Passwort. Bitte erneut pruefen.");
+              }
+              throw new Error(message);
+            }
+
+            setStatus(controller.statusBox, "ok", `Gespeichert: ${result.path}`);
+            config.afterSuccess();
+            controller.refresh();
+          } catch (error) {
+            setStatus(controller.statusBox, "error", error.message);
+          } finally {
+            controller.submitButton.disabled = !config.isReady();
+          }
+        });
+
+        controller.refresh();
+        return controller;
+      }
+
+      const oedDate = document.querySelector("#oed-date");
+      const oedFile = document.querySelector("#oed-file");
+      const oedPassword = document.querySelector("#oed-password");
+      const oedReplaceExisting = document.querySelector("#oed-replace-existing");
+
+      const abrechnungFrom = document.querySelector("#abrechnung-from");
+      const abrechnungTo = document.querySelector("#abrechnung-to");
+      const abrechnungFile = document.querySelector("#abrechnung-file");
+      const abrechnungPassword = document.querySelector("#abrechnung-password");
+
+      oedDate.value = localToday;
+      abrechnungFrom.value = localFirstDay;
+      abrechnungTo.value = localToday;
+
+      createUploadController({
+        label: "OED",
+        form: "#oed-form",
+        endpoint: "/upload",
+        fileInput: "#oed-file",
+        dropzone: "#oed-dropzone",
+        dropTitle: "#oed-drop-title",
+        preview: "#oed-preview",
+        passwordInput: "#oed-password",
+        submitButton: "#oed-submit",
+        statusBox: "#oed-status",
+        watch: [oedDate],
+        targetName: () => `oed_${oedDate.value || "YYYY-MM-DD"}${fileExtension(oedFile)}`,
+        isReady: () => Boolean(oedDate.value && oedFile.files.length),
+        formData: () => {
+          const data = new FormData();
+          data.append("upload_date", oedDate.value);
+          data.append("file", oedFile.files[0]);
+          data.append("password", oedPassword.value);
+          if (oedReplaceExisting.checked) {
+            data.append("replace_existing", "true");
+          }
+          return data;
+        },
+        afterSuccess: () => {
+          document.querySelector("#oed-form").reset();
+          oedDate.value = localToday;
+        },
+      });
+
+      createUploadController({
+        label: "DoktorABC Abrechnung",
+        form: "#abrechnung-form",
+        endpoint: "/upload-abrechnung",
+        fileInput: "#abrechnung-file",
+        dropzone: "#abrechnung-dropzone",
+        dropTitle: "#abrechnung-drop-title",
+        preview: "#abrechnung-preview",
+        passwordInput: "#abrechnung-password",
+        submitButton: "#abrechnung-submit",
+        statusBox: "#abrechnung-status",
+        watch: [abrechnungFrom, abrechnungTo],
+        targetName: () => {
+          const fromValue = abrechnungFrom.value || "YYYY-MM-DD";
+          const toValue = abrechnungTo.value || "YYYY-MM-DD";
+          return `doktorabc_abrechnung_${fromValue}_bis_${toValue}${fileExtension(abrechnungFile)}`;
+        },
+        isReady: () => Boolean(abrechnungFrom.value && abrechnungTo.value && abrechnungFile.files.length),
+        formData: () => {
+          const data = new FormData();
+          data.append("period_from", abrechnungFrom.value);
+          data.append("period_to", abrechnungTo.value);
+          data.append("file", abrechnungFile.files[0]);
+          data.append("password", abrechnungPassword.value);
+          return data;
+        },
+        afterSuccess: () => {
+          document.querySelector("#abrechnung-form").reset();
+          abrechnungFrom.value = localFirstDay;
+          abrechnungTo.value = localToday;
+        },
+      });
+    </script>
+  </body>
+</html>
+"""
+
+
+if __name__ == "__main__":
+    main()

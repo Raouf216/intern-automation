@@ -21,7 +21,7 @@ services:
       - DOKTORABC_HEADLESS=${DOKTORABC_HEADLESS:-true}
       - ARTIFACTS_DIR=/app/artifacts
     volumes:
-      - web_scraper_artifacts:/app/artifacts
+      - "${WEB_SCRAPER_ARTIFACTS_DIR:-../../web-scraper-artifacts}:/app/artifacts"
     healthcheck:
       test:
         [
@@ -34,6 +34,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
-
-volumes:
-  web_scraper_artifacts:

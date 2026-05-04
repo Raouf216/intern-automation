@@ -44,6 +44,8 @@ def login_and_screenshot():
             page.get_by_placeholder("Password").fill(os.environ["DOKTORABC_PASSWORD"])
 
             page.get_by_text("Pharmacist", exact=True).click()
+            page.wait_for_timeout(10_000)
+            page.screenshot(path=screenshot_path, full_page=True)
             page.get_by_role("button", name="Login").click()
 
             page.goto(os.environ["DOKTORABC_PRODUCTS_URL"], wait_until="domcontentloaded")

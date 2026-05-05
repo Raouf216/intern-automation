@@ -26,6 +26,6 @@ export async function GET() {
   return NextResponse.json({
     ok: true,
     route: "/api/notifications/upload",
-    accepts: ["upload_triggered", "upload_success", "upload_failure"],
+    accepts: ["upload_triggered", "upload_success", "upload_failure", "orders_csv_insert_success", "orders_csv_insert_failure"],
   });
 }

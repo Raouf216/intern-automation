@@ -30,6 +30,11 @@ export type UploadWebhookPayload = {
   timestamp?: string;
   service?: string;
   error?: string;
+  stage?: string;
+  orders_table?: string;
+  orders_schema?: string;
+  rows_found?: number;
+  rows_inserted?: number;
 };
 
 function requiredEnv(name: string) {
@@ -86,8 +91,8 @@ export function normalizeUploadNotification(payload: UploadWebhookPayload): Omit
     section: "upload",
     event,
     status,
-    title: uploadTitle(status, uploadType),
-    message: uploadMessage(status, filename, payload.error),
+    title: uploadTitle(status, uploadType, payload),
+    message: uploadMessage(status, filename, payload),
     filename,
     upload_type: uploadType,
     bucket: payload.bucket ? String(payload.bucket) : null,
@@ -158,7 +163,19 @@ function timestampOrNow(value: string | undefined) {
   return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
 }
 
-function uploadTitle(status: NotificationStatus, uploadType: string) {
+function uploadTitle(status: NotificationStatus, uploadType: string, payload: UploadWebhookPayload) {
+  if (isOrdersCsvInsert(payload)) {
+    if (status === "success") {
+      return "OED Datenbankimport erfolgreich";
+    }
+
+    if (status === "failure") {
+      return "OED Datenbankimport fehlgeschlagen";
+    }
+
+    return "OED Datenbankimport";
+  }
+
   const label = uploadType === "doktorabc_abrechnung" ? "DoktorABC Abrechnung" : "OED Upload";
 
   if (status === "triggered") {
@@ -176,7 +193,25 @@ function uploadTitle(status: NotificationStatus, uploadType: string) {
   return `${label} Meldung`;
 }
 
-function uploadMessage(status: NotificationStatus, filename: string, error?: string) {
+function uploadMessage(status: NotificationStatus, filename: string, payload: UploadWebhookPayload) {
+  if (isOrdersCsvInsert(payload)) {
+    const table = payload.orders_table || "orders_csv";
+    const rowsInserted = typeof payload.rows_inserted === "number" ? payload.rows_inserted : null;
+    const rowsFound = typeof payload.rows_found === "number" ? payload.rows_found : null;
+
+    if (status === "success") {
+      const rowText = rowsInserted === null ? "Zeilen" : `${rowsInserted} Zeilen`;
+      return `${rowText} in ${table} eingefuegt: ${filename}`;
+    }
+
+    if (status === "failure") {
+      const rowText = rowsFound === null ? "" : ` (${rowsFound} gelesene Zeilen)`;
+      return `Datenbankimport fuer ${filename} fehlgeschlagen${rowText}${payload.error ? `: ${payload.error}` : ""}`;
+    }
+
+    return `Datenbankimport fuer ${filename}`;
+  }
+
   if (status === "triggered") {
     return `Upload wurde gestartet: ${filename}`;
   }
@@ -186,8 +221,16 @@ function uploadMessage(status: NotificationStatus, filename: string, error?: str
   }
 
   if (status === "failure") {
-    return `Upload konnte nicht gespeichert werden: ${filename}${error ? ` (${error})` : ""}`;
+    return `Upload konnte nicht gespeichert werden: ${filename}${payload.error ? ` (${payload.error})` : ""}`;
   }
 
   return `Upload-Meldung fuer ${filename}`;
+}
+
+function isOrdersCsvInsert(payload: UploadWebhookPayload) {
+  return (
+    payload.stage === "orders_csv_insert" ||
+    payload.event === "orders_csv_insert_success" ||
+    payload.event === "orders_csv_insert_failure"
+  );
 }

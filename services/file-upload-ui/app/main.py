@@ -28,7 +28,7 @@ ABRECHNUNG_UPLOAD_PASSWORD = os.environ.get("ABRECHNUNG_UPLOAD_PASSWORD", "")
 N8N_UPLOAD_WEBHOOK_URL = os.environ.get("N8N_UPLOAD_WEBHOOK_URL", "").strip()
 SUPABASE_ORDERS_TABLE = os.environ.get("SUPABASE_ORDERS_TABLE", "orders_csv").strip()
 SUPABASE_DB_SCHEMA = os.environ.get("SUPABASE_DB_SCHEMA", "public").strip()
-SUPABASE_DB_INSERT_BATCH_SIZE = int(os.environ.get("SUPABASE_DB_INSERT_BATCH_SIZE", "200"))
+SUPABASE_DB_INSERT_BATCH_SIZE = int(os.environ.get("SUPABASE_DB_INSERT_BATCH_SIZE", "1000"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "20"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 ALLOWED_EXTENSIONS = {
@@ -299,12 +299,14 @@ async def notify_n8n_upload_event(
     object_path: str,
     size_bytes: int,
     error: str | None = None,
+    event: str | None = None,
+    extra: dict[str, object] | None = None,
 ):
     if not N8N_UPLOAD_WEBHOOK_URL:
         return
 
     payload = {
-        "event": f"upload_{status}",
+        "event": event or f"upload_{status}",
         "status": status,
         "upload_type": upload_type,
         "filename": filename,
@@ -317,6 +319,9 @@ async def notify_n8n_upload_event(
 
     if error:
         payload["error"] = error
+
+    if extra:
+        payload.update(extra)
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -483,7 +488,44 @@ async def upload_file(
             replace_existing=replace_existing,
             duplicate_message="A file for this date already exists. Enable replace and try again.",
         )
-        orders_inserted = await insert_orders_csv_rows(order_rows)
+        try:
+            orders_inserted = await insert_orders_csv_rows(order_rows)
+        except Exception as exc:
+            await notify_n8n_upload_event(
+                status="failure",
+                upload_type=upload_type,
+                filename=filename,
+                bucket=SUPABASE_STORAGE_BUCKET,
+                object_path=object_path,
+                size_bytes=size_bytes,
+                error=error_reason(exc),
+                event="orders_csv_insert_failure",
+                extra={
+                    "stage": "orders_csv_insert",
+                    "orders_table": SUPABASE_ORDERS_TABLE,
+                    "orders_schema": SUPABASE_DB_SCHEMA,
+                    "rows_found": len(order_rows),
+                    "rows_inserted": orders_inserted,
+                },
+            )
+            raise
+
+        await notify_n8n_upload_event(
+            status="success",
+            upload_type=upload_type,
+            filename=filename,
+            bucket=SUPABASE_STORAGE_BUCKET,
+            object_path=object_path,
+            size_bytes=size_bytes,
+            event="orders_csv_insert_success",
+            extra={
+                "stage": "orders_csv_insert",
+                "orders_table": SUPABASE_ORDERS_TABLE,
+                "orders_schema": SUPABASE_DB_SCHEMA,
+                "rows_found": len(order_rows),
+                "rows_inserted": orders_inserted,
+            },
+        )
     except Exception as exc:
         if not upload_started:
             await notify_n8n_upload_event(

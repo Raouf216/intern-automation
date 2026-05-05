@@ -264,6 +264,8 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
 }
 
 function NotificationRow({ notification }: { notification: StoredNotification }) {
+  const rowsInserted = rowsInsertedFromPayload(notification.payload);
+
   return (
     <article className={`notification-row status-${notification.status}`}>
       <div className="status-icon" aria-hidden="true">
@@ -300,6 +302,12 @@ function NotificationRow({ notification }: { notification: StoredNotification })
             <dt>Groesse</dt>
             <dd>{formatBytes(notification.size_bytes)}</dd>
           </div>
+          {rowsInserted === null ? null : (
+            <div>
+              <dt>DB-Zeilen</dt>
+              <dd>{rowsInserted}</dd>
+            </div>
+          )}
         </dl>
         {notification.error ? <p className="error-line">{notification.error}</p> : null}
       </div>
@@ -357,6 +365,10 @@ function formatBytes(value: number | null) {
   }
 
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function rowsInsertedFromPayload(payload: Record<string, unknown>) {
+  return typeof payload.rows_inserted === "number" ? payload.rows_inserted : null;
 }
 
 function formatRelativeTime(value: string) {

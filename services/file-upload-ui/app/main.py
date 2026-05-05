@@ -292,24 +292,44 @@ async def upload_file(
     password: str | None = Form(default=None),
     replace_existing: bool = Form(default=False),
 ):
-    require_password(password, UPLOAD_PASSWORD, "OED")
-
-    selected_date = parse_date(upload_date)
-    extension = validate_extension(file.filename or "")
-    contents = await read_limited_file(file)
-    filename = oed_filename(selected_date, extension)
+    upload_type = "oed"
+    filename = file.filename or "unknown-file"
     object_path = storage_path(filename, SUPABASE_STORAGE_PREFIX)
+    size_bytes = 0
+    upload_started = False
 
-    await upload_to_supabase_with_notifications(
-        upload_type="oed",
-        filename=filename,
-        bucket=SUPABASE_STORAGE_BUCKET,
-        object_path=object_path,
-        contents=contents,
-        content_type=file.content_type or "application/octet-stream",
-        replace_existing=replace_existing,
-        duplicate_message="A file for this date already exists. Enable replace and try again.",
-    )
+    try:
+        selected_date = parse_date(upload_date)
+        extension = validate_extension(file.filename or "")
+        filename = oed_filename(selected_date, extension)
+        object_path = storage_path(filename, SUPABASE_STORAGE_PREFIX)
+        require_password(password, UPLOAD_PASSWORD, "OED")
+        contents = await read_limited_file(file)
+        size_bytes = len(contents)
+        upload_started = True
+
+        await upload_to_supabase_with_notifications(
+            upload_type=upload_type,
+            filename=filename,
+            bucket=SUPABASE_STORAGE_BUCKET,
+            object_path=object_path,
+            contents=contents,
+            content_type=file.content_type or "application/octet-stream",
+            replace_existing=replace_existing,
+            duplicate_message="A file for this date already exists. Enable replace and try again.",
+        )
+    except Exception as exc:
+        if not upload_started:
+            await notify_n8n_upload_event(
+                status="failure",
+                upload_type=upload_type,
+                filename=filename,
+                bucket=SUPABASE_STORAGE_BUCKET,
+                object_path=object_path,
+                size_bytes=size_bytes,
+                error=error_reason(exc),
+            )
+        raise
 
     return {
         "ok": True,
@@ -327,28 +347,48 @@ async def upload_abrechnung_file(
     file: UploadFile = File(...),
     password: str | None = Form(default=None),
 ):
-    require_password(password, ABRECHNUNG_UPLOAD_PASSWORD, "DoktorABC Abrechnung")
-
-    start_date = parse_date(period_from)
-    end_date = parse_date(period_to)
-    if end_date < start_date:
-        raise HTTPException(status_code=400, detail="The end date must be after the start date.")
-
-    extension = validate_extension(file.filename or "")
-    contents = await read_limited_file(file)
-    filename = abrechnung_filename(start_date, end_date, extension)
+    upload_type = "doktorabc_abrechnung"
+    filename = file.filename or "unknown-file"
     object_path = storage_path(filename, ABRECHNUNG_STORAGE_PREFIX)
+    size_bytes = 0
+    upload_started = False
 
-    await upload_to_supabase_with_notifications(
-        upload_type="doktorabc_abrechnung",
-        filename=filename,
-        bucket=ABRECHNUNG_STORAGE_BUCKET,
-        object_path=object_path,
-        contents=contents,
-        content_type=file.content_type or "application/octet-stream",
-        replace_existing=False,
-        duplicate_message="A DoktorABC Abrechnung file for this period already exists.",
-    )
+    try:
+        start_date = parse_date(period_from)
+        end_date = parse_date(period_to)
+        if end_date < start_date:
+            raise HTTPException(status_code=400, detail="The end date must be after the start date.")
+
+        extension = validate_extension(file.filename or "")
+        filename = abrechnung_filename(start_date, end_date, extension)
+        object_path = storage_path(filename, ABRECHNUNG_STORAGE_PREFIX)
+        require_password(password, ABRECHNUNG_UPLOAD_PASSWORD, "DoktorABC Abrechnung")
+        contents = await read_limited_file(file)
+        size_bytes = len(contents)
+        upload_started = True
+
+        await upload_to_supabase_with_notifications(
+            upload_type=upload_type,
+            filename=filename,
+            bucket=ABRECHNUNG_STORAGE_BUCKET,
+            object_path=object_path,
+            contents=contents,
+            content_type=file.content_type or "application/octet-stream",
+            replace_existing=False,
+            duplicate_message="A DoktorABC Abrechnung file for this period already exists.",
+        )
+    except Exception as exc:
+        if not upload_started:
+            await notify_n8n_upload_event(
+                status="failure",
+                upload_type=upload_type,
+                filename=filename,
+                bucket=ABRECHNUNG_STORAGE_BUCKET,
+                object_path=object_path,
+                size_bytes=size_bytes,
+                error=error_reason(exc),
+            )
+        raise
 
     return {
         "ok": True,
@@ -569,6 +609,10 @@ HTML = """
         letter-spacing: 6px;
       }
 
+      body[data-theme="night"] .subtitle {
+        color: #a8b3c3;
+      }
+
       .content {
         padding: 28px;
       }
@@ -640,6 +684,11 @@ HTML = """
         color: #344054;
         font-size: 14px;
         font-weight: 700;
+      }
+
+      body[data-theme="night"] label,
+      body[data-theme="night"] .check {
+        color: #d5dde8;
       }
 
       .date-row {
@@ -777,6 +826,10 @@ HTML = """
         color: #344054;
         font-size: 14px;
         font-weight: 700;
+      }
+
+      body[data-theme="night"] .check {
+        color: #d5dde8;
       }
 
       .check input {
@@ -1095,8 +1148,9 @@ HTML = """
 
       function applyTheme(theme) {
         document.body.dataset.theme = theme;
-        themeIcon.textContent = theme === "night" ? "N" : "L";
-        themeLabel.textContent = theme === "night" ? "Night" : "Light";
+        themeIcon.textContent = theme === "night" ? "N" : "H";
+        themeLabel.textContent = theme === "night" ? "Nacht" : "Hell";
+        themeToggle.setAttribute("aria-pressed", theme === "night" ? "true" : "false");
         localStorage.setItem("upload-ui-theme", theme);
       }
 
@@ -1157,11 +1211,16 @@ HTML = """
       }
 
       function attachDropzone(controller) {
-        function pickFile() {
+        function pickFile(event) {
+          if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
           controller.fileInput.click();
         }
 
         controller.dropzone.addEventListener("click", pickFile);
+        controller.fileInput.addEventListener("click", (event) => event.stopPropagation());
         controller.dropzone.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
@@ -1172,6 +1231,7 @@ HTML = """
         ["dragenter", "dragover"].forEach((eventName) => {
           controller.dropzone.addEventListener(eventName, (event) => {
             event.preventDefault();
+            event.stopPropagation();
             controller.dropzone.dataset.active = "true";
           });
         });
@@ -1179,6 +1239,7 @@ HTML = """
         ["dragleave", "drop"].forEach((eventName) => {
           controller.dropzone.addEventListener(eventName, (event) => {
             event.preventDefault();
+            event.stopPropagation();
             controller.dropzone.dataset.active = "false";
           });
         });

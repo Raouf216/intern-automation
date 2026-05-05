@@ -26,6 +26,10 @@ html {
   background: var(--bg);
 }
 
+html:has(body[data-theme="night"]) {
+  background: #0f1413;
+}
+
 body {
   min-height: 100%;
   margin: 0;
@@ -52,6 +56,14 @@ body[data-theme="night"] {
   --amber-soft: rgba(255, 211, 138, 0.12);
   --shadow: 0 18px 44px rgba(0, 0, 0, 0.32);
   background: linear-gradient(180deg, #111816 0%, #0f1413 100%);
+}
+
+body[data-theme="night"]::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: #0f1413;
 }
 
 button {

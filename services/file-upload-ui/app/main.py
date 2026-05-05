@@ -58,6 +58,25 @@ def storage_path(filename: str, prefix: str) -> str:
     return filename
 
 
+def storage_object_url(bucket: str, object_path: str) -> str:
+    encoded_path = quote(object_path, safe="/")
+    return (
+        f"{SUPABASE_URL}/storage/v1/object/"
+        f"{quote(bucket, safe='')}/{encoded_path}"
+    )
+
+
+def storage_upload_headers(content_type: str, upsert: bool | None = None) -> dict[str, str]:
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": content_type or "application/octet-stream",
+    }
+    if upsert is not None:
+        headers["x-upsert"] = "true" if upsert else "false"
+    return headers
+
+
 def require_config():
     missing = []
     if not SUPABASE_URL:
@@ -112,6 +131,56 @@ def error_reason(exc: Exception) -> str:
     if isinstance(exc, HTTPException):
         return str(exc.detail)
     return f"{type(exc).__name__}: {exc}"
+
+
+def storage_error_detail(response: httpx.Response):
+    try:
+        return response.json()
+    except ValueError:
+        return response.text
+
+
+def storage_error_text(error_detail) -> str:
+    return str(error_detail).lower()
+
+
+def is_duplicate_storage_error(response: httpx.Response, error_detail) -> bool:
+    error_text = storage_error_text(error_detail)
+    return response.status_code == 409 or (
+        response.status_code == 400
+        and ("already exists" in error_text or "duplicate" in error_text)
+    )
+
+
+def is_missing_storage_object(response: httpx.Response, error_detail) -> bool:
+    error_text = storage_error_text(error_detail)
+    return response.status_code == 404 or (
+        response.status_code == 400
+        and (
+            "not found" in error_text
+            or "does not exist" in error_text
+            or "no such key" in error_text
+        )
+    )
+
+
+def raise_storage_upload_error(
+    response: httpx.Response,
+    error_detail,
+    replace_existing: bool,
+    duplicate_message: str,
+):
+    if is_duplicate_storage_error(response, error_detail) and not replace_existing:
+        raise HTTPException(status_code=409, detail=duplicate_message)
+
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "message": "Supabase Storage upload failed.",
+            "status_code": response.status_code,
+            "supabase_error": error_detail,
+        },
+    )
 
 
 async def notify_n8n_upload_event(
@@ -211,21 +280,27 @@ async def upload_to_supabase(
     duplicate_message: str,
 ):
     require_config()
-    encoded_path = quote(object_path, safe="/")
-    url = (
-        f"{SUPABASE_URL}/storage/v1/object/"
-        f"{quote(bucket, safe='')}/{encoded_path}"
-    )
-    headers = {
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-        "Content-Type": content_type or "application/octet-stream",
-        "x-upsert": "true" if replace_existing else "false",
-    }
+    url = storage_object_url(bucket, object_path)
+    create_headers = storage_upload_headers(content_type, upsert=False)
+    replace_headers = storage_upload_headers(content_type)
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(url, headers=headers, content=contents)
+            if replace_existing:
+                response = await client.put(url, headers=replace_headers, content=contents)
+                if response.is_success:
+                    return
+
+                error_detail = storage_error_detail(response)
+                if not is_missing_storage_object(response, error_detail):
+                    raise_storage_upload_error(
+                        response=response,
+                        error_detail=error_detail,
+                        replace_existing=replace_existing,
+                        duplicate_message=duplicate_message,
+                    )
+
+            response = await client.post(url, headers=create_headers, content=contents)
     except httpx.RequestError as exc:
         raise HTTPException(
             status_code=502,
@@ -235,26 +310,12 @@ async def upload_to_supabase(
     if response.is_success:
         return
 
-    try:
-        error_detail = response.json()
-    except ValueError:
-        error_detail = response.text
-
-    error_text = str(error_detail).lower()
-    is_duplicate = response.status_code == 409 or (
-        response.status_code == 400
-        and ("already exists" in error_text or "duplicate" in error_text)
-    )
-    if is_duplicate and not replace_existing:
-        raise HTTPException(status_code=409, detail=duplicate_message)
-
-    raise HTTPException(
-        status_code=502,
-        detail={
-            "message": "Supabase Storage upload failed.",
-            "status_code": response.status_code,
-            "supabase_error": error_detail,
-        },
+    error_detail = storage_error_detail(response)
+    raise_storage_upload_error(
+        response=response,
+        error_detail=error_detail,
+        replace_existing=replace_existing,
+        duplicate_message=duplicate_message,
     )
 
 

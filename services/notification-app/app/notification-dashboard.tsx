@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   Sun,
   UploadCloud,
+  Workflow,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { StoredNotification } from "@/lib/notifications";
@@ -31,21 +32,27 @@ type Props = {
   config: ConfigStatus;
 };
 
-const sections: Array<{ label: string; value: SectionKey; description: string }> = [
+const sections: Array<{ label: string; value: SectionKey; description: string; caption: string; active: boolean }> = [
   {
     label: "Upload",
     value: "upload",
-    description: "OED und DoktorABC Abrechnung Uploads",
+    description: "Upload-Meldungen",
+    caption: "OED und DoktorABC Abrechnung",
+    active: true,
   },
   {
     label: "DoktorABC Sync",
     value: "doktorabc_sync",
-    description: "Produktsynchronisierung per Button",
+    description: "Produktsynchronisierung",
+    caption: "Button-Ausloeser fuer DoktorABC",
+    active: false,
   },
   {
     label: "Abrechnung Verifikation",
     value: "abrechnung_verification",
-    description: "Pruefung der Abrechnungsdateien",
+    description: "Abrechnung-Verifikation",
+    caption: "Pruefung und Ergebnisprotokoll",
+    active: false,
   },
 ];
 
@@ -138,6 +145,7 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
           <div>
             <p className="eyebrow">Rats-Apotheke Betrieb</p>
             <h1>Benachrichtigungen</h1>
+            <p className="subtitle">Zentrale Uebersicht fuer operative Systemmeldungen</p>
           </div>
         </div>
         <div className="topbar-actions">
@@ -154,15 +162,15 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
 
       <section className="overview-band" aria-label="Upload-Uebersicht">
         <div className="metric-block">
-          <span>Upload erfolgreich</span>
+          <span>Erfolgreiche Uploads</span>
           <strong>{successCount}</strong>
         </div>
         <div className="metric-block">
-          <span>Upload gestartet</span>
+          <span>Gestartete Uploads</span>
           <strong>{pendingCount}</strong>
         </div>
         <div className="metric-block danger">
-          <span>Fehler</span>
+          <span>Fehlgeschlagene Uploads</span>
           <strong>{failureCount}</strong>
         </div>
       </section>
@@ -181,7 +189,10 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
                 onClick={() => setActiveSection(section.value)}
                 key={section.value}
               >
-                <span>{section.label}</span>
+                <span>
+                  <b>{section.label}</b>
+                  <small>{section.caption}</small>
+                </span>
                 <strong>{sectionCounts[section.value]}</strong>
               </button>
             ))}
@@ -197,6 +208,11 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
             <div>
               <p className="section-kicker">{activeSectionMeta.label}</p>
               <h2>{activeSectionMeta.description}</h2>
+              <p className="section-copy">{activeSectionMeta.caption}</p>
+            </div>
+            <div className={activeSectionMeta.active ? "section-status active" : "section-status planned"}>
+              {activeSectionMeta.active ? <ShieldCheck size={15} /> : <Workflow size={15} />}
+              <span>{activeSectionMeta.active ? "Aktiv" : "Vorbereitet"}</span>
             </div>
           </div>
 
@@ -224,7 +240,7 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
         <aside className="operations-panel" aria-label="Systeminformationen">
           <div className="panel-heading">
             <Database size={18} />
-            <span>Speicherung</span>
+            <span>Datenquelle</span>
           </div>
           <div className="info-line">
             <span>Schema</span>
@@ -236,10 +252,10 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
           </div>
           <div className="panel-heading second">
             <FileSpreadsheet size={18} />
-            <span>Aktive Bereiche</span>
+            <span>Bereiche</span>
           </div>
           <p className="panel-copy">
-            Upload-Meldungen sind aktiv. DoktorABC Sync und Abrechnung-Verifikation sind als eigene Bereiche vorbereitet.
+            Upload-Meldungen werden gespeichert und automatisch aktualisiert. DoktorABC Sync und Abrechnung-Verifikation bleiben als getrennte Arbeitsbereiche vorgesehen.
           </p>
         </aside>
       </div>
@@ -266,7 +282,10 @@ function NotificationRow({ notification }: { notification: StoredNotification })
             <h3>{notification.title}</h3>
             <p>{notification.message}</p>
           </div>
-          <time dateTime={notification.created_at}>{formatRelativeTime(notification.created_at)}</time>
+          <div className="notification-meta">
+            <span className={`status-chip chip-${notification.status}`}>{formatStatus(notification.status)}</span>
+            <time dateTime={notification.created_at}>{formatRelativeTime(notification.created_at)}</time>
+          </div>
         </div>
         <dl className="detail-grid">
           <div>
@@ -290,14 +309,30 @@ function NotificationRow({ notification }: { notification: StoredNotification })
 
 function emptyCopy(section: SectionKey) {
   if (section === "doktorabc_sync") {
-    return "Sobald die Produktsynchronisierung Meldungen sendet, erscheinen sie hier.";
+    return "Sobald die Produktsynchronisierung Meldungen sendet, werden sie hier als eigener Verlauf angezeigt.";
   }
 
   if (section === "abrechnung_verification") {
-    return "Sobald die Abrechnung-Verifikation aktiv ist, erscheinen ihre Ergebnisse hier.";
+    return "Sobald die Abrechnung-Verifikation aktiv ist, werden Ergebnisse und Fehler hier dokumentiert.";
   }
 
-  return "Sobald n8n Upload-Ereignisse sendet, erscheinen sie hier mit der neuesten Meldung zuerst.";
+  return "Sobald Upload-Ereignisse eintreffen, erscheinen sie hier mit der neuesten Meldung zuerst.";
+}
+
+function formatStatus(value: string) {
+  if (value === "success") {
+    return "Erfolgreich";
+  }
+
+  if (value === "failure") {
+    return "Fehler";
+  }
+
+  if (value === "triggered") {
+    return "Gestartet";
+  }
+
+  return "Info";
 }
 
 function formatUploadType(value: string | null) {

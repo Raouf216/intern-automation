@@ -1,9 +1,9 @@
-export type NotificationSection = "upload";
+export type NotificationSection = "upload" | "doktorabc_sync" | "abrechnung_verification";
 export type NotificationStatus = "triggered" | "success" | "failure" | "info" | "warning";
 
 export type StoredNotification = {
   id: string;
-  section: NotificationSection;
+  section: NotificationSection | string;
   event: string;
   status: NotificationStatus;
   title: string;

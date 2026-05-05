@@ -2,7 +2,7 @@ import os
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -78,8 +78,11 @@ def storage_object_collection_url(bucket: str) -> str:
     return f"{SUPABASE_URL}/storage/v1/object/{quote(bucket, safe='')}"
 
 
-def supabase_table_url(table: str) -> str:
-    return f"{SUPABASE_URL}/rest/v1/{quote(table, safe='')}"
+def supabase_table_url(table: str, query: dict[str, str] | None = None) -> str:
+    url = f"{SUPABASE_URL}/rest/v1/{quote(table, safe='')}"
+    if query:
+        return f"{url}?{urlencode(query)}"
+    return url
 
 
 def storage_upload_headers(content_type: str, upsert: bool | None = None) -> dict[str, str]:
@@ -93,12 +96,19 @@ def storage_upload_headers(content_type: str, upsert: bool | None = None) -> dic
     return headers
 
 
-def supabase_db_headers() -> dict[str, str]:
+def supabase_db_headers(
+    return_representation: bool = False,
+    ignore_duplicates: bool = False,
+) -> dict[str, str]:
+    prefer = ["return=representation" if return_representation else "return=minimal"]
+    if ignore_duplicates:
+        prefer.append("resolution=ignore-duplicates")
+
     headers = {
         "apikey": SUPABASE_SERVICE_ROLE_KEY,
         "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal",
+        "Prefer": ",".join(prefer),
     }
     if SUPABASE_DB_SCHEMA:
         headers["Accept-Profile"] = SUPABASE_DB_SCHEMA
@@ -186,14 +196,23 @@ def chunk_rows(rows: list[dict[str, str | None]], size: int):
         yield rows[index : index + size]
 
 
+def inserted_rows_count(response: httpx.Response) -> int:
+    try:
+        rows = response.json()
+    except ValueError:
+        return 0
+
+    return len(rows) if isinstance(rows, list) else 0
+
+
 async def insert_orders_csv_rows(rows: list[dict[str, str | None]]) -> int:
     require_config()
     if not rows:
         return 0
 
     inserted_count = 0
-    url = supabase_table_url(SUPABASE_ORDERS_TABLE)
-    headers = supabase_db_headers()
+    url = supabase_table_url(SUPABASE_ORDERS_TABLE, {"on_conflict": '"Order id"'})
+    headers = supabase_db_headers(return_representation=True, ignore_duplicates=True)
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
@@ -201,7 +220,7 @@ async def insert_orders_csv_rows(rows: list[dict[str, str | None]]) -> int:
                 response = await client.post(url, headers=headers, json=batch)
                 if not response.is_success:
                     raise_database_insert_error(response, storage_error_detail(response))
-                inserted_count += len(batch)
+                inserted_count += inserted_rows_count(response)
     except httpx.RequestError as exc:
         raise HTTPException(
             status_code=502,

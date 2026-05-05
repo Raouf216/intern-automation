@@ -18,6 +18,14 @@ SESSION_STATE_PATH = os.environ.get(
     "DOKTORABC_SESSION_STATE_PATH",
     os.path.join(ARTIFACTS_DIR, "doktorabc-storage-state.json"),
 )
+DEFAULT_DOKTORABC_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+)
+DOKTORABC_USER_AGENT = (
+    os.environ.get("DOKTORABC_USER_AGENT", DEFAULT_DOKTORABC_USER_AGENT).strip()
+    or DEFAULT_DOKTORABC_USER_AGENT
+)
 
 
 app = FastAPI(title="web-scraper")
@@ -70,6 +78,13 @@ def bool_env(name, default=True):
 
 def doktorabc_products_url():
     return os.environ.get("DOKTORABC_PRODUCTS_URL") or os.environ["DOKTORABC_LOGIN_URL"]
+
+
+def browser_context_options():
+    return {
+        "user_agent": DOKTORABC_USER_AGENT,
+        "viewport": {"width": 1365, "height": 900},
+    }
 
 
 def wait_for_products_page(page, timeout=60_000):
@@ -349,7 +364,7 @@ def open_saved_session(browser):
 
     context = browser.new_context(
         storage_state=SESSION_STATE_PATH,
-        viewport={"width": 1365, "height": 900},
+        **browser_context_options(),
     )
     page = context.new_page()
 
@@ -367,7 +382,7 @@ def open_saved_session(browser):
 def open_fresh_session(browser, before_login_path=None):
     print("trying fresh DoktorABC login ...", flush=True)
 
-    context = browser.new_context(viewport={"width": 1365, "height": 900})
+    context = browser.new_context(**browser_context_options())
     page = context.new_page()
 
     page.goto(os.environ["DOKTORABC_LOGIN_URL"], wait_until="domcontentloaded")

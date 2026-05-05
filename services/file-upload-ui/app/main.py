@@ -66,6 +66,10 @@ def storage_object_url(bucket: str, object_path: str) -> str:
     )
 
 
+def storage_object_collection_url(bucket: str) -> str:
+    return f"{SUPABASE_URL}/storage/v1/object/{quote(bucket, safe='')}"
+
+
 def storage_upload_headers(content_type: str, upsert: bool | None = None) -> dict[str, str]:
     headers = {
         "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -172,6 +176,11 @@ def raise_storage_upload_error(
 ):
     if is_duplicate_storage_error(response, error_detail) and not replace_existing:
         raise HTTPException(status_code=409, detail=duplicate_message)
+    if is_duplicate_storage_error(response, error_detail) and replace_existing:
+        raise HTTPException(
+            status_code=409,
+            detail="The existing file is still locked in Supabase Storage. Please try replacing it again.",
+        )
 
     raise HTTPException(
         status_code=502,
@@ -181,6 +190,37 @@ def raise_storage_upload_error(
             "supabase_error": error_detail,
         },
     )
+
+
+def raise_storage_delete_error(response: httpx.Response, error_detail):
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "message": "Supabase Storage delete failed before replacement.",
+            "status_code": response.status_code,
+            "supabase_error": error_detail,
+        },
+    )
+
+
+async def delete_existing_storage_object(
+    client: httpx.AsyncClient,
+    bucket: str,
+    object_path: str,
+):
+    response = await client.delete(
+        storage_object_collection_url(bucket),
+        headers=storage_upload_headers("application/json"),
+        json={"prefixes": [object_path]},
+    )
+    if response.is_success:
+        return
+
+    error_detail = storage_error_detail(response)
+    if is_missing_storage_object(response, error_detail):
+        return
+
+    raise_storage_delete_error(response, error_detail)
 
 
 async def notify_n8n_upload_event(
@@ -282,23 +322,11 @@ async def upload_to_supabase(
     require_config()
     url = storage_object_url(bucket, object_path)
     create_headers = storage_upload_headers(content_type, upsert=False)
-    replace_headers = storage_upload_headers(content_type)
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             if replace_existing:
-                response = await client.put(url, headers=replace_headers, content=contents)
-                if response.is_success:
-                    return
-
-                error_detail = storage_error_detail(response)
-                if not is_missing_storage_object(response, error_detail):
-                    raise_storage_upload_error(
-                        response=response,
-                        error_detail=error_detail,
-                        replace_existing=replace_existing,
-                        duplicate_message=duplicate_message,
-                    )
+                await delete_existing_storage_object(client, bucket, object_path)
 
             response = await client.post(url, headers=create_headers, content=contents)
     except httpx.RequestError as exc:

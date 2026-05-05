@@ -146,6 +146,30 @@ def product_values_equal(existing_product, scraped_product):
     return True
 
 
+def product_changes(existing_product, scraped_product):
+    changes = {}
+
+    for field_name in PRODUCT_FIELDS:
+        existing_value = existing_product.get(field_name)
+        scraped_value = scraped_product.get(field_name)
+
+        if field_name in NUMERIC_PRODUCT_FIELDS:
+            if decimal_equal(existing_value, scraped_value):
+                continue
+        elif field_name == "availability":
+            if existing_value == scraped_value:
+                continue
+        elif (existing_value or "") == (scraped_value or ""):
+            continue
+
+        changes[field_name] = {
+            "old": existing_value,
+            "new": scraped_value,
+        }
+
+    return changes
+
+
 def supabase_table_url():
     supabase_url = required_env("SUPABASE_URL").rstrip("/")
     table_name = quote(SUPABASE_PRODUCTS_TABLE, safe="")
@@ -199,20 +223,34 @@ def sync_products_to_supabase(products):
     inserted = 0
     updated = 0
     unchanged = 0
+    new_products = []
+    changed_products = []
 
     for product in products:
         existing_product = existing_products.get(product["pzn"])
 
         if existing_product is None:
             inserted += 1
+            new_products.append(product)
             products_to_upsert.append(product)
             continue
 
-        if product_values_equal(existing_product, product):
+        changes = product_changes(existing_product, product)
+
+        if not changes:
             unchanged += 1
             continue
 
         updated += 1
+        changed_products.append(
+            {
+                "pzn": product["pzn"],
+                "product_name": product["product_name"],
+                "changes": changes,
+                "before": existing_product,
+                "after": product,
+            }
+        )
         products_to_upsert.append(product)
 
     upsert_supabase_products(products_to_upsert)
@@ -222,6 +260,8 @@ def sync_products_to_supabase(products):
         "updated": updated,
         "unchanged": unchanged,
         "sent_to_supabase": len(products_to_upsert),
+        "new_products": new_products,
+        "changed_products": changed_products,
     }
 
 

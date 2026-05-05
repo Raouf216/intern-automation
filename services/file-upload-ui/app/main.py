@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -20,6 +20,7 @@ UPLOAD_PASSWORD = os.environ.get("UPLOAD_PASSWORD", "")
 ABRECHNUNG_STORAGE_BUCKET = os.environ.get("ABRECHNUNG_STORAGE_BUCKET", "abrechnung-files")
 ABRECHNUNG_STORAGE_PREFIX = os.environ.get("ABRECHNUNG_STORAGE_PREFIX", "doktorabc-abrechnung").strip("/")
 ABRECHNUNG_UPLOAD_PASSWORD = os.environ.get("ABRECHNUNG_UPLOAD_PASSWORD", "")
+N8N_UPLOAD_WEBHOOK_URL = os.environ.get("N8N_UPLOAD_WEBHOOK_URL", "").strip()
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "20"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 ALLOWED_EXTENSIONS = {
@@ -107,6 +108,100 @@ def validate_extension(filename: str) -> str:
     return extension
 
 
+def error_reason(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    return f"{type(exc).__name__}: {exc}"
+
+
+async def notify_n8n_upload_event(
+    status: str,
+    upload_type: str,
+    filename: str,
+    bucket: str,
+    object_path: str,
+    size_bytes: int,
+    error: str | None = None,
+):
+    if not N8N_UPLOAD_WEBHOOK_URL:
+        return
+
+    payload = {
+        "event": f"upload_{status}",
+        "status": status,
+        "upload_type": upload_type,
+        "filename": filename,
+        "bucket": bucket,
+        "path": object_path,
+        "size_bytes": size_bytes,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "service": "file-upload-ui",
+    }
+
+    if error:
+        payload["error"] = error
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(N8N_UPLOAD_WEBHOOK_URL, json=payload)
+            response.raise_for_status()
+    except Exception as exc:
+        print(
+            f"Could not notify n8n about {status} for {filename}: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+
+async def upload_to_supabase_with_notifications(
+    upload_type: str,
+    filename: str,
+    bucket: str,
+    object_path: str,
+    contents: bytes,
+    content_type: str,
+    replace_existing: bool,
+    duplicate_message: str,
+):
+    await notify_n8n_upload_event(
+        status="triggered",
+        upload_type=upload_type,
+        filename=filename,
+        bucket=bucket,
+        object_path=object_path,
+        size_bytes=len(contents),
+    )
+
+    try:
+        await upload_to_supabase(
+            bucket=bucket,
+            object_path=object_path,
+            contents=contents,
+            content_type=content_type,
+            replace_existing=replace_existing,
+            duplicate_message=duplicate_message,
+        )
+    except Exception as exc:
+        await notify_n8n_upload_event(
+            status="failure",
+            upload_type=upload_type,
+            filename=filename,
+            bucket=bucket,
+            object_path=object_path,
+            size_bytes=len(contents),
+            error=error_reason(exc),
+        )
+        raise
+
+    await notify_n8n_upload_event(
+        status="success",
+        upload_type=upload_type,
+        filename=filename,
+        bucket=bucket,
+        object_path=object_path,
+        size_bytes=len(contents),
+    )
+
+
 async def upload_to_supabase(
     bucket: str,
     object_path: str,
@@ -175,6 +270,7 @@ def health():
             and UPLOAD_PASSWORD
             and ABRECHNUNG_UPLOAD_PASSWORD
         ),
+        "n8n_upload_webhook_configured": bool(N8N_UPLOAD_WEBHOOK_URL),
         "oed_password_configured": bool(UPLOAD_PASSWORD),
         "abrechnung_password_configured": bool(ABRECHNUNG_UPLOAD_PASSWORD),
         "oed_bucket": SUPABASE_STORAGE_BUCKET,
@@ -204,7 +300,9 @@ async def upload_file(
     filename = oed_filename(selected_date, extension)
     object_path = storage_path(filename, SUPABASE_STORAGE_PREFIX)
 
-    await upload_to_supabase(
+    await upload_to_supabase_with_notifications(
+        upload_type="oed",
+        filename=filename,
         bucket=SUPABASE_STORAGE_BUCKET,
         object_path=object_path,
         contents=contents,
@@ -241,7 +339,9 @@ async def upload_abrechnung_file(
     filename = abrechnung_filename(start_date, end_date, extension)
     object_path = storage_path(filename, ABRECHNUNG_STORAGE_PREFIX)
 
-    await upload_to_supabase(
+    await upload_to_supabase_with_notifications(
+        upload_type="doktorabc_abrechnung",
+        filename=filename,
         bucket=ABRECHNUNG_STORAGE_BUCKET,
         object_path=object_path,
         contents=contents,

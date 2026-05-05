@@ -1,0 +1,30 @@
+services:
+  notification-app:
+    container_name: notification-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${NOTIFICATION_APP_PORT:-8050}:8000"
+    environment:
+      - PORT=8000
+      - HOSTNAME=0.0.0.0
+      - TZ=${TZ:-Europe/Berlin}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - SUPABASE_NOTIFICATIONS_SCHEMA=${SUPABASE_NOTIFICATIONS_SCHEMA:-public}
+      - SUPABASE_NOTIFICATIONS_TABLE=${SUPABASE_NOTIFICATIONS_TABLE:-notifications}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

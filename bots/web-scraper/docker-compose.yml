@@ -21,6 +21,7 @@ services:
       - DOKTORABC_USERNAME=${DOKTORABC_USERNAME:-}
       - DOKTORABC_PASSWORD=${DOKTORABC_PASSWORD:-}
       - DOKTORABC_HEADLESS=${DOKTORABC_HEADLESS:-true}
+      - WEB_SCRAPER_CORS_ORIGINS=${WEB_SCRAPER_CORS_ORIGINS:-http://localhost:8040,http://127.0.0.1:8040,http://178.104.144.30:8040}
       - ARTIFACTS_DIR=/app/artifacts
     volumes:
       - "${WEB_SCRAPER_ARTIFACTS_DIR:-../../web-scraper-artifacts}:/app/artifacts"

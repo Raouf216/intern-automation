@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from playwright.sync_api import sync_playwright
 
@@ -23,6 +24,14 @@ app = FastAPI(title="web-scraper")
 
 
 MIN_PRODUCT_CELL_COUNT = 11
+WEB_SCRAPER_CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "WEB_SCRAPER_CORS_ORIGINS",
+        "http://localhost:8040,http://127.0.0.1:8040,http://178.104.144.30:8040",
+    ).split(",")
+    if origin.strip()
+]
 SUPABASE_SCHEMA = os.environ.get("SUPABASE_SCHEMA", "private")
 SUPABASE_PRODUCTS_TABLE = os.environ.get("SUPABASE_PRODUCTS_TABLE", "doktorabc_products")
 PRODUCT_FIELDS = [
@@ -41,6 +50,13 @@ NUMERIC_PRODUCT_FIELDS = {
     "additional_cost",
     "site_price",
 }
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=WEB_SCRAPER_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 def bool_env(name, default=True):

@@ -9,6 +9,11 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.requests import Request
 
+try:
+    from app.oed_orders_parser import parse_oed_orders_excel
+except ModuleNotFoundError:
+    from oed_orders_parser import parse_oed_orders_excel
+
 
 STARTED_AT = time.time()
 
@@ -21,6 +26,9 @@ ABRECHNUNG_STORAGE_BUCKET = os.environ.get("ABRECHNUNG_STORAGE_BUCKET", "abrechn
 ABRECHNUNG_STORAGE_PREFIX = os.environ.get("ABRECHNUNG_STORAGE_PREFIX", "doktorabc-abrechnung").strip("/")
 ABRECHNUNG_UPLOAD_PASSWORD = os.environ.get("ABRECHNUNG_UPLOAD_PASSWORD", "")
 N8N_UPLOAD_WEBHOOK_URL = os.environ.get("N8N_UPLOAD_WEBHOOK_URL", "").strip()
+SUPABASE_ORDERS_TABLE = os.environ.get("SUPABASE_ORDERS_TABLE", "orders_csv").strip()
+SUPABASE_DB_SCHEMA = os.environ.get("SUPABASE_DB_SCHEMA", "public").strip()
+SUPABASE_DB_INSERT_BATCH_SIZE = int(os.environ.get("SUPABASE_DB_INSERT_BATCH_SIZE", "200"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "20"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 ALLOWED_EXTENSIONS = {
@@ -70,6 +78,10 @@ def storage_object_collection_url(bucket: str) -> str:
     return f"{SUPABASE_URL}/storage/v1/object/{quote(bucket, safe='')}"
 
 
+def supabase_table_url(table: str) -> str:
+    return f"{SUPABASE_URL}/rest/v1/{quote(table, safe='')}"
+
+
 def storage_upload_headers(content_type: str, upsert: bool | None = None) -> dict[str, str]:
     headers = {
         "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -78,6 +90,19 @@ def storage_upload_headers(content_type: str, upsert: bool | None = None) -> dic
     }
     if upsert is not None:
         headers["x-upsert"] = "true" if upsert else "false"
+    return headers
+
+
+def supabase_db_headers() -> dict[str, str]:
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+    if SUPABASE_DB_SCHEMA:
+        headers["Accept-Profile"] = SUPABASE_DB_SCHEMA
+        headers["Content-Profile"] = SUPABASE_DB_SCHEMA
     return headers
 
 
@@ -142,6 +167,48 @@ def storage_error_detail(response: httpx.Response):
         return response.json()
     except ValueError:
         return response.text
+
+
+def raise_database_insert_error(response: httpx.Response, error_detail):
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "message": "Supabase database insert failed.",
+            "status_code": response.status_code,
+            "supabase_error": error_detail,
+        },
+    )
+
+
+def chunk_rows(rows: list[dict[str, str | None]], size: int):
+    size = max(1, size)
+    for index in range(0, len(rows), size):
+        yield rows[index : index + size]
+
+
+async def insert_orders_csv_rows(rows: list[dict[str, str | None]]) -> int:
+    require_config()
+    if not rows:
+        return 0
+
+    inserted_count = 0
+    url = supabase_table_url(SUPABASE_ORDERS_TABLE)
+    headers = supabase_db_headers()
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            for batch in chunk_rows(rows, SUPABASE_DB_INSERT_BATCH_SIZE):
+                response = await client.post(url, headers=headers, json=batch)
+                if not response.is_success:
+                    raise_database_insert_error(response, storage_error_detail(response))
+                inserted_count += len(batch)
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach Supabase database at {SUPABASE_URL}: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    return inserted_count
 
 
 def storage_error_text(error_detail) -> str:
@@ -367,6 +434,8 @@ def health():
         "oed_prefix": SUPABASE_STORAGE_PREFIX,
         "abrechnung_bucket": ABRECHNUNG_STORAGE_BUCKET,
         "abrechnung_prefix": ABRECHNUNG_STORAGE_PREFIX,
+        "orders_table": SUPABASE_ORDERS_TABLE,
+        "orders_schema": SUPABASE_DB_SCHEMA,
     }
 
 
@@ -387,6 +456,7 @@ async def upload_file(
     object_path = storage_path(filename, SUPABASE_STORAGE_PREFIX)
     size_bytes = 0
     upload_started = False
+    orders_inserted = 0
 
     try:
         selected_date = parse_date(upload_date)
@@ -396,6 +466,11 @@ async def upload_file(
         require_password(password, UPLOAD_PASSWORD, "OED")
         contents = await read_limited_file(file)
         size_bytes = len(contents)
+        try:
+            order_rows = parse_oed_orders_excel(contents, extension)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         upload_started = True
 
         await upload_to_supabase_with_notifications(
@@ -408,6 +483,7 @@ async def upload_file(
             replace_existing=replace_existing,
             duplicate_message="A file for this date already exists. Enable replace and try again.",
         )
+        orders_inserted = await insert_orders_csv_rows(order_rows)
     except Exception as exc:
         if not upload_started:
             await notify_n8n_upload_event(
@@ -427,6 +503,8 @@ async def upload_file(
         "bucket": SUPABASE_STORAGE_BUCKET,
         "path": object_path,
         "size_bytes": len(contents),
+        "orders_inserted": orders_inserted,
+        "orders_table": SUPABASE_ORDERS_TABLE,
     }
 
 
@@ -1392,7 +1470,10 @@ HTML = """
               throw new Error(message);
             }
 
-            setStatus(controller.statusBox, "ok", `Gespeichert: ${result.path}`);
+            const dbInfo = typeof result.orders_inserted === "number"
+              ? `, DB-Zeilen: ${result.orders_inserted}`
+              : "";
+            setStatus(controller.statusBox, "ok", `Gespeichert: ${result.path}${dbInfo}`);
             config.afterSuccess();
             controller.refresh();
           } catch (error) {

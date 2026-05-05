@@ -208,7 +208,8 @@ async def delete_existing_storage_object(
     bucket: str,
     object_path: str,
 ):
-    response = await client.delete(
+    response = await client.request(
+        "DELETE",
         storage_object_collection_url(bucket),
         headers=storage_upload_headers("application/json"),
         json={"prefixes": [object_path]},

@@ -24,6 +24,9 @@ services:
       - ARTIFACTS_DIR=/app/artifacts
     volumes:
       - "${WEB_SCRAPER_ARTIFACTS_DIR:-../../web-scraper-artifacts}:/app/artifacts"
+    networks:
+      - default
+      - supabase_network
     healthcheck:
       test:
         [
@@ -36,3 +39,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+networks:
+  supabase_network:
+    external: true
+    name: analyticsengine-supabase-b2lvjw_default

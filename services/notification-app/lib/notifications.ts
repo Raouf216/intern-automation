@@ -22,7 +22,9 @@ export type StoredNotification = {
 export type UploadWebhookPayload = {
   event?: string;
   status?: string;
+  section?: string;
   upload_type?: string;
+  sync_type?: string;
   filename?: string;
   bucket?: string;
   path?: string;
@@ -35,6 +37,18 @@ export type UploadWebhookPayload = {
   orders_schema?: string;
   rows_found?: number;
   rows_inserted?: number;
+  started_at?: string | null;
+  finished_at?: string;
+  duration_ms?: number | null;
+  endpoint?: string;
+  summary?: {
+    scraped?: number;
+    inserted?: number;
+    updated?: number;
+    unchanged?: number;
+    sent_to_supabase?: number;
+  };
+  logs?: Record<string, unknown>;
 };
 
 function requiredEnv(name: string) {
@@ -86,6 +100,25 @@ export function normalizeUploadNotification(payload: UploadWebhookPayload): Omit
   const uploadType = String(payload.upload_type || "upload");
   const event = String(payload.event || `upload_${status}`);
   const source = String(payload.service || "n8n");
+
+  if (isProductSync(payload)) {
+    return {
+      section: "doktorabc_sync",
+      event,
+      status,
+      title: productSyncTitle(status),
+      message: productSyncMessage(status, payload),
+      filename: null,
+      upload_type: payload.sync_type ? String(payload.sync_type) : "doktorabc_products",
+      bucket: null,
+      path: payload.endpoint ? String(payload.endpoint) : null,
+      size_bytes: null,
+      error: payload.error ? String(payload.error) : null,
+      source,
+      payload: payload as Record<string, unknown>,
+      created_at: timestampOrNow(payload.timestamp || payload.finished_at),
+    };
+  }
 
   return {
     section: "upload",
@@ -233,4 +266,48 @@ function isOrdersCsvInsert(payload: UploadWebhookPayload) {
     payload.event === "orders_csv_insert_success" ||
     payload.event === "orders_csv_insert_failure"
   );
+}
+
+function isProductSync(payload: UploadWebhookPayload) {
+  const event = payload.event || "";
+  return (
+    payload.section === "doktorabc_sync" ||
+    payload.sync_type === "doktorabc_products" ||
+    event === "doktorabc_sync_success" ||
+    event === "doktorabc_sync_failure"
+  );
+}
+
+function productSyncTitle(status: NotificationStatus) {
+  if (status === "success") {
+    return "DoktorABC Synchronisierung erfolgreich";
+  }
+
+  if (status === "failure") {
+    return "DoktorABC Synchronisierung fehlgeschlagen";
+  }
+
+  return "DoktorABC Synchronisierung";
+}
+
+function productSyncMessage(status: NotificationStatus, payload: UploadWebhookPayload) {
+  if (status === "success") {
+    const summary = payload.summary || {};
+    return [
+      `${numberOrZero(summary.scraped)} Produkte geprueft`,
+      `${numberOrZero(summary.inserted)} neu`,
+      `${numberOrZero(summary.updated)} geaendert`,
+      `${numberOrZero(summary.unchanged)} unveraendert`,
+    ].join(", ");
+  }
+
+  if (status === "failure") {
+    return payload.error ? String(payload.error) : "Synchronisierung konnte nicht abgeschlossen werden.";
+  }
+
+  return "DoktorABC Sync-Meldung";
+}
+
+function numberOrZero(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }

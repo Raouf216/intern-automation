@@ -50,6 +50,28 @@ type SyncResponse = {
   changed_products?: ChangedProduct[];
 };
 
+type SyncNotification = {
+  event: "doktorabc_sync_success" | "doktorabc_sync_failure";
+  status: "success" | "failure";
+  section: "doktorabc_sync";
+  sync_type: "doktorabc_products";
+  service: "product-sync-signal-ui";
+  timestamp: string;
+  started_at: string | null;
+  finished_at: string;
+  duration_ms: number | null;
+  endpoint: string;
+  summary: {
+    scraped: number;
+    inserted: number;
+    updated: number;
+    unchanged: number;
+    sent_to_supabase: number;
+  };
+  logs: SyncResponse | null;
+  error?: string;
+};
+
 const configuredEndpoint = process.env.NEXT_PUBLIC_PRODUCT_SYNC_ENDPOINT || "";
 const expectedPassword = process.env.NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD || "";
 const fallbackEndpoint = "http://178.104.144.30:8020/jobs/product-prices";
@@ -98,6 +120,32 @@ function formatChangeValue(value: unknown) {
   if (value === true) return "true";
   if (value === false) return "false";
   return String(value);
+}
+
+function syncSummary(payload: SyncResponse | null) {
+  return {
+    scraped: numberValue(payload?.scraped),
+    inserted: numberValue(payload?.inserted),
+    updated: numberValue(payload?.updated),
+    unchanged: numberValue(payload?.unchanged),
+    sent_to_supabase: numberValue(payload?.sent_to_supabase),
+  };
+}
+
+async function sendFinalSyncNotification(notification: SyncNotification) {
+  try {
+    const response = await fetch("/api/sync-notification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(notification),
+    });
+
+    if (!response.ok) {
+      console.warn("Product sync notification endpoint failed", await response.text());
+    }
+  } catch (error) {
+    console.warn("Could not send product sync notification", error);
+  }
 }
 
 export function SyncConsole() {
@@ -164,8 +212,10 @@ export function SyncConsole() {
     setStatus("idle");
     setMessage("Synchronisierung läuft. Bitte warten, der Vorgang kann bis zu 5 Minuten dauern.");
     setResult(null);
-    setStartedAt(new Date());
+    const runStartedAt = new Date();
+    setStartedAt(runStartedAt);
     setFinishedAt(null);
+    let finalPayload: SyncResponse | null = null;
 
     try {
       const response = await fetch(syncEndpoint.trim(), {
@@ -180,6 +230,7 @@ export function SyncConsole() {
         ? ((await response.json()) as SyncResponse)
         : ({ ok: false, error: await response.text() } satisfies SyncResponse);
 
+      finalPayload = payload;
       setResult(payload);
 
       if (!response.ok || !payload.ok) {
@@ -196,7 +247,22 @@ export function SyncConsole() {
           payload.unchanged || 0
         } unverändert.`
       );
-      setFinishedAt(new Date());
+      const runFinishedAt = new Date();
+      setFinishedAt(runFinishedAt);
+      await sendFinalSyncNotification({
+        event: "doktorabc_sync_success",
+        status: "success",
+        section: "doktorabc_sync",
+        sync_type: "doktorabc_products",
+        service: "product-sync-signal-ui",
+        timestamp: runFinishedAt.toISOString(),
+        started_at: runStartedAt.toISOString(),
+        finished_at: runFinishedAt.toISOString(),
+        duration_ms: runFinishedAt.getTime() - runStartedAt.getTime(),
+        endpoint: syncEndpoint.trim(),
+        summary: syncSummary(payload),
+        logs: payload,
+      });
     } catch (error) {
       setStatus("error");
       const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
@@ -209,7 +275,25 @@ export function SyncConsole() {
           ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den DoktorABC Sync-Bot unter ${syncEndpoint} nicht erreichen oder die Antwort nicht lesen.`
           : `Sync-Anfrage fehlgeschlagen: ${errorMessage}`
       );
-      setFinishedAt(new Date());
+      const runFinishedAt = new Date();
+      setFinishedAt(runFinishedAt);
+      await sendFinalSyncNotification({
+        event: "doktorabc_sync_failure",
+        status: "failure",
+        section: "doktorabc_sync",
+        sync_type: "doktorabc_products",
+        service: "product-sync-signal-ui",
+        timestamp: runFinishedAt.toISOString(),
+        started_at: runStartedAt.toISOString(),
+        finished_at: runFinishedAt.toISOString(),
+        duration_ms: runFinishedAt.getTime() - runStartedAt.getTime(),
+        endpoint: syncEndpoint.trim(),
+        summary: syncSummary(finalPayload),
+        logs: finalPayload,
+        error: isFetchFailure
+          ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den DoktorABC Sync-Bot unter ${syncEndpoint} nicht erreichen oder die Antwort nicht lesen.`
+          : `Sync-Anfrage fehlgeschlagen: ${errorMessage}`,
+      });
     } finally {
       setIsRunning(false);
     }

@@ -11,7 +11,11 @@ export async function POST(request: Request) {
   }
 
   try {
-    const notification = normalizeUploadNotification(payload);
+    const notification = normalizeUploadNotification({
+      ...payload,
+      section: "doktorabc_sync",
+      sync_type: payload.sync_type || "doktorabc_products",
+    });
     const stored = await insertNotification(notification);
 
     return NextResponse.json({ ok: true, notification: stored }, { status: 201 });
@@ -25,15 +29,7 @@ export async function POST(request: Request) {
 export async function GET() {
   return NextResponse.json({
     ok: true,
-    route: "/api/notifications/upload",
-    accepts: [
-      "upload_triggered",
-      "upload_success",
-      "upload_failure",
-      "orders_csv_insert_success",
-      "orders_csv_insert_failure",
-      "doktorabc_sync_success",
-      "doktorabc_sync_failure",
-    ],
+    route: "/api/notifications/product-sync",
+    accepts: ["doktorabc_sync_success", "doktorabc_sync_failure"],
   });
 }

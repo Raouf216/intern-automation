@@ -15,6 +15,7 @@ services:
       - PORT=8000
       - HOSTNAME=0.0.0.0
       - TZ=${TZ:-Europe/Berlin}
+      - PRODUCT_SYNC_N8N_WEBHOOK_URL=${PRODUCT_SYNC_N8N_WEBHOOK_URL:-}
     healthcheck:
       test:
         [

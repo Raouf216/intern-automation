@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   Bell,
+  ChevronDown,
   CheckCircle2,
   Clock3,
   Database,
@@ -45,7 +46,7 @@ const sections: Array<{ label: string; value: SectionKey; description: string; c
     value: "doktorabc_sync",
     description: "Produktsynchronisierung",
     caption: "Button-Ausloeser fuer DoktorABC",
-    active: false,
+    active: true,
   },
   {
     label: "Abrechnung Verifikation",
@@ -265,6 +266,7 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
 
 function NotificationRow({ notification }: { notification: StoredNotification }) {
   const rowsInserted = rowsInsertedFromPayload(notification.payload);
+  const syncDetails = syncDetailsFromPayload(notification.payload);
 
   return (
     <article className={`notification-row status-${notification.status}`}>
@@ -289,26 +291,60 @@ function NotificationRow({ notification }: { notification: StoredNotification })
             <time dateTime={notification.created_at}>{formatRelativeTime(notification.created_at)}</time>
           </div>
         </div>
-        <dl className="detail-grid">
-          <div>
-            <dt>Datei</dt>
-            <dd>{notification.filename || "nicht angegeben"}</dd>
-          </div>
-          <div>
-            <dt>Typ</dt>
-            <dd>{formatUploadType(notification.upload_type)}</dd>
-          </div>
-          <div>
-            <dt>Groesse</dt>
-            <dd>{formatBytes(notification.size_bytes)}</dd>
-          </div>
-          {rowsInserted === null ? null : (
+        {syncDetails ? (
+          <dl className="detail-grid sync-grid">
             <div>
-              <dt>DB-Zeilen</dt>
-              <dd>{rowsInserted}</dd>
+              <dt>Geprueft</dt>
+              <dd>{syncDetails.scraped}</dd>
             </div>
-          )}
-        </dl>
+            <div>
+              <dt>Neu</dt>
+              <dd>{syncDetails.inserted}</dd>
+            </div>
+            <div>
+              <dt>Geaendert</dt>
+              <dd>{syncDetails.updated}</dd>
+            </div>
+            <div>
+              <dt>Unveraendert</dt>
+              <dd>{syncDetails.unchanged}</dd>
+            </div>
+            <div>
+              <dt>Dauer</dt>
+              <dd>{syncDetails.duration}</dd>
+            </div>
+          </dl>
+        ) : (
+          <dl className="detail-grid">
+            <div>
+              <dt>Datei</dt>
+              <dd>{notification.filename || "nicht angegeben"}</dd>
+            </div>
+            <div>
+              <dt>Typ</dt>
+              <dd>{formatUploadType(notification.upload_type)}</dd>
+            </div>
+            <div>
+              <dt>Groesse</dt>
+              <dd>{formatBytes(notification.size_bytes)}</dd>
+            </div>
+            {rowsInserted === null ? null : (
+              <div>
+                <dt>DB-Zeilen</dt>
+                <dd>{rowsInserted}</dd>
+              </div>
+            )}
+          </dl>
+        )}
+        {syncDetails ? (
+          <details className={`sync-log-panel ${notification.status === "failure" ? "danger" : "success"}`}>
+            <summary>
+              <ChevronDown size={15} />
+              <span>{notification.status === "failure" ? "Fehlerdetails anzeigen" : "Aenderungsprotokoll anzeigen"}</span>
+            </summary>
+            <pre>{syncDetails.logs}</pre>
+          </details>
+        ) : null}
         {notification.error ? <p className="error-line">{notification.error}</p> : null}
       </div>
     </article>
@@ -369,6 +405,59 @@ function formatBytes(value: number | null) {
 
 function rowsInsertedFromPayload(payload: Record<string, unknown>) {
   return typeof payload.rows_inserted === "number" ? payload.rows_inserted : null;
+}
+
+function syncDetailsFromPayload(payload: Record<string, unknown>) {
+  const event = typeof payload.event === "string" ? payload.event : "";
+  const isSync =
+    payload.section === "doktorabc_sync" ||
+    payload.sync_type === "doktorabc_products" ||
+    event === "doktorabc_sync_success" ||
+    event === "doktorabc_sync_failure";
+
+  if (!isSync) {
+    return null;
+  }
+
+  const summary = recordValue(payload.summary);
+  const logs = recordValue(payload.logs) || payload;
+
+  return {
+    scraped: numberValue(summary?.scraped),
+    inserted: numberValue(summary?.inserted),
+    updated: numberValue(summary?.updated),
+    unchanged: numberValue(summary?.unchanged),
+    duration: formatDuration(payload.duration_ms),
+    logs: JSON.stringify(logs, null, 2),
+  };
+}
+
+function recordValue(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatDuration(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return "nicht angegeben";
+  }
+
+  if (value < 1000) {
+    return `${Math.round(value)} ms`;
+  }
+
+  const seconds = Math.round(value / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+
+  if (!minutes) {
+    return `${seconds} s`;
+  }
+
+  return `${minutes} min ${remainingSeconds} s`;
 }
 
 function formatRelativeTime(value: string) {

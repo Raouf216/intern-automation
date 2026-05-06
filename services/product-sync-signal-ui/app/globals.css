@@ -358,6 +358,59 @@ body[data-theme="night"] .state-error {
   opacity: 0.74;
 }
 
+.bot-action-list {
+  display: grid;
+  gap: 14px;
+}
+
+.secondary-bot-card {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--cyan) 6%);
+}
+
+.secondary-bot-card > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.secondary-bot-card > div svg {
+  color: var(--cyan);
+  flex: 0 0 auto;
+}
+
+.secondary-bot-card span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.secondary-bot-card b {
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.secondary-bot-card small {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.eod-button {
+  border-color: rgba(14, 116, 144, 0.32);
+  background: linear-gradient(135deg, var(--cyan), #0f766e);
+  box-shadow: 0 18px 32px rgba(14, 116, 144, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.eod-button:not(:disabled):hover {
+  box-shadow: 0 22px 42px rgba(14, 116, 144, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
 .security-note {
   display: inline-flex;
   align-items: center;
@@ -461,6 +514,59 @@ body[data-theme="night"] .message-error {
 
 .timeline strong {
   color: var(--ink);
+}
+
+.eod-result-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+  border-top: 1px solid var(--line);
+  padding-top: 22px;
+}
+
+.surface-heading.mini {
+  align-items: center;
+  margin-bottom: 0;
+}
+
+.surface-heading.mini h3 {
+  font-size: 17px;
+}
+
+.eod-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.eod-facts div {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--surface);
+}
+
+.eod-facts dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.eod-facts dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.eod-url {
+  display: block;
+  max-width: 100%;
 }
 
 .details-area {
@@ -688,6 +794,10 @@ body[data-theme="night"] code {
   }
 
   .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .eod-facts {
     grid-template-columns: 1fr;
   }
 

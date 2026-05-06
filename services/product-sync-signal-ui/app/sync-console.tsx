@@ -3,12 +3,14 @@
 import {
   AlertTriangle,
   ArrowRight,
+  CalendarCheck,
   CheckCircle2,
   Clock3,
   DatabaseZap,
   KeyRound,
   Loader2,
   LockKeyhole,
+  LogIn,
   Moon,
   RadioTower,
   RefreshCw,
@@ -50,6 +52,24 @@ type SyncResponse = {
   changed_products?: ChangedProduct[];
 };
 
+type EndOfDayResponse = {
+  ok?: boolean;
+  error?: string;
+  current_url?: string;
+  page_title?: string;
+  reused_session?: boolean;
+  session_state_path?: string;
+  wait_result?: {
+    stable?: boolean;
+    final_snapshot?: {
+      textLength?: number;
+      tableRows?: number;
+      buttons?: number;
+      visibleLoaderCount?: number;
+    };
+  };
+};
+
 type SyncNotification = {
   event: "doktorabc_sync_success" | "doktorabc_sync_failure";
   status: "success" | "failure";
@@ -73,9 +93,12 @@ type SyncNotification = {
 };
 
 const configuredEndpoint = process.env.NEXT_PUBLIC_PRODUCT_SYNC_ENDPOINT || "";
+const configuredEndOfDayEndpoint = process.env.NEXT_PUBLIC_EOD_LOGIN_ENDPOINT || "";
 const expectedPassword = process.env.NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD || "";
 const fallbackEndpoint = "http://178.104.144.30:8020/jobs/product-prices";
+const fallbackEndOfDayEndpoint = "http://178.104.144.30:8021/jobs/end-of-day/login";
 const syncEndpoint = configuredEndpoint || fallbackEndpoint;
+const endOfDayEndpoint = configuredEndOfDayEndpoint || fallbackEndOfDayEndpoint;
 const staffSteps = [
   {
     before: "Alle Produkte, bei denen Informationen geändert werden, zuerst in DoktorABC auf ",
@@ -151,11 +174,17 @@ async function sendFinalSyncNotification(notification: SyncNotification) {
 export function SyncConsole() {
   const [password, setPassword] = useState("");
   const [isRunning, setIsRunning] = useState(false);
+  const [isEndOfDayRunning, setIsEndOfDayRunning] = useState(false);
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
+  const [endOfDayStatus, setEndOfDayStatus] = useState<"idle" | "success" | "error">("idle");
   const [message, setMessage] = useState("Bereit für eine kontrollierte Produktsynchronisierung.");
+  const [endOfDayMessage, setEndOfDayMessage] = useState("Bereit für den End-of-Day Login-Test.");
   const [result, setResult] = useState<SyncResponse | null>(null);
+  const [endOfDayResult, setEndOfDayResult] = useState<EndOfDayResponse | null>(null);
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [finishedAt, setFinishedAt] = useState<Date | null>(null);
+  const [endOfDayStartedAt, setEndOfDayStartedAt] = useState<Date | null>(null);
+  const [endOfDayFinishedAt, setEndOfDayFinishedAt] = useState<Date | null>(null);
   const [theme, setTheme] = useState<"light" | "night">("light");
 
   useEffect(() => {
@@ -183,6 +212,22 @@ export function SyncConsole() {
     [result]
   );
 
+  function validateOperatorPassword() {
+    if (!password.trim()) {
+      return "Bitte das Bedienerpasswort eingeben.";
+    }
+
+    if (!expectedPassword) {
+      return "Das Bedienerpasswort ist nicht konfiguriert.";
+    }
+
+    if (expectedPassword && password !== expectedPassword) {
+      return "Passwort ist falsch.";
+    }
+
+    return "";
+  }
+
   async function triggerSync() {
     if (!syncEndpoint.trim()) {
       setStatus("error");
@@ -190,21 +235,10 @@ export function SyncConsole() {
       return;
     }
 
-    if (!password.trim()) {
+    const passwordError = validateOperatorPassword();
+    if (passwordError) {
       setStatus("error");
-      setMessage("Bitte das Bedienerpasswort eingeben.");
-      return;
-    }
-
-    if (!expectedPassword) {
-      setStatus("error");
-      setMessage("Das Bedienerpasswort ist nicht konfiguriert.");
-      return;
-    }
-
-    if (expectedPassword && password !== expectedPassword) {
-      setStatus("error");
-      setMessage("Passwort ist falsch.");
+      setMessage(passwordError);
       return;
     }
 
@@ -299,6 +333,78 @@ export function SyncConsole() {
     }
   }
 
+  async function triggerEndOfDayLogin() {
+    if (!endOfDayEndpoint.trim()) {
+      setEndOfDayStatus("error");
+      setEndOfDayMessage("Der feste End-of-Day Bot-Endpunkt ist nicht konfiguriert.");
+      return;
+    }
+
+    const passwordError = validateOperatorPassword();
+    if (passwordError) {
+      setEndOfDayStatus("error");
+      setEndOfDayMessage(passwordError);
+      return;
+    }
+
+    setIsEndOfDayRunning(true);
+    setEndOfDayStatus("idle");
+    setEndOfDayMessage("End-of-Day Login läuft. Der Bot wartet extra, bis DoktorABC fertig gerendert hat.");
+    setEndOfDayResult(null);
+    const runStartedAt = new Date();
+    setEndOfDayStartedAt(runStartedAt);
+    setEndOfDayFinishedAt(null);
+
+    try {
+      const response = await fetch(endOfDayEndpoint.trim(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+      const contentType = response.headers.get("content-type") || "";
+      const payload = contentType.includes("application/json")
+        ? ((await response.json()) as EndOfDayResponse)
+        : ({ ok: false, error: await response.text() } satisfies EndOfDayResponse);
+
+      setEndOfDayResult(payload);
+
+      if (!response.ok || !payload.ok) {
+        throw new Error(
+          payload.error
+            ? `Bot-Fehler: ${payload.error}`
+            : `HTTP-Fehler ${response.status}: ${response.statusText || "keine Details"}`
+        );
+      }
+
+      setEndOfDayStatus("success");
+      setEndOfDayMessage(
+        payload.reused_session
+          ? "End-of-Day Seite ist geöffnet. Bestehende DoktorABC Sitzung wurde wiederverwendet."
+          : "End-of-Day Seite ist geöffnet. Neue DoktorABC Sitzung wurde gespeichert."
+      );
+      setEndOfDayFinishedAt(new Date());
+    } catch (error) {
+      setEndOfDayStatus("error");
+      const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
+      const isFetchFailure =
+        errorMessage.toLowerCase().includes("failed to fetch") ||
+        errorMessage.toLowerCase().includes("networkerror");
+
+      setEndOfDayMessage(
+        isFetchFailure
+          ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den End-of-Day Bot unter ${endOfDayEndpoint} nicht erreichen oder die Antwort nicht lesen.`
+          : `End-of-Day Anfrage fehlgeschlagen: ${errorMessage}`
+      );
+      setEndOfDayFinishedAt(new Date());
+    } finally {
+      setIsEndOfDayRunning(false);
+    }
+  }
+
+  const anyBotRunning = isRunning || isEndOfDayRunning;
+
   return (
     <main className="page">
       <section className="workspace" aria-label="Konsole für die DoktorABC Produktsynchronisierung">
@@ -318,8 +424,8 @@ export function SyncConsole() {
               <span>{theme === "night" ? "Hell" : "Nacht"}</span>
             </button>
             <div className={`state-pill state-${status}`}>
-              {isRunning ? <Loader2 size={16} className="spin" /> : <ShieldCheck size={16} />}
-              <span>{isRunning ? "Läuft" : status === "success" ? "Erfolgreich" : status === "error" ? "Prüfen" : "Bereit"}</span>
+              {anyBotRunning ? <Loader2 size={16} className="spin" /> : <ShieldCheck size={16} />}
+              <span>{anyBotRunning ? "Läuft" : status === "error" || endOfDayStatus === "error" ? "Prüfen" : status === "success" || endOfDayStatus === "success" ? "Erfolgreich" : "Bereit"}</span>
             </div>
           </div>
         </header>
@@ -361,15 +467,32 @@ export function SyncConsole() {
               </ol>
             </section>
 
-            <button className="trigger-button" type="button" onClick={triggerSync} disabled={isRunning}>
-              {isRunning ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
-              <span>{isRunning ? "Synchronisierung läuft" : "Produkte synchronisieren (DoktorABC)"}</span>
-              <ArrowRight size={20} />
-            </button>
+            <div className="bot-action-list">
+              <button className="trigger-button" type="button" onClick={triggerSync} disabled={anyBotRunning}>
+                {isRunning ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
+                <span>{isRunning ? "Synchronisierung läuft" : "Produkte synchronisieren (DoktorABC)"}</span>
+                <ArrowRight size={20} />
+              </button>
+
+              <section className="secondary-bot-card" aria-label="End-of-Day Bot">
+                <div>
+                  <CalendarCheck size={22} />
+                  <span>
+                    <b>End-of-Day</b>
+                    <small>Login und Ladeprüfung</small>
+                  </span>
+                </div>
+                <button className="trigger-button eod-button" type="button" onClick={triggerEndOfDayLogin} disabled={anyBotRunning}>
+                  {isEndOfDayRunning ? <Loader2 size={21} className="spin" /> : <LogIn size={21} />}
+                  <span>{isEndOfDayRunning ? "End-of-Day läuft" : "End-of-Day öffnen"}</span>
+                  <ArrowRight size={20} />
+                </button>
+              </section>
+            </div>
 
             <p className="security-note">
               <LockKeyhole size={15} />
-              Diese Schaltfläche löst ausschließlich die fest hinterlegte DoktorABC Produktsynchronisierung aus.
+              Diese Schaltflächen lösen ausschließlich die fest hinterlegten DoktorABC Bots aus.
             </p>
           </section>
 
@@ -407,6 +530,47 @@ export function SyncConsole() {
                 <span>Beendet</span>
                 <strong>{finishedAt ? finishedAt.toLocaleTimeString() : "noch nicht"}</strong>
               </div>
+            </div>
+
+            <div className="eod-result-panel">
+              <div className="surface-heading compact mini">
+                <div>
+                  <p className="section-kicker">End-of-Day</p>
+                  <h3>Login-Prüfung</h3>
+                </div>
+                {isEndOfDayRunning ? <Loader2 size={20} className="spin" /> : endOfDayStatus === "success" ? <CheckCircle2 size={20} /> : endOfDayStatus === "error" ? <AlertTriangle size={20} /> : <CalendarCheck size={20} />}
+              </div>
+              <div className={`message message-${isEndOfDayRunning ? "running" : endOfDayStatus}`}>
+                {isEndOfDayRunning ? <Loader2 size={18} className="spin" /> : endOfDayStatus === "success" ? <CheckCircle2 size={18} /> : endOfDayStatus === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
+                <p>{endOfDayMessage}</p>
+              </div>
+              <dl className="eod-facts">
+                <div>
+                  <dt>Sitzung</dt>
+                  <dd>
+                    {endOfDayStatus === "error"
+                      ? "fehlgeschlagen"
+                      : endOfDayResult
+                        ? endOfDayResult.reused_session
+                          ? "wiederverwendet"
+                          : "neu"
+                        : "noch nicht"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Gerendert</dt>
+                  <dd>{endOfDayResult?.wait_result?.stable ? "stabil" : "noch nicht"}</dd>
+                </div>
+                <div>
+                  <dt>Gestartet</dt>
+                  <dd>{endOfDayStartedAt ? endOfDayStartedAt.toLocaleTimeString() : "noch nicht"}</dd>
+                </div>
+                <div>
+                  <dt>Beendet</dt>
+                  <dd>{endOfDayFinishedAt ? endOfDayFinishedAt.toLocaleTimeString() : "noch nicht"}</dd>
+                </div>
+              </dl>
+              {endOfDayResult?.current_url ? <code className="eod-url">{endOfDayResult.current_url}</code> : null}
             </div>
           </aside>
         </div>

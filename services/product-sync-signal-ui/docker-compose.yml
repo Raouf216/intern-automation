@@ -6,6 +6,7 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_PRODUCT_SYNC_ENDPOINT: ${NEXT_PUBLIC_PRODUCT_SYNC_ENDPOINT:-}
+        NEXT_PUBLIC_EOD_LOGIN_ENDPOINT: ${NEXT_PUBLIC_EOD_LOGIN_ENDPOINT:-}
         NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD: ${NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD:-}
     restart: unless-stopped
     init: true

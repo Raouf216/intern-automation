@@ -51,6 +51,7 @@ DATE_TIME_FORMATS = (
 @dataclass(frozen=True)
 class BillingParseResult:
     rows: list[dict[str, object]]
+    source_row_numbers: list[int]
     skipped_blank_rows: int
     skipped_footer_rows: int
     type_counts: dict[str, int]
@@ -71,6 +72,7 @@ def parse_doktorabc_billing_excel(
     header_index, column_indexes = find_billing_header_row(rows)
     timezone = resolve_timezone(timezone_name)
     parsed_rows: list[dict[str, object]] = []
+    source_row_numbers: list[int] = []
     type_counts: dict[str, int] = {}
     skipped_blank_rows = 0
     skipped_footer_rows = 0
@@ -131,6 +133,7 @@ def parse_doktorabc_billing_excel(
         )
 
         type_counts[movement_type] = type_counts.get(movement_type, 0) + 1
+        source_row_numbers.append(row_offset)
         parsed_rows.append(
             {
                 "hash_id": hash_id,
@@ -152,6 +155,7 @@ def parse_doktorabc_billing_excel(
 
     return BillingParseResult(
         rows=parsed_rows,
+        source_row_numbers=source_row_numbers,
         skipped_blank_rows=skipped_blank_rows,
         skipped_footer_rows=skipped_footer_rows,
         type_counts=type_counts,

@@ -1,6 +1,7 @@
 import os
 import time
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -43,6 +44,31 @@ ALLOWED_EXTENSIONS = {
 }
 
 app = FastAPI(title="file-upload-ui")
+
+
+BILLING_SOURCE_COLUMNS = (
+    "hash_id",
+    "sent_date",
+    "stock",
+    "type",
+    "total_medication_cost_incl_vat",
+    "supply_price_base",
+    "additional_cost",
+    "waybill_id",
+    "uber_shipping_fee",
+)
+
+
+class AbrechnungValidationError(HTTPException):
+    def __init__(
+        self,
+        detail: str,
+        error_kind: str,
+        extra: dict[str, object] | None = None,
+    ):
+        super().__init__(status_code=409, detail=detail)
+        self.error_kind = error_kind
+        self.extra = extra or {}
 
 
 @app.exception_handler(Exception)
@@ -197,10 +223,27 @@ def raise_database_insert_error(response: httpx.Response, error_detail):
     )
 
 
+def raise_database_read_error(response: httpx.Response, error_detail):
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "message": "Supabase database validation read failed.",
+            "status_code": response.status_code,
+            "supabase_error": error_detail,
+        },
+    )
+
+
 def chunk_rows(rows: list[dict[str, object]], size: int):
     size = max(1, size)
     for index in range(0, len(rows), size):
         yield rows[index : index + size]
+
+
+def chunk_values(values: list[str], size: int):
+    size = max(1, size)
+    for index in range(0, len(values), size):
+        yield values[index : index + size]
 
 
 def inserted_rows_count(response: httpx.Response) -> int:
@@ -257,6 +300,202 @@ async def insert_abrechnung_rows(rows: list[dict[str, object]]) -> int:
         ) from exc
 
     return len(rows)
+
+
+async def ensure_abrechnung_can_be_imported(
+    rows: list[dict[str, object]],
+    source_row_numbers: list[int],
+    billing_period_from: date,
+    billing_period_to: date,
+):
+    ensure_no_duplicate_uploaded_billing_rows(rows, source_row_numbers)
+    await ensure_no_overlapping_abrechnung_period(billing_period_from, billing_period_to)
+    await ensure_no_existing_billing_rows(rows, source_row_numbers)
+
+
+def ensure_no_duplicate_uploaded_billing_rows(rows: list[dict[str, object]], source_row_numbers: list[int]):
+    seen: dict[tuple[object, ...], int] = {}
+
+    for row, source_row_number in zip(rows, source_row_numbers, strict=True):
+        key = billing_source_key(row)
+        first_row_number = seen.get(key)
+        if first_row_number is not None:
+            raise AbrechnungValidationError(
+                detail=(
+                    "Abgelehnt: Die Datei enthaelt eine doppelte Abrechnungszeile "
+                    f"(Excel-Zeilen {first_row_number} und {source_row_number}). Es wurde nichts gespeichert."
+                ),
+                error_kind="duplicate_row_in_file",
+                extra={
+                    "duplicate_excel_row": source_row_number,
+                    "first_excel_row": first_row_number,
+                    "hash_id": str(row.get("hash_id") or ""),
+                },
+            )
+        seen[key] = source_row_number
+
+
+async def ensure_no_overlapping_abrechnung_period(billing_period_from: date, billing_period_to: date):
+    require_config()
+    query = {
+        "select": "id,billing_period_from,billing_period_to",
+        "billing_period_from": f"lte.{billing_period_to.isoformat()}",
+        "billing_period_to": f"gte.{billing_period_from.isoformat()}",
+        "limit": "1",
+    }
+    url = supabase_table_url(SUPABASE_ABRECHNUNG_TABLE, query)
+    headers = supabase_db_headers(schema=SUPABASE_ABRECHNUNG_SCHEMA)
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(url, headers=headers)
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach Supabase database at {SUPABASE_URL}: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    if not response.is_success:
+        raise_database_read_error(response, storage_error_detail(response))
+
+    existing_periods = response.json()
+    if not existing_periods:
+        return
+
+    existing = existing_periods[0]
+    existing_from = str(existing.get("billing_period_from") or "?")
+    existing_to = str(existing.get("billing_period_to") or "?")
+    raise AbrechnungValidationError(
+        detail=(
+            "Abgelehnt: Der gewaehlte Zeitraum "
+            f"{billing_period_from.isoformat()} bis {billing_period_to.isoformat()} ueberschneidet "
+            f"bereits vorhandene Abrechnung {existing_from} bis {existing_to}. Es wurde nichts gespeichert."
+        ),
+        error_kind="overlapping_billing_period",
+        extra={
+            "billing_period_from": billing_period_from.isoformat(),
+            "billing_period_to": billing_period_to.isoformat(),
+            "overlap_period_from": existing_from,
+            "overlap_period_to": existing_to,
+            "overlap_row_id": existing.get("id"),
+        },
+    )
+
+
+async def ensure_no_existing_billing_rows(rows: list[dict[str, object]], source_row_numbers: list[int]):
+    require_config()
+    hash_ids = sorted({str(row["hash_id"]) for row in rows if row.get("hash_id")})
+    if not hash_ids:
+        return
+
+    uploaded_by_key = {
+        billing_source_key(row): (row, source_row_number)
+        for row, source_row_number in zip(rows, source_row_numbers, strict=True)
+    }
+
+    select_columns = ",".join(
+        (
+            "id",
+            *BILLING_SOURCE_COLUMNS,
+            "billing_period_from",
+            "billing_period_to",
+        )
+    )
+    headers = supabase_db_headers(schema=SUPABASE_ABRECHNUNG_SCHEMA)
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            for hash_batch in chunk_values(hash_ids, 120):
+                query = {
+                    "select": select_columns,
+                    "hash_id": f"in.({','.join(format_postgrest_in_value(value) for value in hash_batch)})",
+                }
+                response = await client.get(supabase_table_url(SUPABASE_ABRECHNUNG_TABLE, query), headers=headers)
+                if not response.is_success:
+                    raise_database_read_error(response, storage_error_detail(response))
+
+                for existing_row in response.json():
+                    existing_key = billing_source_key(existing_row)
+                    duplicate = uploaded_by_key.get(existing_key)
+                    if not duplicate:
+                        continue
+
+                    uploaded_row, source_row_number = duplicate
+                    raise AbrechnungValidationError(
+                        detail=(
+                            "Abgelehnt: Excel-Zeile "
+                            f"{source_row_number} existiert bereits in der Datenbank "
+                            f"(id {existing_row.get('id')}, Zeitraum "
+                            f"{existing_row.get('billing_period_from')} bis {existing_row.get('billing_period_to')}). "
+                            "Es wurde nichts gespeichert."
+                        ),
+                        error_kind="duplicate_row_in_database",
+                        extra={
+                            "duplicate_excel_row": source_row_number,
+                            "existing_row_id": existing_row.get("id"),
+                            "existing_billing_period_from": existing_row.get("billing_period_from"),
+                            "existing_billing_period_to": existing_row.get("billing_period_to"),
+                            "hash_id": str(uploaded_row.get("hash_id") or ""),
+                        },
+                    )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach Supabase database at {SUPABASE_URL}: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+def format_postgrest_in_value(value: str) -> str:
+    return f'"{value.replace(chr(34), chr(34) + chr(34))}"'
+
+
+def billing_source_key(row: dict[str, object]) -> tuple[object, ...]:
+    return tuple(canonical_billing_value(column, row.get(column)) for column in BILLING_SOURCE_COLUMNS)
+
+
+def canonical_billing_value(column: str, value: object) -> object:
+    if column == "sent_date":
+        return canonical_datetime(value)
+    if column in {
+        "total_medication_cost_incl_vat",
+        "supply_price_base",
+        "additional_cost",
+        "uber_shipping_fee",
+    }:
+        return canonical_numeric(value)
+    if value is None:
+        return None
+    return str(value).strip()
+
+
+def canonical_datetime(value: object) -> str | None:
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.replace(microsecond=0).isoformat()
+
+
+def canonical_numeric(value: object) -> str | None:
+    if value is None:
+        return None
+
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return str(value).strip()
+
+    return str(number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def storage_error_text(error_detail) -> str:
@@ -641,6 +880,12 @@ async def upload_abrechnung_file(
 
         billing_rows_found = len(billing_parse.rows)
         billing_rows_skipped = billing_parse.skipped_rows
+        await ensure_abrechnung_can_be_imported(
+            rows=billing_parse.rows,
+            source_row_numbers=billing_parse.source_row_numbers,
+            billing_period_from=start_date,
+            billing_period_to=end_date,
+        )
         upload_started = True
 
         await upload_to_supabase_with_notifications(
@@ -710,6 +955,21 @@ async def upload_abrechnung_file(
         )
     except Exception as exc:
         if not upload_started:
+            event = None
+            extra = None
+            if isinstance(exc, AbrechnungValidationError):
+                event = "doktorabc_abrechnung_validation_failure"
+                extra = {
+                    "stage": "doktorabc_abrechnung_validation",
+                    "validation_error_kind": exc.error_kind,
+                    "billing_table": SUPABASE_ABRECHNUNG_TABLE,
+                    "billing_schema": SUPABASE_ABRECHNUNG_SCHEMA,
+                    "billing_period_from": period_from,
+                    "billing_period_to": period_to,
+                    "rows_found": billing_rows_found,
+                    "rows_skipped": billing_rows_skipped,
+                    **exc.extra,
+                }
             await notify_n8n_upload_event(
                 status="failure",
                 upload_type=upload_type,
@@ -718,6 +978,8 @@ async def upload_abrechnung_file(
                 object_path=object_path,
                 size_bytes=size_bytes,
                 error=error_reason(exc),
+                event=event,
+                extra=extra,
             )
         raise
 

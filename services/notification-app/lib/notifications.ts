@@ -39,6 +39,7 @@ export type UploadWebhookPayload = {
   billing_schema?: string;
   billing_period_from?: string;
   billing_period_to?: string;
+  validation_error_kind?: string;
   rows_found?: number;
   rows_inserted?: number;
   rows_skipped?: number;
@@ -202,6 +203,10 @@ function timestampOrNow(value: string | undefined) {
 }
 
 function uploadTitle(status: NotificationStatus, uploadType: string, payload: UploadWebhookPayload) {
+  if (isAbrechnungValidationFailure(payload)) {
+    return "DoktorABC Abrechnung abgelehnt";
+  }
+
   if (isAbrechnungDbInsert(payload)) {
     if (status === "success") {
       return "DoktorABC Abrechnung in Datenbank angekommen";
@@ -248,6 +253,10 @@ function uploadTitle(status: NotificationStatus, uploadType: string, payload: Up
 }
 
 function uploadMessage(status: NotificationStatus, filename: string, payload: UploadWebhookPayload) {
+  if (isAbrechnungValidationFailure(payload)) {
+    return payload.error ? String(payload.error) : `Abrechnung wurde nicht importiert: ${filename}`;
+  }
+
   if (isAbrechnungDbInsert(payload)) {
     const table = payload.billing_table || "doktorabc_billing";
     const schema = payload.billing_schema || "private";
@@ -315,6 +324,13 @@ function isAbrechnungDbInsert(payload: UploadWebhookPayload) {
     payload.stage === "doktorabc_abrechnung_insert" ||
     payload.event === "doktorabc_abrechnung_insert_success" ||
     payload.event === "doktorabc_abrechnung_insert_failure"
+  );
+}
+
+function isAbrechnungValidationFailure(payload: UploadWebhookPayload) {
+  return (
+    payload.stage === "doktorabc_abrechnung_validation" ||
+    payload.event === "doktorabc_abrechnung_validation_failure"
   );
 }
 

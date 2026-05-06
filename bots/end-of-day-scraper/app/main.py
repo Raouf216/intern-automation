@@ -455,6 +455,17 @@ def wait_for_order_cards(page, timeout_ms=60_000):
     return wait_for_render_stability(page, timeout_ms=timeout_ms, stable_ms=1_500)
 
 
+def wait_for_rows_100_control(page, timeout_ms=60_000):
+    rows_100 = page.locator("#pagination-container #rows-per-page-container li").filter(has_text=re.compile(r"^\s*100\s*$")).first
+    rows_100.wait_for(state="visible", timeout=timeout_ms)
+
+    return {
+        "ready": True,
+        "waited_for": "rows_100_control",
+        "pagination_state": get_pagination_state(page),
+    }
+
+
 def get_pagination_state(page):
     return page.evaluate(
         """
@@ -977,7 +988,9 @@ def sync_end_of_day_orders():
                     ready_button.click(timeout=10_000)
                     ready_for_customer_clicked = True
                     page.wait_for_timeout(1_000)
-                target_wait_result = wait_for_orders_page(page, target_url)
+                    target_wait_result = wait_for_rows_100_control(page)
+                else:
+                    target_wait_result = wait_for_orders_page(page, target_url)
                 steps[-1] = {
                     "name": "open_order_type_page",
                     "ok": True,

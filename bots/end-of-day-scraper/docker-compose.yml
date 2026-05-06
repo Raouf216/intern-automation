@@ -14,6 +14,10 @@ services:
       - PORT=8000
       - PYTHONUNBUFFERED=1
       - TZ=${TZ:-Europe/Berlin}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - SUPABASE_SCHEMA=${SUPABASE_SCHEMA:-private}
+      - SUPABASE_EOD_ORDERS_TABLE=${SUPABASE_EOD_ORDERS_TABLE:-doktorabc_eod_bot_orders}
       - DOKTORABC_LOGIN_URL=${DOKTORABC_LOGIN_URL:-}
       - DOKTORABC_END_OF_DAY_URL=${DOKTORABC_END_OF_DAY_URL:-https://pharmacies.doktorabc.com/end-of-day}
       - DOKTORABC_USERNAME=${DOKTORABC_USERNAME:-}
@@ -21,11 +25,15 @@ services:
       - DOKTORABC_HEADLESS=${DOKTORABC_HEADLESS:-true}
       - DOKTORABC_USER_AGENT=${DOKTORABC_USER_AGENT:-Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36}
       - EOD_READY_TIMEOUT_MS=${EOD_READY_TIMEOUT_MS:-120000}
+      - EOD_MAX_PAGES=${EOD_MAX_PAGES:-100}
       - END_OF_DAY_SCRAPER_CORS_ORIGINS=${END_OF_DAY_SCRAPER_CORS_ORIGINS:-http://localhost:8040,http://127.0.0.1:8040,http://178.104.144.30:8040}
       - ARTIFACTS_DIR=/app/artifacts
       - DOKTORABC_SESSION_STATE_PATH=${DOKTORABC_SESSION_STATE_PATH:-/app/artifacts/doktorabc-storage-state.json}
     volumes:
       - "${WEB_SCRAPER_ARTIFACTS_DIR:-../../web-scraper-artifacts}:/app/artifacts"
+    networks:
+      - default
+      - supabase_network
     healthcheck:
       test:
         [
@@ -38,3 +46,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+networks:
+  supabase_network:
+    external: true
+    name: analyticsengine-supabase-b2lvjw_default

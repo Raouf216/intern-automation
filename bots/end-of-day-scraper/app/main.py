@@ -321,7 +321,7 @@ def wait_for_render_stability(page, timeout_ms=120_000, stable_ms=4_000, poll_ms
     raise RuntimeError(f"DoktorABC orders page did not finish rendering in time. Last snapshot: {last_snapshot}")
 
 
-def wait_for_orders_page(page, target_url, timeout_ms=EOD_READY_TIMEOUT_MS):
+def wait_for_orders_page(page, target_url, timeout_ms=None):
     if not page.url.startswith(target_url):
         page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
 
@@ -330,13 +330,11 @@ def wait_for_orders_page(page, target_url, timeout_ms=EOD_READY_TIMEOUT_MS):
     if visible_login_form(page):
         raise RuntimeError("DoktorABC session is not authenticated; login page is visible.")
 
-    stability = wait_for_render_stability(page, timeout_ms=timeout_ms)
-    page.wait_for_timeout(1_000)
-    final_snapshot = page_render_snapshot(page)
+    ready_result = wait_for_rows_100_control(page, timeout_ms=60_000)
 
     return {
-        **stability,
-        "final_snapshot": final_snapshot,
+        **ready_result,
+        "final_snapshot": page_render_snapshot(page),
     }
 
 

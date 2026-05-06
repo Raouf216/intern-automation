@@ -1,3 +1,4 @@
+import mimetypes
 import os
 import re
 import time
@@ -31,8 +32,11 @@ EOD_ORDER_TYPE = "eod"
 SELF_PICKUP_ORDER_TYPE = "self pickup"
 EOD_READY_TIMEOUT_MS = int(os.environ.get("EOD_READY_TIMEOUT_MS", "120000"))
 EOD_MAX_PAGES = int(os.environ.get("EOD_MAX_PAGES", "100"))
+EOD_EXPORT_WAIT_BEFORE_CLICK_MS = int(os.environ.get("EOD_EXPORT_WAIT_BEFORE_CLICK_MS", "30000"))
+EOD_EXPORT_DOWNLOAD_TIMEOUT_MS = int(os.environ.get("EOD_EXPORT_DOWNLOAD_TIMEOUT_MS", "90000"))
 SUPABASE_SCHEMA = os.environ.get("SUPABASE_SCHEMA", "private")
 SUPABASE_EOD_ORDERS_TABLE = os.environ.get("SUPABASE_EOD_ORDERS_TABLE", "doktorabc_eod_bot_orders")
+END_OF_DAY_EXPORT_N8N_WEBHOOK_URL = (os.environ.get("END_OF_DAY_EXPORT_N8N_WEBHOOK_URL") or "").strip()
 
 
 app = FastAPI(title="end-of-day-scraper")
@@ -131,6 +135,85 @@ def upsert_supabase_eod_orders(orders):
     }
 
 
+def export_button_locator(page):
+    role_button = page.get_by_role("button", name=re.compile(r"^\s*Export\s*$", re.I)).first
+    text_button = page.locator('button:has-text("Export")').first
+
+    for locator in (role_button, text_button):
+        try:
+            locator.wait_for(state="visible", timeout=5_000)
+            return locator
+        except PlaywrightTimeoutError:
+            continue
+
+    raise RuntimeError('Could not find visible "Export" button.')
+
+
+def send_export_to_n8n(download_path, metadata):
+    if not END_OF_DAY_EXPORT_N8N_WEBHOOK_URL:
+        return {
+            "sent_to_n8n": False,
+            "n8n_skipped_reason": "END_OF_DAY_EXPORT_N8N_WEBHOOK_URL is not configured",
+        }
+
+    filename = os.path.basename(download_path)
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+    with open(download_path, "rb") as file_handle:
+        response = httpx.post(
+            END_OF_DAY_EXPORT_N8N_WEBHOOK_URL,
+            data={key: "" if value is None else str(value) for key, value in metadata.items()},
+            files={"file": (filename, file_handle, content_type)},
+            timeout=120,
+        )
+
+    if response.status_code >= 400:
+        raise RuntimeError(f"n8n export upload failed: {response_preview(response)}")
+
+    return {
+        "sent_to_n8n": True,
+        "n8n_status_code": response.status_code,
+    }
+
+
+def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
+    page.goto(end_of_day_url(), wait_until="domcontentloaded", timeout=60_000)
+    wait_for_orders_page(page, end_of_day_url())
+    page.wait_for_timeout(EOD_EXPORT_WAIT_BEFORE_CLICK_MS)
+
+    export_button = export_button_locator(page)
+
+    with page.expect_download(timeout=EOD_EXPORT_DOWNLOAD_TIMEOUT_MS) as download_info:
+        export_button.click(timeout=10_000)
+
+    download = download_info.value
+    suggested_filename = os.path.basename(download.suggested_filename or f"doktorabc-eod-export-{timestamp}.xlsx")
+    safe_filename = re.sub(r"[^A-Za-z0-9_. -]+", "_", suggested_filename).strip() or f"doktorabc-eod-export-{timestamp}.xlsx"
+    download_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-eod-export-{timestamp}-{safe_filename}")
+    download.save_as(download_path)
+
+    n8n_result = send_export_to_n8n(
+        download_path,
+        {
+            **metadata,
+            "source": "doktorabc_end_of_day_export",
+            "source_url": end_of_day_url(),
+            "download_filename": safe_filename,
+            "download_path": download_path,
+            "download_size_bytes": os.path.getsize(download_path),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    return {
+        "downloaded": True,
+        "download_filename": safe_filename,
+        "download_path": download_path,
+        "download_size_bytes": os.path.getsize(download_path),
+        **n8n_result,
+    }
+
+
 def end_of_day_url():
     return os.environ.get("DOKTORABC_END_OF_DAY_URL") or DEFAULT_END_OF_DAY_URL
 
@@ -141,6 +224,7 @@ def self_pickup_url():
 
 def browser_context_options():
     return {
+        "accept_downloads": True,
         "user_agent": DOKTORABC_USER_AGENT,
         "viewport": {"width": 1365, "height": 900},
     }
@@ -1207,6 +1291,19 @@ def sync_end_of_day_orders():
                 all_rows.extend(rows)
 
             if not all_rows:
+                steps.append({"name": "export_eod_excel_to_n8n", "ok": None})
+                export_result = export_end_of_day_excel_to_n8n(
+                    page,
+                    timestamp,
+                    {
+                        "scraped": 0,
+                        "saved": 0,
+                        "sent_to_supabase": 0,
+                        "targets_count": len(target_results),
+                    },
+                )
+                steps[-1] = {"name": "export_eod_excel_to_n8n", "ok": True, **export_result}
+
                 return {
                     "ok": True,
                     "current_url": page.url,
@@ -1225,12 +1322,28 @@ def sync_end_of_day_orders():
                     "sample_orders": [],
                     "steps": steps,
                     "screenshot_paths": screenshot_paths,
+                    "export": export_result,
                     "message": "No EOD or self pickup orders were found. Supabase was not changed.",
                 }
 
             steps.append({"name": "upsert_supabase", "ok": None, "rows": len(all_rows)})
             supabase_result = upsert_supabase_eod_orders(all_rows)
             steps[-1] = {"name": "upsert_supabase", "ok": True, **supabase_result}
+
+            steps.append({"name": "export_eod_excel_to_n8n", "ok": None})
+            export_result = export_end_of_day_excel_to_n8n(
+                page,
+                timestamp,
+                {
+                    "scraped": len(all_rows),
+                    "saved": len(all_rows),
+                    "sent_to_supabase": supabase_result.get("sent_to_supabase"),
+                    "targets_count": len(target_results),
+                    "warnings_count": len(all_warnings),
+                    "duplicate_order_references_count": len(all_duplicate_order_references),
+                },
+            )
+            steps[-1] = {"name": "export_eod_excel_to_n8n", "ok": True, **export_result}
 
             return {
                 "ok": True,
@@ -1249,6 +1362,7 @@ def sync_end_of_day_orders():
                 "sample_orders": all_rows[:3],
                 "steps": steps,
                 "screenshot_paths": screenshot_paths,
+                "export": export_result,
                 **supabase_result,
             }
         except Exception as exc:

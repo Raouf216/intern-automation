@@ -449,7 +449,7 @@ def validate_orders(rows, raw_orders):
 
 
 def wait_for_order_cards(page, timeout_ms=60_000):
-    page.locator('button[id$="-mark-order"]').first.wait_for(state="visible", timeout=timeout_ms)
+    page.locator('button[id$="-mark-order"], [id^="order-"][id$="-badge"]').first.wait_for(state="visible", timeout=timeout_ms)
     return wait_for_render_stability(page, timeout_ms=timeout_ms, stable_ms=1_500)
 
 
@@ -500,11 +500,18 @@ def get_pagination_state(page):
         """
         () => {
           const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+          const orderReferenceFromMarker = (marker) => {
+            const id = normalize(marker?.id);
+            if (/-mark-order$/.test(id)) return id.replace(/-mark-order$/, "");
+            const badgeMatch = id.match(/^order-(.+)-badge$/);
+            if (badgeMatch) return badgeMatch[1];
+            return normalize(marker?.innerText).replace(/^#/, "");
+          };
           const pagination = document.querySelector("#pagination-container");
           const current = pagination?.querySelector('nav[aria-label="pagination"] a[aria-current="page"]');
           const next = pagination?.querySelector('nav[aria-label="pagination"] a[aria-label="Go to next page"]');
-          const orderRefs = Array.from(document.querySelectorAll('button[id$="-mark-order"]'))
-            .map((button) => normalize(button.id).replace(/-mark-order$/, ""))
+          const orderRefs = Array.from(document.querySelectorAll('button[id$="-mark-order"], [id^="order-"][id$="-badge"]'))
+            .map(orderReferenceFromMarker)
             .filter(Boolean);
 
           let hasEnabledNext = false;
@@ -618,6 +625,13 @@ async () => {
     );
   };
   const unique = (items) => Array.from(new Set(items.filter(Boolean)));
+  const orderReferenceFromMarker = (marker) => {
+    const id = normalize(marker?.id);
+    if (/-mark-order$/.test(id)) return id.replace(/-mark-order$/, "");
+    const badgeMatch = id.match(/^order-(.+)-badge$/);
+    if (badgeMatch) return badgeMatch[1];
+    return normalize(marker?.innerText).replace(/^#/, "");
+  };
   const findOrderRoot = (marker) => {
     let node = marker;
     for (let depth = 0; depth < 14 && node; depth += 1) {
@@ -706,15 +720,15 @@ async () => {
     return products;
   };
 
-  const markers = Array.from(document.querySelectorAll('button[id$="-mark-order"]'));
+  const markers = Array.from(document.querySelectorAll('button[id$="-mark-order"], [id^="order-"][id$="-badge"]'));
   const roots = unique(markers.map(findOrderRoot));
   const orders = [];
 
   for (const root of roots) {
     if (!root) continue;
 
-    const marker = root.querySelector('button[id$="-mark-order"]');
-    const orderReference = normalize(marker?.id).replace(/-mark-order$/, "");
+    const marker = root.querySelector('button[id$="-mark-order"], [id^="order-"][id$="-badge"]');
+    const orderReference = orderReferenceFromMarker(marker);
     const rootText = root.innerText || "";
     const allDates = rootText.match(/\\b\\d{2}\\/\\d{2}\\/\\d{4}\\b/g) || [];
     const birthMatch = rootText.match(/\\b(\\d{2}\\/\\d{2}\\/\\d{4})\\s*\\(\\d+\\s+years?\\s+old\\)/i);

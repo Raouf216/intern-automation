@@ -464,6 +464,37 @@ def wait_for_rows_100_control(page, timeout_ms=60_000):
     }
 
 
+def click_ready_for_customer(page):
+    candidates = (
+        (
+            "tab_role_name",
+            page.get_by_role("tab", name=re.compile(r"\bReady\s+for\s+Customer\b", re.I)).first,
+        ),
+        (
+            "ready_for_customer_tab_id",
+            page.locator('button[role="tab"][id*="ready-for-customer"]').first,
+        ),
+        (
+            "ready_for_customer_tab_text",
+            page.locator('[role="tab"]:has-text("Ready for Customer")').first,
+        ),
+        (
+            "ready_for_customer_button_text",
+            page.locator('button:has-text("Ready for Customer")').first,
+        ),
+    )
+
+    for name, locator in candidates:
+        try:
+            locator.wait_for(state="visible", timeout=30_000)
+            locator.click(timeout=10_000)
+            return name
+        except PlaywrightTimeoutError:
+            continue
+
+    raise RuntimeError('Could not find visible "Ready for Customer" tab.')
+
+
 def get_pagination_state(page):
     return page.evaluate(
         """
@@ -976,14 +1007,10 @@ def sync_end_of_day_orders():
                 )
                 page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
                 ready_for_customer_clicked = False
+                ready_for_customer_click_strategy = None
                 if order_type == SELF_PICKUP_ORDER_TYPE:
                     wait_for_load_states(page)
-                    ready_button = page.get_by_role(
-                        "button",
-                        name=re.compile(r"^\s*Ready\s+for\s+Customer\s*$", re.I),
-                    )
-                    ready_button.wait_for(state="visible", timeout=30_000)
-                    ready_button.click(timeout=10_000)
+                    ready_for_customer_click_strategy = click_ready_for_customer(page)
                     ready_for_customer_clicked = True
                     page.wait_for_timeout(1_000)
                     target_wait_result = wait_for_rows_100_control(page)
@@ -995,6 +1022,7 @@ def sync_end_of_day_orders():
                     "order_type": order_type,
                     "target_url": target_url,
                     "ready_for_customer_clicked": ready_for_customer_clicked,
+                    "ready_for_customer_click_strategy": ready_for_customer_click_strategy,
                     "current_url": page.url,
                     "wait_result": target_wait_result,
                 }

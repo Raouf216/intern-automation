@@ -10,8 +10,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.requests import Request
 
 try:
+    from app.doktorabc_billing_parser import parse_doktorabc_billing_excel
     from app.oed_orders_parser import parse_oed_orders_excel
 except ModuleNotFoundError:
+    from doktorabc_billing_parser import parse_doktorabc_billing_excel
     from oed_orders_parser import parse_oed_orders_excel
 
 
@@ -28,6 +30,9 @@ ABRECHNUNG_UPLOAD_PASSWORD = os.environ.get("ABRECHNUNG_UPLOAD_PASSWORD", "")
 N8N_UPLOAD_WEBHOOK_URL = os.environ.get("N8N_UPLOAD_WEBHOOK_URL", "").strip()
 SUPABASE_ORDERS_TABLE = os.environ.get("SUPABASE_ORDERS_TABLE", "orders_csv").strip()
 SUPABASE_DB_SCHEMA = os.environ.get("SUPABASE_DB_SCHEMA", "public").strip()
+SUPABASE_ABRECHNUNG_TABLE = os.environ.get("SUPABASE_ABRECHNUNG_TABLE", "doktorabc_billing").strip()
+SUPABASE_ABRECHNUNG_SCHEMA = os.environ.get("SUPABASE_ABRECHNUNG_SCHEMA", "private").strip()
+ABRECHNUNG_TIME_ZONE = os.environ.get("ABRECHNUNG_TIME_ZONE", os.environ.get("TZ", "Europe/Berlin")).strip()
 SUPABASE_DB_INSERT_BATCH_SIZE = int(os.environ.get("SUPABASE_DB_INSERT_BATCH_SIZE", "1000"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "20"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
@@ -99,10 +104,12 @@ def storage_upload_headers(content_type: str, upsert: bool | None = None) -> dic
 def supabase_db_headers(
     return_representation: bool = False,
     ignore_duplicates: bool = False,
+    schema: str | None = None,
 ) -> dict[str, str]:
     prefer = ["return=representation" if return_representation else "return=minimal"]
     if ignore_duplicates:
         prefer.append("resolution=ignore-duplicates")
+    profile = SUPABASE_DB_SCHEMA if schema is None else schema
 
     headers = {
         "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -110,9 +117,9 @@ def supabase_db_headers(
         "Content-Type": "application/json",
         "Prefer": ",".join(prefer),
     }
-    if SUPABASE_DB_SCHEMA:
-        headers["Accept-Profile"] = SUPABASE_DB_SCHEMA
-        headers["Content-Profile"] = SUPABASE_DB_SCHEMA
+    if profile:
+        headers["Accept-Profile"] = profile
+        headers["Content-Profile"] = profile
     return headers
 
 
@@ -190,7 +197,7 @@ def raise_database_insert_error(response: httpx.Response, error_detail):
     )
 
 
-def chunk_rows(rows: list[dict[str, str | None]], size: int):
+def chunk_rows(rows: list[dict[str, object]], size: int):
     size = max(1, size)
     for index in range(0, len(rows), size):
         yield rows[index : index + size]
@@ -228,6 +235,28 @@ async def insert_orders_csv_rows(rows: list[dict[str, str | None]]) -> int:
         ) from exc
 
     return inserted_count
+
+
+async def insert_abrechnung_rows(rows: list[dict[str, object]]) -> int:
+    require_config()
+    if not rows:
+        return 0
+
+    url = supabase_table_url(SUPABASE_ABRECHNUNG_TABLE)
+    headers = supabase_db_headers(schema=SUPABASE_ABRECHNUNG_SCHEMA)
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(url, headers=headers, json=rows)
+            if not response.is_success:
+                raise_database_insert_error(response, storage_error_detail(response))
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach Supabase database at {SUPABASE_URL}: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    return len(rows)
 
 
 def storage_error_text(error_detail) -> str:
@@ -460,6 +489,8 @@ def health():
         "abrechnung_prefix": ABRECHNUNG_STORAGE_PREFIX,
         "orders_table": SUPABASE_ORDERS_TABLE,
         "orders_schema": SUPABASE_DB_SCHEMA,
+        "abrechnung_table": SUPABASE_ABRECHNUNG_TABLE,
+        "abrechnung_schema": SUPABASE_ABRECHNUNG_SCHEMA,
     }
 
 
@@ -581,6 +612,9 @@ async def upload_abrechnung_file(
     object_path = storage_path(filename, ABRECHNUNG_STORAGE_PREFIX)
     size_bytes = 0
     upload_started = False
+    billing_inserted = 0
+    billing_rows_found = 0
+    billing_rows_skipped = 0
 
     try:
         start_date = parse_date(period_from)
@@ -594,6 +628,19 @@ async def upload_abrechnung_file(
         require_password(password, ABRECHNUNG_UPLOAD_PASSWORD, "DoktorABC Abrechnung")
         contents = await read_limited_file(file)
         size_bytes = len(contents)
+        try:
+            billing_parse = parse_doktorabc_billing_excel(
+                contents=contents,
+                extension=extension,
+                billing_period_from=start_date,
+                billing_period_to=end_date,
+                timezone_name=ABRECHNUNG_TIME_ZONE,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        billing_rows_found = len(billing_parse.rows)
+        billing_rows_skipped = billing_parse.skipped_rows
         upload_started = True
 
         await upload_to_supabase_with_notifications(
@@ -605,6 +652,61 @@ async def upload_abrechnung_file(
             content_type=file.content_type or "application/octet-stream",
             replace_existing=False,
             duplicate_message="A DoktorABC Abrechnung file for this period already exists.",
+        )
+        try:
+            billing_inserted = await insert_abrechnung_rows(billing_parse.rows)
+        except Exception as exc:
+            await notify_n8n_upload_event(
+                status="failure",
+                upload_type=upload_type,
+                filename=filename,
+                bucket=ABRECHNUNG_STORAGE_BUCKET,
+                object_path=object_path,
+                size_bytes=size_bytes,
+                error=error_reason(exc),
+                event="doktorabc_abrechnung_insert_failure",
+                extra={
+                    "stage": "doktorabc_abrechnung_insert",
+                    "billing_table": SUPABASE_ABRECHNUNG_TABLE,
+                    "billing_schema": SUPABASE_ABRECHNUNG_SCHEMA,
+                    "billing_period_from": start_date.isoformat(),
+                    "billing_period_to": end_date.isoformat(),
+                    "rows_found": billing_rows_found,
+                    "rows_inserted": billing_inserted,
+                    "rows_skipped": billing_rows_skipped,
+                    "type_counts": billing_parse.type_counts,
+                },
+            )
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    await delete_existing_storage_object(client, ABRECHNUNG_STORAGE_BUCKET, object_path)
+            except Exception as rollback_exc:
+                print(
+                    f"Could not delete uploaded Abrechnung file after DB insert failure: "
+                    f"{type(rollback_exc).__name__}: {rollback_exc}",
+                    flush=True,
+                )
+            raise
+
+        await notify_n8n_upload_event(
+            status="success",
+            upload_type=upload_type,
+            filename=filename,
+            bucket=ABRECHNUNG_STORAGE_BUCKET,
+            object_path=object_path,
+            size_bytes=size_bytes,
+            event="doktorabc_abrechnung_insert_success",
+            extra={
+                "stage": "doktorabc_abrechnung_insert",
+                "billing_table": SUPABASE_ABRECHNUNG_TABLE,
+                "billing_schema": SUPABASE_ABRECHNUNG_SCHEMA,
+                "billing_period_from": start_date.isoformat(),
+                "billing_period_to": end_date.isoformat(),
+                "rows_found": billing_rows_found,
+                "rows_inserted": billing_inserted,
+                "rows_skipped": billing_rows_skipped,
+                "type_counts": billing_parse.type_counts,
+            },
         )
     except Exception as exc:
         if not upload_started:
@@ -625,6 +727,11 @@ async def upload_abrechnung_file(
         "bucket": ABRECHNUNG_STORAGE_BUCKET,
         "path": object_path,
         "size_bytes": len(contents),
+        "billing_rows_found": billing_rows_found,
+        "billing_rows_inserted": billing_inserted,
+        "billing_rows_skipped": billing_rows_skipped,
+        "billing_table": SUPABASE_ABRECHNUNG_TABLE,
+        "billing_schema": SUPABASE_ABRECHNUNG_SCHEMA,
     }
 
 
@@ -1531,10 +1638,15 @@ HTML = """
               throw new Error(message);
             }
 
-            const dbInfo = typeof result.orders_inserted === "number"
-              ? `, DB-Zeilen: ${result.orders_inserted}`
+            const dbInfo = typeof result.billing_rows_inserted === "number"
+              ? `, Abrechnungs-Zeilen: ${result.billing_rows_inserted}`
+              : typeof result.orders_inserted === "number"
+                ? `, DB-Zeilen: ${result.orders_inserted}`
+                : "";
+            const skippedInfo = typeof result.billing_rows_skipped === "number" && result.billing_rows_skipped > 0
+              ? `, uebersprungen: ${result.billing_rows_skipped}`
               : "";
-            setStatus(controller.statusBox, "ok", `Gespeichert: ${result.path}${dbInfo}`);
+            setStatus(controller.statusBox, "ok", `Gespeichert: ${result.path}${dbInfo}${skippedInfo}`);
             config.afterSuccess();
             controller.refresh();
           } catch (error) {

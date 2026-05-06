@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  ArrowRight,
   Bell,
   ChevronDown,
   CheckCircle2,
@@ -31,6 +32,46 @@ type Props = {
   initialNotifications: StoredNotification[];
   initialError: string | null;
   config: ConfigStatus;
+};
+
+type SyncChangedProduct = {
+  pzn: string;
+  productName: string;
+  changes: Array<{
+    field: string;
+    oldValue: string;
+    newValue: string;
+  }>;
+};
+
+type SyncNewProduct = {
+  pzn: string;
+  productName: string;
+  values: Array<{
+    label: string;
+    value: string;
+  }>;
+};
+
+type SyncInvalidExample = {
+  title: string;
+  message: string;
+  values: Array<{
+    label: string;
+    value: string;
+  }>;
+};
+
+type SyncDetails = {
+  scraped: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  duration: string;
+  error: string | null;
+  changedProducts: SyncChangedProduct[];
+  newProducts: SyncNewProduct[];
+  invalidExamples: SyncInvalidExample[];
 };
 
 const sections: Array<{ label: string; value: SectionKey; description: string; caption: string; active: boolean }> = [
@@ -342,12 +383,120 @@ function NotificationRow({ notification }: { notification: StoredNotification })
               <ChevronDown size={15} />
               <span>{notification.status === "failure" ? "Fehlerdetails anzeigen" : "Aenderungsprotokoll anzeigen"}</span>
             </summary>
-            <pre>{syncDetails.logs}</pre>
+            <SyncLogDetails details={syncDetails} status={notification.status} error={notification.error} />
           </details>
         ) : null}
-        {notification.error ? <p className="error-line">{notification.error}</p> : null}
+        {notification.error && !syncDetails ? <p className="error-line">{notification.error}</p> : null}
       </div>
     </article>
+  );
+}
+
+function SyncLogDetails({
+  details,
+  status,
+  error,
+}: {
+  details: SyncDetails;
+  status: StoredNotification["status"];
+  error: string | null;
+}) {
+  const visibleError = error || details.error;
+  const hasProductDetails =
+    details.changedProducts.length > 0 || details.newProducts.length > 0 || details.invalidExamples.length > 0;
+
+  return (
+    <div className="sync-log-content">
+      {status === "failure" && visibleError ? (
+        <div className="sync-error-card">
+          <strong>Fehler</strong>
+          <span>{visibleError}</span>
+        </div>
+      ) : null}
+
+      {details.changedProducts.length ? (
+        <section className="sync-product-section" aria-label="Geaenderte Produkte">
+          <h4>Geaenderte Produkte</h4>
+          <div className="sync-product-list">
+            {details.changedProducts.map((product) => (
+              <article className="sync-product-card" key={`changed-${product.pzn}-${product.productName}`}>
+                <div className="sync-product-head">
+                  <strong>{product.productName}</strong>
+                  <span>{product.pzn ? `PZN ${product.pzn}` : "PZN fehlt"}</span>
+                </div>
+                <div className="sync-change-list">
+                  {product.changes.map((change) => (
+                    <div className="sync-change-row" key={`${product.pzn}-${change.field}`}>
+                      <span>{change.field}</span>
+                      <code>{change.oldValue}</code>
+                      <ArrowRight size={14} />
+                      <code>{change.newValue}</code>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {details.newProducts.length ? (
+        <section className="sync-product-section" aria-label="Neue Produkte">
+          <h4>Neue Produkte</h4>
+          <div className="sync-product-list">
+            {details.newProducts.map((product) => (
+              <article className="sync-product-card new" key={`new-${product.pzn}-${product.productName}`}>
+                <div className="sync-product-head">
+                  <strong>{product.productName}</strong>
+                  <span>{product.pzn ? `PZN ${product.pzn}` : "PZN fehlt"}</span>
+                </div>
+                {product.values.length ? (
+                  <div className="sync-product-meta">
+                    {product.values.map((value) => (
+                      <span key={`${product.pzn}-${value.label}`}>
+                        <b>{value.label}</b>
+                        <strong>{value.value}</strong>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {details.invalidExamples.length ? (
+        <section className="sync-product-section" aria-label="Problematische Zeilen">
+          <h4>Problematische Zeilen</h4>
+          <div className="sync-invalid-list">
+            {details.invalidExamples.map((example, index) => (
+              <div className="sync-invalid-row" key={`${example.title}-${index}`}>
+                <strong>{example.title}</strong>
+                <span>{example.message}</span>
+                {example.values.length ? (
+                  <div className="sync-product-meta compact">
+                    {example.values.map((value) => (
+                      <span key={`${example.title}-${value.label}`}>
+                        <b>{value.label}</b>
+                        <strong>{value.value}</strong>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {!hasProductDetails && status !== "failure" ? (
+        <p className="sync-empty-log">Keine Einzelprodukte im Protokoll. Die Zusammenfassung oben ist gespeichert.</p>
+      ) : null}
+      {!hasProductDetails && status === "failure" && !visibleError ? (
+        <p className="sync-empty-log">Der Sync ist fehlgeschlagen, aber der Bot hat keine Details mitgesendet.</p>
+      ) : null}
+    </div>
   );
 }
 
@@ -423,17 +572,144 @@ function syncDetailsFromPayload(payload: Record<string, unknown>) {
   const logs = recordValue(payload.logs) || payload;
 
   return {
-    scraped: numberValue(summary?.scraped),
-    inserted: numberValue(summary?.inserted),
-    updated: numberValue(summary?.updated),
-    unchanged: numberValue(summary?.unchanged),
+    scraped: numberValue(summary?.scraped ?? logs.scraped),
+    inserted: numberValue(summary?.inserted ?? logs.inserted),
+    updated: numberValue(summary?.updated ?? logs.updated),
+    unchanged: numberValue(summary?.unchanged ?? logs.unchanged),
     duration: formatDuration(payload.duration_ms),
-    logs: JSON.stringify(logs, null, 2),
+    error: stringValue(payload.error) || stringValue(logs.error),
+    changedProducts: changedProductsFromValue(logs.changed_products),
+    newProducts: newProductsFromValue(logs.new_products),
+    invalidExamples: invalidExamplesFromValue(logs.invalid_examples ?? logs.invalid_rows ?? logs.failed_rows),
   };
 }
 
 function recordValue(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function arrayRecordValue(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(recordValue(item)))
+    : [];
+}
+
+function changedProductsFromValue(value: unknown): SyncChangedProduct[] {
+  return arrayRecordValue(value)
+    .map((row) => {
+      const before = recordValue(row.before);
+      const after = recordValue(row.after);
+      const changes = recordValue(row.changes);
+      const entries = Object.entries(changes || {}).map(([field, changeValue]) => {
+        const change = recordValue(changeValue);
+        return {
+          field,
+          oldValue: formatLogValue(change?.old ?? before?.[field]),
+          newValue: formatLogValue(change?.new ?? after?.[field]),
+        };
+      });
+      const fallbackEntries = entries.length ? entries : changesFromBeforeAfter(before, after);
+
+      return {
+        pzn: stringValue(row.pzn) || stringValue(after?.pzn) || stringValue(before?.pzn) || "",
+        productName:
+          stringValue(row.product_name) ||
+          stringValue(after?.product_name) ||
+          stringValue(before?.product_name) ||
+          "Unbekanntes Produkt",
+        changes: fallbackEntries,
+      };
+    })
+    .filter((product) => product.changes.length > 0 || product.pzn || product.productName !== "Unbekanntes Produkt");
+}
+
+function changesFromBeforeAfter(
+  before: Record<string, unknown> | null,
+  after: Record<string, unknown> | null
+): SyncChangedProduct["changes"] {
+  if (!before || !after) {
+    return [];
+  }
+
+  const fields = ["quantity", "price_per_g_incl_vat", "additional_cost", "site_price", "availability", "strain"];
+  return fields
+    .filter((field) => formatLogValue(before[field]) !== formatLogValue(after[field]))
+    .map((field) => ({
+      field,
+      oldValue: formatLogValue(before[field]),
+      newValue: formatLogValue(after[field]),
+    }));
+}
+
+function newProductsFromValue(value: unknown): SyncNewProduct[] {
+  const fields = ["quantity", "price_per_g_incl_vat", "additional_cost", "site_price", "availability", "strain"];
+
+  return arrayRecordValue(value).map((row) => ({
+    pzn: stringValue(row.pzn) || "",
+    productName: stringValue(row.product_name) || "Unbekanntes Produkt",
+    values: fields
+      .filter((field) => row[field] !== null && row[field] !== undefined && row[field] !== "")
+      .map((field) => ({
+        label: field,
+        value: formatLogValue(row[field]),
+      })),
+  }));
+}
+
+function invalidExamplesFromValue(value: unknown): SyncInvalidExample[] {
+  return arrayRecordValue(value).map((row, index) => {
+    const title =
+      stringValue(row.title) ||
+      stringValue(row.product_name) ||
+      stringValue(row.pzn && `PZN ${row.pzn}`) ||
+      `Zeile ${numberValue(row.row_number) || index + 1}`;
+    const message =
+      stringValue(row.error) ||
+      stringValue(row.reason) ||
+      stringValue(row.message) ||
+      "Diese Zeile konnte nicht verarbeitet werden.";
+    const values = Object.entries(row)
+      .filter(([key]) => !["title", "error", "reason", "message"].includes(key))
+      .slice(0, 6)
+      .map(([label, rawValue]) => ({
+        label,
+        value: formatLogValue(rawValue),
+      }));
+
+    return { title, message, values };
+  });
+}
+
+function stringValue(value: unknown) {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return "";
+}
+
+function formatLogValue(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return "leer";
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3)));
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return JSON.stringify(value);
 }
 
 function numberValue(value: unknown) {

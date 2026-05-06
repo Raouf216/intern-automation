@@ -541,23 +541,195 @@ dd {
   transform: rotate(180deg);
 }
 
-.sync-log-panel pre {
-  max-height: 360px;
-  margin: 0;
+.sync-log-content {
+  max-height: 440px;
+  display: grid;
+  gap: 12px;
   padding: 11px;
   overflow: auto;
   border-top: 1px solid color-mix(in srgb, var(--green) 18%, var(--line));
   background: color-mix(in srgb, var(--surface) 82%, transparent);
+}
+
+.sync-log-panel.danger .sync-log-content {
+  border-top-color: color-mix(in srgb, var(--red) 20%, var(--line));
+}
+
+.sync-product-section {
+  display: grid;
+  gap: 8px;
+}
+
+.sync-product-section h4 {
+  margin: 0;
   color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: pre-wrap;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.sync-product-list,
+.sync-invalid-list {
+  display: grid;
+  gap: 8px;
+}
+
+.sync-product-card,
+.sync-invalid-row {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--green) 22%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+
+.sync-log-panel.danger .sync-product-card,
+.sync-log-panel.danger .sync-invalid-row {
+  border-color: color-mix(in srgb, var(--red) 22%, var(--line));
+}
+
+.sync-product-card.new {
+  border-color: color-mix(in srgb, var(--brand) 24%, var(--line));
+}
+
+.sync-product-head {
+  min-width: 0;
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sync-product-head strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
-.sync-log-panel.danger pre {
-  border-top-color: color-mix(in srgb, var(--red) 20%, var(--line));
+.sync-product-head span {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--brand-strong) 86%, var(--text));
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.sync-change-list {
+  display: grid;
+  gap: 6px;
+}
+
+.sync-change-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(118px, 0.8fr) minmax(110px, 1fr) 18px minmax(110px, 1fr);
+  gap: 7px;
+  align-items: center;
+}
+
+.sync-change-row > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.sync-change-row svg {
+  color: var(--muted);
+  justify-self: center;
+}
+
+.sync-change-row code {
+  min-width: 0;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--brand) 10%, var(--surface-subtle));
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.sync-product-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(100px, 1fr));
+  gap: 7px;
+}
+
+.sync-product-meta.compact {
+  grid-template-columns: repeat(3, minmax(100px, 1fr));
+}
+
+.sync-product-meta span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+
+.sync-product-meta b {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+
+.sync-product-meta strong {
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.sync-error-card {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--red) 32%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--red-soft) 70%, var(--surface));
+  color: var(--red);
+}
+
+.sync-error-card strong,
+.sync-invalid-row strong {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.sync-error-card span,
+.sync-invalid-row span {
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.sync-invalid-row > span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.sync-empty-log {
+  margin: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sync-log-panel pre {
+  margin: 0;
 }
 
 .empty-state {
@@ -662,6 +834,22 @@ dd {
 
   .detail-grid.sync-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sync-product-head {
+    align-items: start;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .sync-change-row,
+  .sync-product-meta,
+  .sync-product-meta.compact {
+    grid-template-columns: 1fr;
+  }
+
+  .sync-change-row svg {
+    transform: rotate(90deg);
   }
 
   .section-nav {

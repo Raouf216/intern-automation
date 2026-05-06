@@ -30,10 +30,10 @@ DOKTORABC_USER_AGENT = (
 DEFAULT_END_OF_DAY_URL = "https://pharmacies.doktorabc.com/end-of-day"
 EOD_ORDER_TYPE = "eod"
 SELF_PICKUP_ORDER_TYPE = "self pickup"
-EOD_READY_TIMEOUT_MS = int(os.environ.get("EOD_READY_TIMEOUT_MS", "120000"))
+EOD_READY_TIMEOUT_MS = int(os.environ.get("EOD_READY_TIMEOUT_MS", "30000"))
 EOD_MAX_PAGES = int(os.environ.get("EOD_MAX_PAGES", "100"))
 EOD_EXPORT_WAIT_BEFORE_CLICK_MS = int(os.environ.get("EOD_EXPORT_WAIT_BEFORE_CLICK_MS", "30000"))
-EOD_EXPORT_DOWNLOAD_TIMEOUT_MS = int(os.environ.get("EOD_EXPORT_DOWNLOAD_TIMEOUT_MS", "90000"))
+EOD_EXPORT_DOWNLOAD_TIMEOUT_MS = int(os.environ.get("EOD_EXPORT_DOWNLOAD_TIMEOUT_MS", "30000"))
 SUPABASE_SCHEMA = os.environ.get("SUPABASE_SCHEMA", "private")
 SUPABASE_EOD_ORDERS_TABLE = os.environ.get("SUPABASE_EOD_ORDERS_TABLE", "doktorabc_eod_bot_orders")
 END_OF_DAY_EXPORT_N8N_WEBHOOK_URL = (os.environ.get("END_OF_DAY_EXPORT_N8N_WEBHOOK_URL") or "").strip()
@@ -123,7 +123,7 @@ def upsert_supabase_eod_orders(orders):
             "Prefer": "resolution=merge-duplicates,return=minimal",
         },
         json=orders,
-        timeout=90,
+        timeout=30,
     )
 
     if response.status_code >= 400:
@@ -164,7 +164,7 @@ def send_export_to_n8n(download_path, metadata):
             END_OF_DAY_EXPORT_N8N_WEBHOOK_URL,
             data={key: "" if value is None else str(value) for key, value in metadata.items()},
             files={"file": (filename, file_handle, content_type)},
-            timeout=120,
+            timeout=30,
         )
 
     if response.status_code >= 400:
@@ -177,7 +177,7 @@ def send_export_to_n8n(download_path, metadata):
 
 
 def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
-    page.goto(end_of_day_url(), wait_until="domcontentloaded", timeout=60_000)
+    page.goto(end_of_day_url(), wait_until="domcontentloaded", timeout=30_000)
     wait_for_orders_page(page, end_of_day_url())
     page.wait_for_timeout(EOD_EXPORT_WAIT_BEFORE_CLICK_MS)
 
@@ -361,7 +361,7 @@ def page_render_snapshot(page):
     )
 
 
-def wait_for_render_stability(page, timeout_ms=120_000, stable_ms=4_000, poll_ms=700):
+def wait_for_render_stability(page, timeout_ms=30_000, stable_ms=4_000, poll_ms=700):
     deadline = time.monotonic() + timeout_ms / 1000
     stable_since = None
     previous_key = None
@@ -407,14 +407,14 @@ def wait_for_render_stability(page, timeout_ms=120_000, stable_ms=4_000, poll_ms
 
 def wait_for_orders_page(page, target_url, timeout_ms=None):
     if not page.url.startswith(target_url):
-        page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+        page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
 
     wait_for_load_states(page)
 
     if visible_login_form(page):
         raise RuntimeError("DoktorABC session is not authenticated; login page is visible.")
 
-    ready_result = wait_for_rows_100_control(page, timeout_ms=60_000)
+    ready_result = wait_for_rows_100_control(page, timeout_ms=30_000)
 
     return {
         **ready_result,
@@ -532,7 +532,7 @@ def validate_orders(rows, raw_orders):
     return invalid, warnings
 
 
-def wait_for_order_list(page, timeout_ms=60_000):
+def wait_for_order_list(page, timeout_ms=30_000):
     stability = wait_for_render_stability(page, timeout_ms=timeout_ms, stable_ms=1_500)
     pagination_state = get_pagination_state(page)
     order_count = pagination_state.get("order_count") or 0
@@ -573,7 +573,7 @@ def render_stability_key(snapshot):
     )
 
 
-def wait_for_rows_100_control(page, timeout_ms=60_000):
+def wait_for_rows_100_control(page, timeout_ms=30_000):
     rows_100 = rows_100_locator(page)
     started_at = time.monotonic()
     deadline = time.monotonic() + timeout_ms / 1000
@@ -1019,7 +1019,7 @@ def open_saved_session(browser, target_url, order_type):
     page = context.new_page()
 
     try:
-        page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+        page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
         wait_result = wait_for_orders_page(page, target_url)
         return context, page, True, wait_result
     except Exception as exc:
@@ -1034,7 +1034,7 @@ def open_fresh_session(browser, target_url, order_type, before_login_path=None):
     context = browser.new_context(**browser_context_options())
     page = context.new_page()
 
-    page.goto(required_env("DOKTORABC_LOGIN_URL"), wait_until="domcontentloaded", timeout=60_000)
+    page.goto(required_env("DOKTORABC_LOGIN_URL"), wait_until="domcontentloaded", timeout=30_000)
     wait_for_load_states(page)
 
     fill_first_visible(
@@ -1055,7 +1055,7 @@ def open_fresh_session(browser, target_url, order_type, before_login_path=None):
     click_login_button(page)
     page.wait_for_timeout(2_000)
     wait_for_load_states(page)
-    page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+    page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
     wait_result = wait_for_orders_page(page, target_url)
 
     session_state_dir = os.path.dirname(SESSION_STATE_PATH)
@@ -1198,7 +1198,7 @@ def sync_end_of_day_orders():
                         "target_url": target_url,
                     }
                 )
-                page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+                page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
                 ready_for_customer_clicked = False
                 ready_for_customer_click_strategy = None
                 if order_type == SELF_PICKUP_ORDER_TYPE:

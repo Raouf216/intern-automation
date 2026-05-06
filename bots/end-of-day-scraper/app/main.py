@@ -966,12 +966,24 @@ def sync_end_of_day_orders():
                     }
                 )
                 page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+                ready_for_customer_clicked = False
+                if order_type == SELF_PICKUP_ORDER_TYPE:
+                    wait_for_load_states(page)
+                    ready_button = page.get_by_role(
+                        "button",
+                        name=re.compile(r"^\s*Ready\s+for\s+Customer\s*$", re.I),
+                    )
+                    ready_button.wait_for(state="visible", timeout=30_000)
+                    ready_button.click(timeout=10_000)
+                    ready_for_customer_clicked = True
+                    page.wait_for_timeout(1_000)
                 target_wait_result = wait_for_orders_page(page, target_url)
                 steps[-1] = {
                     "name": "open_order_type_page",
                     "ok": True,
                     "order_type": order_type,
                     "target_url": target_url,
+                    "ready_for_customer_clicked": ready_for_customer_clicked,
                     "current_url": page.url,
                     "wait_result": target_wait_result,
                 }

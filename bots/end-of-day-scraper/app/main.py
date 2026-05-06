@@ -27,6 +27,8 @@ DOKTORABC_USER_AGENT = (
     or DEFAULT_DOKTORABC_USER_AGENT
 )
 DEFAULT_END_OF_DAY_URL = "https://pharmacies.doktorabc.com/end-of-day"
+EOD_ORDER_TYPE = "eod"
+SELF_PICKUP_ORDER_TYPE = "self pickup"
 EOD_READY_TIMEOUT_MS = int(os.environ.get("EOD_READY_TIMEOUT_MS", "120000"))
 EOD_MAX_PAGES = int(os.environ.get("EOD_MAX_PAGES", "100"))
 SUPABASE_SCHEMA = os.environ.get("SUPABASE_SCHEMA", "private")
@@ -111,7 +113,7 @@ def upsert_supabase_eod_orders(orders):
         }
 
     response = httpx.post(
-        f"{supabase_table_url()}?on_conflict=order_reference",
+        f"{supabase_table_url()}?on_conflict=order_type,order_reference",
         headers={
             **supabase_headers(),
             "Prefer": "resolution=merge-duplicates,return=minimal",
@@ -131,6 +133,10 @@ def upsert_supabase_eod_orders(orders):
 
 def end_of_day_url():
     return os.environ.get("DOKTORABC_END_OF_DAY_URL") or DEFAULT_END_OF_DAY_URL
+
+
+def self_pickup_url():
+    return (os.environ.get("DOKTORABC_SELF_PICKUP_URL") or "").strip() or None
 
 
 def browser_context_options():
@@ -312,12 +318,12 @@ def wait_for_render_stability(page, timeout_ms=120_000, stable_ms=4_000, poll_ms
 
         page.wait_for_timeout(poll_ms)
 
-    raise RuntimeError(f"End-of-Day page did not finish rendering in time. Last snapshot: {last_snapshot}")
+    raise RuntimeError(f"DoktorABC orders page did not finish rendering in time. Last snapshot: {last_snapshot}")
 
 
-def wait_for_end_of_day_page(page, timeout_ms=EOD_READY_TIMEOUT_MS):
-    if not page.url.startswith(end_of_day_url()):
-        page.goto(end_of_day_url(), wait_until="domcontentloaded", timeout=60_000)
+def wait_for_orders_page(page, target_url, timeout_ms=EOD_READY_TIMEOUT_MS):
+    if not page.url.startswith(target_url):
+        page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
 
     wait_for_load_states(page)
 
@@ -332,6 +338,10 @@ def wait_for_end_of_day_page(page, timeout_ms=EOD_READY_TIMEOUT_MS):
         **stability,
         "final_snapshot": final_snapshot,
     }
+
+
+def wait_for_end_of_day_page(page, timeout_ms=EOD_READY_TIMEOUT_MS):
+    return wait_for_orders_page(page, end_of_day_url(), timeout_ms=timeout_ms)
 
 
 def parse_date_to_iso(value):
@@ -374,7 +384,7 @@ def normalize_price(value):
     return match.group(0) if match else cleaned
 
 
-def normalize_scraped_order(order):
+def normalize_scraped_order(order, order_type):
     products = order.get("product_details") or []
     product_names = [product.get("product") for product in products]
     pzns = [join_pipe(product.get("pzns") or []) for product in products]
@@ -382,6 +392,7 @@ def normalize_scraped_order(order):
     quantities = [product.get("quantity") for product in products]
 
     return {
+        "order_type": order_type,
         "order_reference": clean_text(order.get("order_reference")),
         "prescription_date": parse_date_to_iso(order.get("prescription_date")),
         "tracking_id": clean_text(order.get("tracking_id")),
@@ -403,9 +414,12 @@ def validate_orders(rows, raw_orders):
     for index, row in enumerate(rows):
         missing_required = [
             field
-            for field in ("order_reference", "prescription_date", "products")
+            for field in ("order_type", "order_reference", "prescription_date", "products")
             if not row.get(field)
         ]
+
+        if row.get("order_type") not in {EOD_ORDER_TYPE, SELF_PICKUP_ORDER_TYPE}:
+            missing_required.append("valid_order_type")
 
         if missing_required:
             invalid.append(
@@ -759,11 +773,11 @@ def scrape_all_eod_orders(page):
     }
 
 
-def open_saved_session(browser):
+def open_saved_session(browser, target_url, order_type):
     if not os.path.exists(SESSION_STATE_PATH):
         return None
 
-    print("trying saved DoktorABC session for End-of-Day ...", flush=True)
+    print(f"trying saved DoktorABC session for {order_type} ...", flush=True)
 
     context = browser.new_context(
         storage_state=SESSION_STATE_PATH,
@@ -772,8 +786,8 @@ def open_saved_session(browser):
     page = context.new_page()
 
     try:
-        page.goto(end_of_day_url(), wait_until="domcontentloaded", timeout=60_000)
-        wait_result = wait_for_end_of_day_page(page)
+        page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+        wait_result = wait_for_orders_page(page, target_url)
         return context, page, True, wait_result
     except Exception as exc:
         context.close()
@@ -781,8 +795,8 @@ def open_saved_session(browser):
         return None
 
 
-def open_fresh_session(browser, before_login_path=None):
-    print("trying fresh DoktorABC login for End-of-Day ...", flush=True)
+def open_fresh_session(browser, target_url, order_type, before_login_path=None):
+    print(f"trying fresh DoktorABC login for {order_type} ...", flush=True)
 
     context = browser.new_context(**browser_context_options())
     page = context.new_page()
@@ -808,8 +822,8 @@ def open_fresh_session(browser, before_login_path=None):
     click_login_button(page)
     page.wait_for_timeout(2_000)
     wait_for_load_states(page)
-    page.goto(end_of_day_url(), wait_until="domcontentloaded", timeout=60_000)
-    wait_result = wait_for_end_of_day_page(page)
+    page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+    wait_result = wait_for_orders_page(page, target_url)
 
     session_state_dir = os.path.dirname(SESSION_STATE_PATH)
     if session_state_dir:
@@ -820,13 +834,17 @@ def open_fresh_session(browser, before_login_path=None):
     return context, page, False, wait_result
 
 
-def open_authenticated_end_of_day_page(browser, before_login_path=None):
-    saved_session = open_saved_session(browser)
+def open_authenticated_orders_page(browser, target_url, order_type, before_login_path=None):
+    saved_session = open_saved_session(browser, target_url, order_type)
 
     if saved_session is not None:
         return saved_session
 
-    return open_fresh_session(browser, before_login_path=before_login_path)
+    return open_fresh_session(browser, target_url, order_type, before_login_path=before_login_path)
+
+
+def open_authenticated_end_of_day_page(browser, before_login_path=None):
+    return open_authenticated_orders_page(browser, end_of_day_url(), EOD_ORDER_TYPE, before_login_path=before_login_path)
 
 
 def login_end_of_day():
@@ -864,15 +882,39 @@ def login_end_of_day():
             browser.close()
 
 
+def safe_slug(value):
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "orders"
+
+
+def configured_order_targets():
+    targets = [
+        {
+            "order_type": EOD_ORDER_TYPE,
+            "target_url": end_of_day_url(),
+        }
+    ]
+    configured_self_pickup_url = self_pickup_url()
+
+    if configured_self_pickup_url:
+        targets.append(
+            {
+                "order_type": SELF_PICKUP_ORDER_TYPE,
+                "target_url": configured_self_pickup_url,
+            }
+        )
+
+    return targets
+
+
 def sync_end_of_day_orders():
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     before_login_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-eod-before-login-{timestamp}.png")
-    after_login_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-eod-after-sync-{timestamp}.png")
     failure_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-eod-sync-failure-{timestamp}.png")
     steps = []
+    targets = configured_order_targets()
 
-    print("trying to sync DoktorABC End-of-Day orders ...", flush=True)
+    print("trying to sync DoktorABC order lists ...", flush=True)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
@@ -880,75 +922,148 @@ def sync_end_of_day_orders():
         page = None
 
         try:
-            steps.append({"name": "open_authenticated_end_of_day_page", "ok": None})
-            context, page, reused_session, wait_result = open_authenticated_end_of_day_page(
+            first_target = targets[0]
+            steps.append(
+                {
+                    "name": "open_authenticated_orders_page",
+                    "ok": None,
+                    "order_type": first_target["order_type"],
+                    "target_url": first_target["target_url"],
+                }
+            )
+            context, page, reused_session, wait_result = open_authenticated_orders_page(
                 browser,
+                first_target["target_url"],
+                first_target["order_type"],
                 before_login_path=before_login_path,
             )
             steps[-1] = {
-                "name": "open_authenticated_end_of_day_page",
+                "name": "open_authenticated_orders_page",
                 "ok": True,
+                "order_type": first_target["order_type"],
+                "target_url": first_target["target_url"],
                 "reused_session": reused_session,
                 "current_url": page.url,
                 "wait_result": wait_result,
             }
 
-            steps.append({"name": "scrape_all_pages", "ok": None})
-            scrape_result = scrape_all_eod_orders(page)
-            raw_orders = scrape_result["orders"]
-            rows = [normalize_scraped_order(order) for order in raw_orders]
-            invalid_orders, warnings = validate_orders(rows, raw_orders)
-            steps[-1] = {
-                "name": "scrape_all_pages",
-                "ok": True,
-                "scraped": len(raw_orders),
-                "pages": scrape_result["pages"],
-                "scrape_steps": scrape_result["steps"],
-                "duplicate_order_references": scrape_result["duplicate_order_references"],
-                "warnings": warnings,
-                "invalid_count": len(invalid_orders),
-            }
+            all_rows = []
+            target_results = []
+            all_warnings = []
+            all_duplicate_order_references = []
+            screenshot_paths = []
 
-            page.screenshot(path=after_login_path, full_page=True)
+            for target in targets:
+                order_type = target["order_type"]
+                target_url = target["target_url"]
 
-            if invalid_orders:
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "ok": False,
-                        "failed_step": "validate_scraped_orders",
-                        "error": "Some scraped orders are missing required fields. Supabase was not changed.",
-                        "current_url": page.url,
-                        "reused_session": reused_session,
-                        "session_state_path": SESSION_STATE_PATH,
-                        "supabase_schema": SUPABASE_SCHEMA,
-                        "supabase_table": SUPABASE_EOD_ORDERS_TABLE,
-                        "scraped": len(raw_orders),
-                        "invalid_count": len(invalid_orders),
-                        "invalid_examples": invalid_orders[:10],
-                        "warnings": warnings[:20],
-                        "steps": steps,
-                        "screenshot_path": after_login_path,
-                    },
+                steps.append(
+                    {
+                        "name": "open_order_type_page",
+                        "ok": None,
+                        "order_type": order_type,
+                        "target_url": target_url,
+                    }
+                )
+                page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+                target_wait_result = wait_for_orders_page(page, target_url)
+                steps[-1] = {
+                    "name": "open_order_type_page",
+                    "ok": True,
+                    "order_type": order_type,
+                    "target_url": target_url,
+                    "current_url": page.url,
+                    "wait_result": target_wait_result,
+                }
+
+                steps.append({"name": "scrape_all_pages", "ok": None, "order_type": order_type})
+                scrape_result = scrape_all_eod_orders(page)
+                raw_orders = scrape_result["orders"]
+                rows = [normalize_scraped_order(order, order_type) for order in raw_orders]
+                invalid_orders, warnings = validate_orders(rows, raw_orders)
+                screenshot_path = os.path.join(
+                    ARTIFACTS_DIR,
+                    f"doktorabc-{safe_slug(order_type)}-after-sync-{timestamp}.png",
+                )
+                page.screenshot(path=screenshot_path, full_page=True)
+                screenshot_paths.append(screenshot_path)
+
+                target_result = {
+                    "order_type": order_type,
+                    "target_url": target_url,
+                    "current_url": page.url,
+                    "scraped": len(raw_orders),
+                    "valid_rows": len(rows) - len(invalid_orders),
+                    "invalid_count": len(invalid_orders),
+                    "warnings_count": len(warnings),
+                    "warnings": warnings[:20],
+                    "pages": scrape_result["pages"],
+                    "scrape_steps": scrape_result["steps"],
+                    "duplicate_order_references": scrape_result["duplicate_order_references"],
+                    "screenshot_path": screenshot_path,
+                }
+                target_results.append(target_result)
+                all_warnings.extend(warnings)
+                all_duplicate_order_references.extend(
+                    f"{order_type}:{order_reference}"
+                    for order_reference in scrape_result["duplicate_order_references"]
                 )
 
-            if not rows:
+                steps[-1] = {
+                    "name": "scrape_all_pages",
+                    "ok": True,
+                    "order_type": order_type,
+                    "scraped": len(raw_orders),
+                    "pages": scrape_result["pages"],
+                    "scrape_steps": scrape_result["steps"],
+                    "duplicate_order_references": scrape_result["duplicate_order_references"],
+                    "warnings": warnings,
+                    "invalid_count": len(invalid_orders),
+                }
+
+                if invalid_orders:
+                    return JSONResponse(
+                        status_code=422,
+                        content={
+                            "ok": False,
+                            "failed_step": "validate_scraped_orders",
+                            "error": "Some scraped orders are missing required fields. Supabase was not changed.",
+                            "order_type": order_type,
+                            "current_url": page.url,
+                            "reused_session": reused_session,
+                            "session_state_path": SESSION_STATE_PATH,
+                            "supabase_schema": SUPABASE_SCHEMA,
+                            "supabase_table": SUPABASE_EOD_ORDERS_TABLE,
+                            "scraped": len(raw_orders),
+                            "invalid_count": len(invalid_orders),
+                            "invalid_examples": invalid_orders[:10],
+                            "warnings": warnings[:20],
+                            "targets": target_results,
+                            "steps": steps,
+                            "screenshot_paths": screenshot_paths,
+                        },
+                    )
+
+                all_rows.extend(rows)
+
+            if not all_rows:
                 return JSONResponse(
                     status_code=422,
                     content={
                         "ok": False,
                         "failed_step": "scrape_all_pages",
-                        "error": "No End-of-Day orders were found. Supabase was not changed.",
+                        "error": "No orders were found. Supabase was not changed.",
                         "current_url": page.url,
                         "reused_session": reused_session,
                         "session_state_path": SESSION_STATE_PATH,
+                        "targets": target_results,
                         "steps": steps,
-                        "screenshot_path": after_login_path,
+                        "screenshot_paths": screenshot_paths,
                     },
                 )
 
-            steps.append({"name": "upsert_supabase", "ok": None, "rows": len(rows)})
-            supabase_result = upsert_supabase_eod_orders(rows)
+            steps.append({"name": "upsert_supabase", "ok": None, "rows": len(all_rows)})
+            supabase_result = upsert_supabase_eod_orders(all_rows)
             steps[-1] = {"name": "upsert_supabase", "ok": True, **supabase_result}
 
             return {
@@ -959,15 +1074,15 @@ def sync_end_of_day_orders():
                 "session_state_path": SESSION_STATE_PATH,
                 "supabase_schema": SUPABASE_SCHEMA,
                 "supabase_table": SUPABASE_EOD_ORDERS_TABLE,
-                "scraped": len(raw_orders),
-                "saved": len(rows),
-                "warnings_count": len(warnings),
-                "warnings": warnings[:20],
-                "duplicate_order_references": scrape_result["duplicate_order_references"],
-                "pages": scrape_result["pages"],
-                "sample_orders": rows[:3],
+                "scraped": len(all_rows),
+                "saved": len(all_rows),
+                "warnings_count": len(all_warnings),
+                "warnings": all_warnings[:20],
+                "duplicate_order_references": all_duplicate_order_references,
+                "targets": target_results,
+                "sample_orders": all_rows[:3],
                 "steps": steps,
-                "screenshot_path": after_login_path,
+                "screenshot_paths": screenshot_paths,
                 **supabase_result,
             }
         except Exception as exc:
@@ -1006,6 +1121,7 @@ def health():
         "service": "end-of-day-scraper",
         "uptime_seconds": round(time.time() - STARTED_AT, 3),
         "target_url": end_of_day_url(),
+        "self_pickup_url": self_pickup_url(),
         "session_state_path": SESSION_STATE_PATH,
     }
 

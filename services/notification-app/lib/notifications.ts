@@ -35,8 +35,13 @@ export type UploadWebhookPayload = {
   stage?: string;
   orders_table?: string;
   orders_schema?: string;
+  billing_table?: string;
+  billing_schema?: string;
+  billing_period_from?: string;
+  billing_period_to?: string;
   rows_found?: number;
   rows_inserted?: number;
+  rows_skipped?: number;
   started_at?: string | null;
   finished_at?: string;
   duration_ms?: number | null;
@@ -197,6 +202,18 @@ function timestampOrNow(value: string | undefined) {
 }
 
 function uploadTitle(status: NotificationStatus, uploadType: string, payload: UploadWebhookPayload) {
+  if (isAbrechnungDbInsert(payload)) {
+    if (status === "success") {
+      return "DoktorABC Abrechnung in Datenbank angekommen";
+    }
+
+    if (status === "failure") {
+      return "DoktorABC Datenbankimport fehlgeschlagen";
+    }
+
+    return "DoktorABC Datenbankimport";
+  }
+
   if (isOrdersCsvInsert(payload)) {
     if (status === "success") {
       return "OED Datenbankimport erfolgreich";
@@ -210,6 +227,10 @@ function uploadTitle(status: NotificationStatus, uploadType: string, payload: Up
   }
 
   const label = uploadType === "doktorabc_abrechnung" ? "DoktorABC Abrechnung" : "OED Upload";
+
+  if (uploadType === "doktorabc_abrechnung" && status === "success") {
+    return "DoktorABC Abrechnung gespeichert";
+  }
 
   if (status === "triggered") {
     return `${label} gestartet`;
@@ -227,6 +248,23 @@ function uploadTitle(status: NotificationStatus, uploadType: string, payload: Up
 }
 
 function uploadMessage(status: NotificationStatus, filename: string, payload: UploadWebhookPayload) {
+  if (isAbrechnungDbInsert(payload)) {
+    const table = payload.billing_table || "doktorabc_billing";
+    const schema = payload.billing_schema || "private";
+    const rowsInserted = typeof payload.rows_inserted === "number" ? payload.rows_inserted : null;
+
+    if (status === "success") {
+      const rowText = rowsInserted === null ? "DB-Zeilen" : `${rowsInserted} DB-Zeilen`;
+      return `${rowText} in ${schema}.${table} gespeichert: ${filename}`;
+    }
+
+    if (status === "failure") {
+      return `Datenbankimport fuer ${filename} fehlgeschlagen${payload.error ? `: ${payload.error}` : ""}`;
+    }
+
+    return `Datenbankimport fuer ${filename}`;
+  }
+
   if (isOrdersCsvInsert(payload)) {
     const table = payload.orders_table || "orders_csv";
     const rowsInserted = typeof payload.rows_inserted === "number" ? payload.rows_inserted : null;
@@ -249,6 +287,10 @@ function uploadMessage(status: NotificationStatus, filename: string, payload: Up
     return `Upload wurde gestartet: ${filename}`;
   }
 
+  if (uploadTypeFromPayload(payload) === "doktorabc_abrechnung" && status === "success") {
+    return "Datei wurde im Speicher abgelegt. Datenbankimport folgt.";
+  }
+
   if (status === "success") {
     return `Upload wurde erfolgreich gespeichert: ${filename}`;
   }
@@ -266,6 +308,18 @@ function isOrdersCsvInsert(payload: UploadWebhookPayload) {
     payload.event === "orders_csv_insert_success" ||
     payload.event === "orders_csv_insert_failure"
   );
+}
+
+function isAbrechnungDbInsert(payload: UploadWebhookPayload) {
+  return (
+    payload.stage === "doktorabc_abrechnung_insert" ||
+    payload.event === "doktorabc_abrechnung_insert_success" ||
+    payload.event === "doktorabc_abrechnung_insert_failure"
+  );
+}
+
+function uploadTypeFromPayload(payload: UploadWebhookPayload) {
+  return String(payload.upload_type || "upload");
 }
 
 function isProductSync(payload: UploadWebhookPayload) {

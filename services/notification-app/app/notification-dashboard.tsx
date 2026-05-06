@@ -308,6 +308,7 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
 function NotificationRow({ notification }: { notification: StoredNotification }) {
   const rowsInserted = rowsInsertedFromPayload(notification.payload);
   const syncDetails = syncDetailsFromPayload(notification.payload);
+  const showUploadDetails = shouldShowUploadDetails(notification);
 
   return (
     <article className={`notification-row status-${notification.status}`}>
@@ -355,7 +356,7 @@ function NotificationRow({ notification }: { notification: StoredNotification })
               <dd>{syncDetails.duration}</dd>
             </div>
           </dl>
-        ) : (
+        ) : showUploadDetails ? (
           <dl className="detail-grid">
             <div>
               <dt>Datei</dt>
@@ -376,7 +377,7 @@ function NotificationRow({ notification }: { notification: StoredNotification })
               </div>
             )}
           </dl>
-        )}
+        ) : null}
         {syncDetails ? (
           <details className={`sync-log-panel ${notification.status === "failure" ? "danger" : "success"}`}>
             <summary>
@@ -554,6 +555,15 @@ function formatBytes(value: number | null) {
 
 function rowsInsertedFromPayload(payload: Record<string, unknown>) {
   return typeof payload.rows_inserted === "number" ? payload.rows_inserted : null;
+}
+
+function shouldShowUploadDetails(notification: StoredNotification) {
+  const event = stringValue(notification.payload.event) || notification.event;
+  return !(
+    notification.upload_type === "doktorabc_abrechnung" &&
+    notification.status === "success" &&
+    event === "upload_success"
+  );
 }
 
 function syncDetailsFromPayload(payload: Record<string, unknown>) {

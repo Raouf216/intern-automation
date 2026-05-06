@@ -448,20 +448,98 @@ def validate_orders(rows, raw_orders):
     return invalid, warnings
 
 
-def wait_for_order_cards(page, timeout_ms=60_000):
-    page.locator('button[id$="-mark-order"], [id^="order-"][id$="-badge"]').first.wait_for(state="visible", timeout=timeout_ms)
-    return wait_for_render_stability(page, timeout_ms=timeout_ms, stable_ms=1_500)
+def wait_for_order_list(page, timeout_ms=60_000):
+    stability = wait_for_render_stability(page, timeout_ms=timeout_ms, stable_ms=1_500)
+    pagination_state = get_pagination_state(page)
+    order_count = pagination_state.get("order_count") or 0
+
+    return {
+        **stability,
+        "waited_for": "order_list_render_stability",
+        "order_count": order_count,
+        "empty": order_count == 0,
+        "pagination_state": pagination_state,
+    }
+
+
+def rows_100_locator(page):
+    return page.locator("#pagination-container #rows-per-page-container li").filter(has_text=re.compile(r"^\s*100\s*$")).first
+
+
+def render_ready(snapshot):
+    return (
+        snapshot["readyState"] in {"interactive", "complete"}
+        and snapshot["textLength"] >= 20
+        and snapshot["visibleLoaderCount"] == 0
+        and snapshot["busyButtonCount"] == 0
+    )
+
+
+def render_stability_key(snapshot):
+    return (
+        snapshot["readyState"],
+        snapshot["textBucket"],
+        snapshot["tableRows"],
+        snapshot["inputs"],
+        snapshot["buttons"],
+        snapshot["links"],
+        snapshot["scrollHeightBucket"],
+        snapshot["visibleLoaderCount"],
+        snapshot["busyButtonCount"],
+    )
 
 
 def wait_for_rows_100_control(page, timeout_ms=60_000):
-    rows_100 = page.locator("#pagination-container #rows-per-page-container li").filter(has_text=re.compile(r"^\s*100\s*$")).first
-    rows_100.wait_for(state="visible", timeout=timeout_ms)
+    rows_100 = rows_100_locator(page)
+    started_at = time.monotonic()
+    deadline = time.monotonic() + timeout_ms / 1000
+    stable_since = None
+    previous_key = None
+    last_snapshot = None
+    last_pagination_state = None
 
-    return {
-        "ready": True,
-        "waited_for": "rows_100_control",
-        "pagination_state": get_pagination_state(page),
-    }
+    while time.monotonic() < deadline:
+        try:
+            rows_100.wait_for(state="visible", timeout=500)
+            return {
+                "ready": True,
+                "waited_for": "rows_100_control",
+                "pagination_state": get_pagination_state(page),
+            }
+        except PlaywrightTimeoutError:
+            pass
+
+        snapshot = page_render_snapshot(page)
+        pagination_state = get_pagination_state(page)
+        last_snapshot = snapshot
+        last_pagination_state = pagination_state
+        stability_key = render_stability_key(snapshot)
+        now = time.monotonic()
+
+        empty_wait_elapsed = (now - started_at) * 1000 >= 5_000
+        if (
+            empty_wait_elapsed
+            and render_ready(snapshot)
+            and (pagination_state.get("order_count") or 0) == 0
+            and stability_key == previous_key
+        ):
+            if stable_since is not None and (now - stable_since) * 1000 >= 1_500:
+                return {
+                    "ready": True,
+                    "waited_for": "empty_order_list_render_stability",
+                    "pagination_state": pagination_state,
+                    "final_snapshot": snapshot,
+                }
+        else:
+            stable_since = now if render_ready(snapshot) else None
+            previous_key = stability_key
+
+        page.wait_for_timeout(500)
+
+    raise RuntimeError(
+        "DoktorABC orders page did not show the 100 rows control or a stable empty list. "
+        f"Last snapshot: {last_snapshot}. Last pagination state: {last_pagination_state}"
+    )
 
 
 def click_ready_for_customer(page):
@@ -559,11 +637,22 @@ def get_pagination_state(page):
 
 def select_100_rows(page):
     debug = {"clicked": False, "before": get_pagination_state(page)}
-    rows_100 = page.locator("#pagination-container #rows-per-page-container li").filter(has_text=re.compile(r"^\s*100\s*$")).first
-    rows_100.wait_for(state="visible", timeout=30_000)
+    rows_100 = rows_100_locator(page)
+    try:
+        rows_100.wait_for(state="visible", timeout=5_000)
+    except PlaywrightTimeoutError:
+        debug["wait_result"] = wait_for_order_list(page)
+        debug["after"] = get_pagination_state(page)
+        debug["skipped_reason"] = "rows_100_not_visible_on_empty_order_list"
+
+        if not debug["wait_result"]["empty"]:
+            raise RuntimeError("The 100 rows control is missing, but the order list is not empty.")
+
+        return debug
+
     rows_100.click(timeout=10_000)
     page.wait_for_timeout(1_000)
-    debug["wait_result"] = wait_for_order_cards(page)
+    debug["wait_result"] = wait_for_order_list(page)
     debug["after"] = get_pagination_state(page)
     debug["clicked"] = True
 
@@ -582,6 +671,12 @@ def pagination_signature(state):
 
 
 def click_next_page(page, before_state):
+    if not before_state.get("next_exists"):
+        return False, before_state, "next_not_visible"
+
+    if not before_state.get("has_next"):
+        return False, before_state, "next_disabled"
+
     next_link = page.locator('#pagination-container nav[aria-label="pagination"] a[aria-label="Go to next page"]').first
 
     try:
@@ -601,8 +696,8 @@ def click_next_page(page, before_state):
         last_state = state
 
         if pagination_signature(state) != before_signature:
-            wait_for_order_cards(page)
-            return True, state, "page_changed"
+            wait_result = wait_for_order_list(page)
+            return True, wait_result["pagination_state"], "page_changed"
 
     return False, last_state, "next_click_did_not_change_page"
 
@@ -1112,20 +1207,26 @@ def sync_end_of_day_orders():
                 all_rows.extend(rows)
 
             if not all_rows:
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "ok": False,
-                        "failed_step": "scrape_all_pages",
-                        "error": "No orders were found. Supabase was not changed.",
-                        "current_url": page.url,
-                        "reused_session": reused_session,
-                        "session_state_path": SESSION_STATE_PATH,
-                        "targets": target_results,
-                        "steps": steps,
-                        "screenshot_paths": screenshot_paths,
-                    },
-                )
+                return {
+                    "ok": True,
+                    "current_url": page.url,
+                    "page_title": page.title(),
+                    "reused_session": reused_session,
+                    "session_state_path": SESSION_STATE_PATH,
+                    "supabase_schema": SUPABASE_SCHEMA,
+                    "supabase_table": SUPABASE_EOD_ORDERS_TABLE,
+                    "scraped": 0,
+                    "saved": 0,
+                    "sent_to_supabase": 0,
+                    "warnings_count": len(all_warnings),
+                    "warnings": all_warnings[:20],
+                    "duplicate_order_references": all_duplicate_order_references,
+                    "targets": target_results,
+                    "sample_orders": [],
+                    "steps": steps,
+                    "screenshot_paths": screenshot_paths,
+                    "message": "No EOD or self pickup orders were found. Supabase was not changed.",
+                }
 
             steps.append({"name": "upsert_supabase", "ok": None, "rows": len(all_rows)})
             supabase_result = upsert_supabase_eod_orders(all_rows)

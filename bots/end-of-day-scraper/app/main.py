@@ -446,23 +446,29 @@ def get_pagination_state(page):
         """
         () => {
           const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
-          const current = document.querySelector('nav[aria-label="pagination"] a[aria-current="page"]');
-          const next = document.querySelector('nav[aria-label="pagination"] a[aria-label="Go to next page"]');
+          const pagination = document.querySelector("#pagination-container");
+          const current = pagination?.querySelector('nav[aria-label="pagination"] a[aria-current="page"]');
+          const next = pagination?.querySelector('nav[aria-label="pagination"] a[aria-label="Go to next page"]');
           const orderRefs = Array.from(document.querySelectorAll('button[id$="-mark-order"]'))
             .map((button) => normalize(button.id).replace(/-mark-order$/, ""))
             .filter(Boolean);
 
           let hasEnabledNext = false;
+          let nextClass = "";
+          let nextParentClass = "";
           if (next) {
             const nextStyle = window.getComputedStyle(next);
             const nextParent = next.closest("li");
+            nextClass = next.className || "";
+            nextParentClass = nextParent?.className || "";
+            const classTokens = `${nextClass} ${nextParentClass}`.split(/\\s+/);
             const disabledByAttribute =
               next.getAttribute("aria-disabled") === "true" ||
               next.getAttribute("data-disabled") === "true" ||
               next.hasAttribute("disabled");
-            const disabledByClass =
-              /disabled|pointer-events-none|opacity-50/.test(next.className || "") ||
-              /disabled|pointer-events-none|opacity-50/.test(nextParent?.className || "");
+            const disabledByClass = classTokens.some((token) =>
+              ["pointer-events-none", "opacity-50", "cursor-not-allowed"].includes(token)
+            );
             hasEnabledNext =
               !disabledByAttribute &&
               !disabledByClass &&
@@ -475,8 +481,15 @@ def get_pagination_state(page):
             current_page: Number(normalize(current?.innerText)) || null,
             order_refs: orderRefs,
             first_order_reference: orderRefs[0] || null,
+            last_order_reference: orderRefs[orderRefs.length - 1] || null,
+            order_refs_signature: orderRefs.join("|"),
             order_count: orderRefs.length,
             has_next: hasEnabledNext,
+            next_exists: Boolean(next),
+            next_text: normalize(next?.innerText),
+            next_class: nextClass,
+            next_parent_class: nextParentClass,
+            url: window.location.href,
           };
         }
         """
@@ -485,7 +498,7 @@ def get_pagination_state(page):
 
 def select_100_rows(page):
     debug = {"clicked": False, "before": get_pagination_state(page)}
-    rows_100 = page.locator("#rows-per-page-container li").filter(has_text=re.compile(r"^\s*100\s*$")).first
+    rows_100 = page.locator("#pagination-container #rows-per-page-container li").filter(has_text=re.compile(r"^\s*100\s*$")).first
     rows_100.wait_for(state="visible", timeout=30_000)
     rows_100.click(timeout=10_000)
     page.wait_for_timeout(1_000)
@@ -496,9 +509,26 @@ def select_100_rows(page):
     return debug
 
 
+def pagination_signature(state):
+    return (
+        state.get("current_page"),
+        state.get("first_order_reference"),
+        state.get("last_order_reference"),
+        state.get("order_refs_signature"),
+        state.get("order_count"),
+        state.get("url"),
+    )
+
+
 def click_next_page(page, before_state):
-    next_link = page.locator('nav[aria-label="pagination"] a[aria-label="Go to next page"]').first
-    next_link.wait_for(state="visible", timeout=10_000)
+    next_link = page.locator('#pagination-container nav[aria-label="pagination"] a[aria-label="Go to next page"]').first
+
+    try:
+        next_link.wait_for(state="visible", timeout=10_000)
+    except PlaywrightTimeoutError:
+        return False, get_pagination_state(page), "next_not_visible"
+
+    before_signature = pagination_signature(before_state)
     next_link.click(timeout=10_000)
 
     deadline = time.monotonic() + 30
@@ -509,14 +539,11 @@ def click_next_page(page, before_state):
         state = get_pagination_state(page)
         last_state = state
 
-        if (
-            state.get("current_page") != before_state.get("current_page")
-            or state.get("first_order_reference") != before_state.get("first_order_reference")
-        ):
+        if pagination_signature(state) != before_signature:
             wait_for_order_cards(page)
-            return True, state
+            return True, state, "page_changed"
 
-    return False, last_state
+    return False, last_state, "next_click_did_not_change_page"
 
 
 SCRAPE_EOD_ORDERS_JS = """
@@ -694,27 +721,32 @@ def scrape_all_eod_orders(page):
                 "first_order_reference": page_order_refs[0] if page_order_refs else None,
                 "last_order_reference": page_order_refs[-1] if page_order_refs else None,
                 "has_next_before_click": state_before.get("has_next"),
+                "next_exists_before_click": state_before.get("next_exists"),
+                "url_before_click": state_before.get("url"),
             }
         )
 
-        if not state_before.get("has_next"):
-            steps.append({"name": "pagination_finished", "ok": True, "reason": "next_disabled_or_missing"})
-            break
-
-        changed, state_after = click_next_page(page, state_before)
+        changed, state_after, next_reason = click_next_page(page, state_before)
         steps.append(
             {
                 "name": "click_next_page",
                 "ok": changed,
+                "reason": next_reason,
                 "from_page": state_before.get("current_page"),
                 "to_page": state_after.get("current_page"),
                 "from_first_order": state_before.get("first_order_reference"),
                 "to_first_order": state_after.get("first_order_reference"),
+                "from_last_order": state_before.get("last_order_reference"),
+                "to_last_order": state_after.get("last_order_reference"),
+                "from_order_count": state_before.get("order_count"),
+                "to_order_count": state_after.get("order_count"),
+                "from_url": state_before.get("url"),
+                "to_url": state_after.get("url"),
             }
         )
 
         if not changed:
-            steps.append({"name": "pagination_finished", "ok": True, "reason": "next_click_did_not_change_page"})
+            steps.append({"name": "pagination_finished", "ok": True, "reason": next_reason})
             break
     else:
         steps.append({"name": "pagination_finished", "ok": False, "reason": "max_pages_reached"})

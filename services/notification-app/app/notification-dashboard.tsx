@@ -248,10 +248,14 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
     <main className="page-shell">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark pharmacy-logo" aria-label="Apothekenbetrieb">
-            <span className="pharmacy-leaf leaf-left" aria-hidden="true" />
+          <div className="brand-mark pharmacy-logo" aria-label="Medizinische Cannabis-Apotheke">
+            <span className="pharmacy-leaf leaf-far-left" aria-hidden="true" />
+            <span className="pharmacy-leaf leaf-mid-left" aria-hidden="true" />
+            <span className="pharmacy-leaf leaf-inner-left" aria-hidden="true" />
             <span className="pharmacy-leaf leaf-center" aria-hidden="true" />
-            <span className="pharmacy-leaf leaf-right" aria-hidden="true" />
+            <span className="pharmacy-leaf leaf-inner-right" aria-hidden="true" />
+            <span className="pharmacy-leaf leaf-mid-right" aria-hidden="true" />
+            <span className="pharmacy-leaf leaf-far-right" aria-hidden="true" />
             <span className="pharmacy-stem" aria-hidden="true" />
             <span className="pharmacy-cross" aria-hidden="true" />
           </div>

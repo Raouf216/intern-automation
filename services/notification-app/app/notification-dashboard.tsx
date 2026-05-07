@@ -3,11 +3,9 @@
 import {
   AlertTriangle,
   ArrowRight,
-  Bell,
   ChevronDown,
   CheckCircle2,
   Clock3,
-  Database,
   FileSpreadsheet,
   Inbox,
   Moon,
@@ -144,6 +142,13 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
   }, []);
 
   useEffect(() => {
+    const savedSection = window.localStorage.getItem("notification-app-section");
+    if (isSectionKey(savedSection)) {
+      setActiveSection(savedSection);
+    }
+  }, []);
+
+  useEffect(() => {
     let isMounted = true;
     let refreshInFlight = false;
 
@@ -210,6 +215,11 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
     window.localStorage.setItem("notification-app-theme", nextTheme);
   }
 
+  function selectSection(section: SectionKey) {
+    setActiveSection(section);
+    window.localStorage.setItem("notification-app-section", section);
+  }
+
   const sectionCounts = useMemo(
     () => {
       const displayNotifications = notifications.filter((notification) => !isNoisyUploadPlaceholder(notification));
@@ -237,8 +247,9 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
     <main className="page-shell">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark" aria-hidden="true">
-            <Bell size={24} />
+          <div className="brand-mark pharmacy-logo" aria-label="Rats-Apotheke">
+            <span className="pharmacy-cross" aria-hidden="true" />
+            <strong>RA</strong>
           </div>
           <div>
             <p className="eyebrow">Rats-Apotheke Betrieb</p>
@@ -251,10 +262,6 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
             {theme === "night" ? <Sun size={16} /> : <Moon size={16} />}
             <span>{theme === "night" ? "Hell" : "Nacht"}</span>
           </button>
-          <div className={config.configured ? "system-state ok" : "system-state warn"}>
-            {config.configured ? <ShieldCheck size={16} /> : <AlertTriangle size={16} />}
-            <span>{config.configured ? "Supabase verbunden" : "Supabase nicht konfiguriert"}</span>
-          </div>
         </div>
       </header>
 
@@ -284,7 +291,7 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
               <button
                 type="button"
                 className={section.value === activeSection ? "nav-item active" : "nav-item"}
-                onClick={() => setActiveSection(section.value)}
+                onClick={() => selectSection(section.value)}
                 key={section.value}
               >
                 <span>
@@ -337,23 +344,11 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
 
         <aside className="operations-panel" aria-label="Systeminformationen">
           <div className="panel-heading">
-            <Database size={18} />
-            <span>Datenquelle</span>
-          </div>
-          <div className="info-line">
-            <span>Schema</span>
-            <strong>{config.schema}</strong>
-          </div>
-          <div className="info-line">
-            <span>Tabelle</span>
-            <strong>{config.table}</strong>
-          </div>
-          <div className="panel-heading second">
             <FileSpreadsheet size={18} />
-            <span>Bereiche</span>
+            <span>Arbeitsbereiche</span>
           </div>
           <p className="panel-copy">
-            Upload-Meldungen werden gespeichert und automatisch aktualisiert. DoktorABC Sync enthaelt Produktsync sowie EOD/Self-Pickup Botmeldungen.
+            Uploads, DoktorABC Sync und Abrechnung-Verifikation bleiben getrennt. Der gewaehlte Bereich bleibt nach dem Aktualisieren geoeffnet.
           </p>
         </aside>
       </div>
@@ -361,11 +356,19 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
   );
 }
 
+function isSectionKey(value: string | null): value is SectionKey {
+  return value === "upload" || value === "doktorabc_sync" || value === "abrechnung_verification";
+}
+
 function NotificationRow({ notification }: { notification: StoredNotification }) {
   const rowsInserted = rowsInsertedFromPayload(notification.payload);
   const syncDetails = syncDetailsFromPayload(notification.payload);
   const orderBotDetails = orderBotDetailsFromPayload(notification.payload);
   const showUploadDetails = shouldShowUploadDetails(notification);
+  const notificationMessage =
+    orderBotDetails?.kind === "excel" && notification.status !== "failure"
+      ? excelMessageFromDetails(orderBotDetails)
+      : notification.message;
 
   return (
     <article className={`notification-row status-${notification.status}`}>
@@ -383,7 +386,7 @@ function NotificationRow({ notification }: { notification: StoredNotification })
         <div className="notification-title-row">
           <div>
             <h3>{notification.title}</h3>
-            <p>{notification.message}</p>
+            <p>{notificationMessage}</p>
           </div>
           <div className="notification-meta">
             <span className={`status-chip chip-${notification.status}`}>{formatStatus(notification.status)}</span>
@@ -772,6 +775,21 @@ function formatNumber(value: number | null) {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "nicht angegeben";
 }
 
+function adjustedExcelRowCount(value: number | null) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(value - 1, 0) : null;
+}
+
+function excelMessageFromDetails(details: OrderBotDetails) {
+  const rows = formatNumber(details.excelRowCount);
+  const exportDate = details.exportDate || "heute";
+
+  if (details.sentToN8n) {
+    return `${rows} Excel-Zeilen am ${exportDate} exportiert und an n8n gesendet.`;
+  }
+
+  return `${rows} Excel-Zeilen am ${exportDate} exportiert.`;
+}
+
 function orderCountSummary(lists: OrderBotList[]) {
   if (!lists.length) {
     return "nicht angegeben";
@@ -875,7 +893,7 @@ function orderBotDetailsFromPayload(payload: Record<string, unknown>): OrderBotD
       sizeBytes: nullableNumberValue(payload.download_size_bytes ?? payload.size_bytes),
       sentToN8n: Boolean(payload.sent_to_n8n),
       n8nStatusCode: nullableNumberValue(payload.n8n_status_code),
-      excelRowCount: nullableNumberValue(payload.excel_row_count ?? recordValue(payload.summary)?.excel_rows),
+      excelRowCount: adjustedExcelRowCount(nullableNumberValue(payload.excel_row_count ?? recordValue(payload.summary)?.excel_rows)),
       exportDate: stringValue(payload.export_date),
       failedStep,
       currentUrl,

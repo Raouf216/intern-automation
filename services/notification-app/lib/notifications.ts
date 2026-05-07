@@ -505,7 +505,7 @@ function eodBotMessage(status: NotificationStatus, payload: UploadWebhookPayload
   }
 
   if (isEodExcelExport(payload)) {
-    const rows = numberOrZero(payload.excel_row_count ?? payload.summary?.excel_rows);
+    const rows = excelDataRowCount(payload.excel_row_count ?? payload.summary?.excel_rows);
     const exportDate = payload.export_date || formatDateOnly(payload.timestamp) || "heute";
     if (payload.sent_to_n8n) {
       return `${rows} Excel-Zeilen am ${exportDate} exportiert und an n8n gesendet.`;
@@ -554,4 +554,8 @@ function formatDateOnly(value: string | undefined) {
 
 function numberOrZero(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function excelDataRowCount(value: unknown) {
+  return Math.max(numberOrZero(value) - 1, 0);
 }

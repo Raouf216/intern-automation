@@ -296,7 +296,7 @@ def notification_order_snapshot(row):
     return {
         "order_id": row.get("order_reference"),
         "order_reference": row.get("order_reference"),
-        "created_date": billing_date or row.get("prescription_date"),
+        "created_date": row.get("prescription_date"),
         "billing_date": billing_date,
         "prescription_date": row.get("prescription_date"),
         "products": row.get("products"),
@@ -1134,6 +1134,14 @@ def clean_text(value):
     return cleaned or None
 
 
+def order_reference_key(value):
+    cleaned = clean_text(value)
+    if not cleaned:
+        return None
+
+    return cleaned.strip("#").upper()
+
+
 def join_pipe(values):
     cleaned = [clean_text(value) for value in values if clean_text(value)]
     return " | ".join(cleaned)
@@ -1156,41 +1164,114 @@ class SelfPickupBillingDateCollector:
         self.billing_dates_by_reference = {}
         self.responses = []
         self.errors = []
+        self.fetched_urls = set()
 
     def capture_response(self, response):
         if SELF_PICKUP_ORDERS_API_FRAGMENT not in response.url:
             return
 
+        try:
+            self.capture_payload(response.url, response.status, response.json())
+        except Exception as exc:
+            self.capture_error(response.url, getattr(response, "status", None), exc)
+
+    def capture_payload(self, url, status, payload, source="response"):
         snapshot = {
-            "url": response.url,
-            "status": response.status,
+            "url": url,
+            "status": status,
+            "source": source,
             "results": 0,
             "captured_billing_dates": 0,
         }
+        results = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(results, list):
+            self.responses.append(snapshot)
+            return
 
+        snapshot["results"] = len(results)
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+
+            key = order_reference_key(item.get("hashID"))
+            billing_date = parse_datetime_to_second_iso(item.get("createdAt"))
+            if key and billing_date:
+                self.billing_dates_by_reference[key] = billing_date
+                snapshot["captured_billing_dates"] += 1
+
+        self.responses.append(snapshot)
+
+    def capture_error(self, url, status, exc):
+        snapshot = {
+            "url": url,
+            "status": status,
+            "source": "response",
+            "results": 0,
+            "captured_billing_dates": 0,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        self.responses.append(snapshot)
+        self.errors.append(snapshot["error"])
+
+    def collect_from_performance(self, page):
         try:
-            payload = response.json()
-            results = payload.get("results") if isinstance(payload, dict) else None
-            if not isinstance(results, list):
-                self.responses.append(snapshot)
-                return
+            entries = page.evaluate(
+                """
+                async (fragment) => {
+                  const urls = Array.from(
+                    new Set(
+                      performance
+                        .getEntriesByType("resource")
+                        .map((entry) => entry.name)
+                        .filter((url) => url.includes(fragment))
+                    )
+                  );
+                  const responses = [];
 
-            snapshot["results"] = len(results)
-            for item in results:
-                if not isinstance(item, dict):
-                    continue
+                  for (const url of urls) {
+                    try {
+                      const response = await fetch(url, { credentials: "include" });
+                      const payload = await response.json();
+                      responses.push({ url, status: response.status, payload });
+                    } catch (error) {
+                      responses.push({
+                        url,
+                        status: null,
+                        error: `${error?.name || "Error"}: ${error?.message || String(error)}`,
+                      });
+                    }
+                  }
 
-                order_reference = clean_text(item.get("hashID"))
-                billing_date = parse_datetime_to_second_iso(item.get("createdAt"))
-                if order_reference and billing_date:
-                    self.billing_dates_by_reference[order_reference] = billing_date
-                    snapshot["captured_billing_dates"] += 1
-
-            self.responses.append(snapshot)
+                  return responses;
+                }
+                """,
+                SELF_PICKUP_ORDERS_API_FRAGMENT,
+            )
         except Exception as exc:
-            snapshot["error"] = f"{type(exc).__name__}: {exc}"
-            self.responses.append(snapshot)
-            self.errors.append(snapshot["error"])
+            self.capture_error("performance", None, exc)
+            return
+
+        for entry in entries:
+            url = entry.get("url")
+            if not url or url in self.fetched_urls:
+                continue
+
+            self.fetched_urls.add(url)
+            if entry.get("error"):
+                self.responses.append(
+                    {
+                        "url": url,
+                        "status": entry.get("status"),
+                        "source": "performance_fetch",
+                        "results": 0,
+                        "captured_billing_dates": 0,
+                        "error": entry["error"],
+                    }
+                )
+                self.errors.append(entry["error"])
+                continue
+
+            self.capture_payload(url, entry.get("status"), entry.get("payload"), source="performance_fetch")
 
     def snapshot(self):
         return {
@@ -1211,7 +1292,7 @@ def normalize_scraped_order(order, order_type, billing_dates_by_reference=None):
     billing_date = None
 
     if order_type == SELF_PICKUP_ORDER_TYPE:
-        billing_date = (billing_dates_by_reference or {}).get(order_reference)
+        billing_date = (billing_dates_by_reference or {}).get(order_reference_key(order_reference))
 
     return {
         "order_type": order_type,
@@ -1685,7 +1766,7 @@ def scrape_orders_on_current_page(page):
     return page.evaluate(SCRAPE_EOD_ORDERS_JS)
 
 
-def scrape_all_eod_orders(page):
+def scrape_all_eod_orders(page, billing_date_collector=None):
     steps = []
     rows_debug = select_100_rows(page)
     steps.append({"name": "select_100_rows", "ok": True, **rows_debug})
@@ -1697,6 +1778,9 @@ def scrape_all_eod_orders(page):
 
     for page_index in range(1, EOD_MAX_PAGES + 1):
         state_before = get_pagination_state(page)
+        if billing_date_collector:
+            billing_date_collector.collect_from_performance(page)
+
         raw_orders = scrape_orders_on_current_page(page)
         page_order_refs = [order.get("order_reference") for order in raw_orders if order.get("order_reference")]
 
@@ -1962,7 +2046,7 @@ def sync_end_of_day_orders():
                 }
 
                 steps.append({"name": "scrape_all_pages", "ok": None, "order_type": order_type})
-                scrape_result = scrape_all_eod_orders(page)
+                scrape_result = scrape_all_eod_orders(page, billing_date_collector=billing_date_collector)
                 raw_orders = scrape_result["orders"]
                 billing_dates_by_reference = (
                     billing_date_collector.billing_dates_by_reference if billing_date_collector else None

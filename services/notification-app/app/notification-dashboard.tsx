@@ -74,6 +74,7 @@ type SyncDetails = {
 
 type OrderBotOrder = {
   orderReference: string;
+  billingDate: string;
   createdDate: string;
   products: string;
   prices: string;
@@ -598,7 +599,7 @@ function OrderBotOrderList({ list }: { list: OrderBotList }) {
             <article className="order-bot-card" key={`${order.orderReference}-${index}`}>
               <div className="sync-product-head">
                 <strong>{order.orderReference || "Order ID fehlt"}</strong>
-                <span>{order.createdDate ? formatExactDateTime(order.createdDate) : "Datum fehlt"}</span>
+                <span>{formatOrderBotDate(order)}</span>
               </div>
               <div className="order-bot-products">
                 <span>{order.products || "Produkte fehlen"}</span>
@@ -970,10 +971,12 @@ function orderListsFromPayload(payload: Record<string, unknown>): OrderBotList[]
 }
 
 function orderFromPayload(row: Record<string, unknown>): OrderBotOrder {
+  const billingDate = stringValue(row.billing_date) || stringValue(row.billingDate);
+
   return {
     orderReference: stringValue(row.order_id) || stringValue(row.order_reference) || stringValue(row.orderReference),
+    billingDate,
     createdDate:
-      stringValue(row.billing_date) ||
       stringValue(row.created_date) ||
       stringValue(row.createdDate) ||
       stringValue(row.prescription_date),
@@ -1193,4 +1196,17 @@ function formatExactDateTime(value: string) {
     second: "2-digit",
     hour12: false,
   }).format(date);
+}
+
+function formatOrderBotDate(order: OrderBotOrder) {
+  if (order.billingDate) {
+    return formatExactDateTime(order.billingDate);
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(order.createdDate)) {
+    const [year, month, day] = order.createdDate.split("-");
+    return `${day}.${month}.${year}`;
+  }
+
+  return order.createdDate ? formatExactDateTime(order.createdDate) : "Datum fehlt";
 }

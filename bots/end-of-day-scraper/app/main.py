@@ -562,6 +562,27 @@ def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
     }
 
 
+def maybe_export_end_of_day_excel_to_n8n(page, timestamp, metadata, rows_by_order_type):
+    eod_order_count = len(rows_by_order_type.get(EOD_ORDER_TYPE, []))
+
+    if eod_order_count == 0:
+        result = {
+            "skipped": True,
+            "skipped_reason": "no_eod_orders",
+            "eod_order_count": eod_order_count,
+            "sent_to_n8n": False,
+            "n8n_skipped_reason": "No EOD orders; Excel export was not clicked.",
+        }
+        log_event("eod_excel_export_skipped", **result)
+        return result
+
+    return {
+        "skipped": False,
+        "eod_order_count": eod_order_count,
+        **export_end_of_day_excel_to_n8n(page, timestamp, metadata),
+    }
+
+
 def end_of_day_url():
     return os.environ.get("DOKTORABC_END_OF_DAY_URL") or DEFAULT_END_OF_DAY_URL
 
@@ -1985,8 +2006,14 @@ def sync_end_of_day_orders():
                     **notification_result,
                 }
 
-                steps.append({"name": "export_eod_excel_to_n8n", "ok": None})
-                export_result = export_end_of_day_excel_to_n8n(
+                steps.append(
+                    {
+                        "name": "export_eod_excel_to_n8n",
+                        "ok": None,
+                        "eod_order_count": len(rows_by_order_type.get(EOD_ORDER_TYPE, [])),
+                    }
+                )
+                export_result = maybe_export_end_of_day_excel_to_n8n(
                     page,
                     timestamp,
                     {
@@ -1995,18 +2022,29 @@ def sync_end_of_day_orders():
                         "sent_to_supabase": 0,
                         "targets_count": len(target_results),
                     },
+                    rows_by_order_type,
                 )
                 steps[-1] = {"name": "export_eod_excel_to_n8n", "ok": True, **export_result}
 
-                steps.append({"name": "send_excel_export_notification", "ok": None})
-                excel_notification_result = send_excel_export_notification(export_result, timestamp)
-                notification_results.append(
-                    {
-                        "order_type": "excel_export",
-                        **excel_notification_result,
-                    }
-                )
-                steps[-1] = {"name": "send_excel_export_notification", "ok": True, **excel_notification_result}
+                if export_result.get("skipped"):
+                    steps.append(
+                        {
+                            "name": "send_excel_export_notification",
+                            "ok": True,
+                            "skipped": True,
+                            "skipped_reason": export_result.get("skipped_reason"),
+                        }
+                    )
+                else:
+                    steps.append({"name": "send_excel_export_notification", "ok": None})
+                    excel_notification_result = send_excel_export_notification(export_result, timestamp)
+                    notification_results.append(
+                        {
+                            "order_type": "excel_export",
+                            **excel_notification_result,
+                        }
+                    )
+                    steps[-1] = {"name": "send_excel_export_notification", "ok": True, **excel_notification_result}
 
                 return {
                     "ok": True,
@@ -2057,8 +2095,14 @@ def sync_end_of_day_orders():
                 **notification_result,
             }
 
-            steps.append({"name": "export_eod_excel_to_n8n", "ok": None})
-            export_result = export_end_of_day_excel_to_n8n(
+            steps.append(
+                {
+                    "name": "export_eod_excel_to_n8n",
+                    "ok": None,
+                    "eod_order_count": len(rows_by_order_type.get(EOD_ORDER_TYPE, [])),
+                }
+            )
+            export_result = maybe_export_end_of_day_excel_to_n8n(
                 page,
                 timestamp,
                 {
@@ -2069,18 +2113,29 @@ def sync_end_of_day_orders():
                     "warnings_count": len(all_warnings),
                     "duplicate_order_references_count": len(all_duplicate_order_references),
                 },
+                rows_by_order_type,
             )
             steps[-1] = {"name": "export_eod_excel_to_n8n", "ok": True, **export_result}
 
-            steps.append({"name": "send_excel_export_notification", "ok": None})
-            excel_notification_result = send_excel_export_notification(export_result, timestamp)
-            notification_results.append(
-                {
-                    "order_type": "excel_export",
-                    **excel_notification_result,
-                }
-            )
-            steps[-1] = {"name": "send_excel_export_notification", "ok": True, **excel_notification_result}
+            if export_result.get("skipped"):
+                steps.append(
+                    {
+                        "name": "send_excel_export_notification",
+                        "ok": True,
+                        "skipped": True,
+                        "skipped_reason": export_result.get("skipped_reason"),
+                    }
+                )
+            else:
+                steps.append({"name": "send_excel_export_notification", "ok": None})
+                excel_notification_result = send_excel_export_notification(export_result, timestamp)
+                notification_results.append(
+                    {
+                        "order_type": "excel_export",
+                        **excel_notification_result,
+                    }
+                )
+                steps[-1] = {"name": "send_excel_export_notification", "ok": True, **excel_notification_result}
 
             return {
                 "ok": True,

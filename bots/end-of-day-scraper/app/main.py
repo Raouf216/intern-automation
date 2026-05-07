@@ -564,6 +564,10 @@ def end_of_day_url():
     return os.environ.get("DOKTORABC_END_OF_DAY_URL") or DEFAULT_END_OF_DAY_URL
 
 
+def login_url():
+    return (os.environ.get("DOKTORABC_LOGIN_URL") or "").strip() or end_of_day_url()
+
+
 def self_pickup_url():
     return (os.environ.get("DOKTORABC_SELF_PICKUP_URL") or "").strip() or None
 
@@ -614,8 +618,8 @@ def fill_first_visible(page, selectors, value):
 
 def click_pharmacist_role(page):
     for clicker in (
-        lambda: page.get_by_text("Pharmacist", exact=True).click(timeout=EOD_PHARMACIST_ROLE_CLICK_TIMEOUT_MS),
         lambda: page.get_by_label("Pharmacist").click(timeout=EOD_PHARMACIST_ROLE_CLICK_TIMEOUT_MS),
+        lambda: page.get_by_text("Pharmacist", exact=True).click(timeout=EOD_PHARMACIST_ROLE_CLICK_TIMEOUT_MS),
         lambda: page.locator('text=/pharmacist/i').first.click(timeout=EOD_PHARMACIST_ROLE_CLICK_TIMEOUT_MS),
     ):
         try:
@@ -640,6 +644,52 @@ def click_login_button(page):
             continue
 
     raise RuntimeError("Could not find DoktorABC login button.")
+
+
+def save_session_state(context):
+    session_state_dir = os.path.dirname(SESSION_STATE_PATH)
+    if session_state_dir:
+        os.makedirs(session_state_dir, exist_ok=True)
+
+    context.storage_state(path=SESSION_STATE_PATH)
+
+
+def login_if_needed(page, context, target_url, before_login_path=None):
+    if not visible_login_form(page):
+        print("DoktorABC session is already authenticated", flush=True)
+        return False
+
+    print("DoktorABC login page visible -> logging in", flush=True)
+
+    fill_first_visible(
+        page,
+        ('input[placeholder*="Email" i]', 'input[type="email"]', 'input[name*="email" i]'),
+        required_env("DOKTORABC_USERNAME"),
+    )
+    fill_first_visible(
+        page,
+        ('input[placeholder*="Password" i]', 'input[type="password"]', 'input[name*="password" i]'),
+        required_env("DOKTORABC_PASSWORD"),
+    )
+    click_pharmacist_role(page)
+
+    if before_login_path:
+        page.screenshot(path=before_login_path, full_page=True)
+
+    click_login_button(page)
+    page.wait_for_load_state("domcontentloaded")
+
+    if not page.url.startswith(target_url):
+        goto_page(page, target_url)
+    else:
+        page.wait_for_load_state("domcontentloaded")
+
+    if visible_login_form(page):
+        raise RuntimeError("DoktorABC login failed; login page is still visible.")
+
+    save_session_state(context)
+
+    return True
 
 
 def wait_for_load_states(page):
@@ -1391,8 +1441,9 @@ def open_saved_session(browser, target_url, order_type):
 
     try:
         goto_page(page, target_url)
+        logged_in = login_if_needed(page, context, target_url)
         wait_result = wait_for_orders_page(page, target_url)
-        return context, page, True, wait_result
+        return context, page, not logged_in, wait_result
     except Exception as exc:
         context.close()
         print(f"saved DoktorABC session is expired or not ready: {type(exc).__name__}: {exc}", flush=True)
@@ -1405,35 +1456,9 @@ def open_fresh_session(browser, target_url, order_type, before_login_path=None):
     context = browser.new_context(**browser_context_options())
     page = context.new_page()
 
-    goto_page(page, required_env("DOKTORABC_LOGIN_URL"))
-    wait_for_load_states(page)
-
-    fill_first_visible(
-        page,
-        ('input[placeholder*="Email" i]', 'input[type="email"]', 'input[name*="email" i]'),
-        required_env("DOKTORABC_USERNAME"),
-    )
-    fill_first_visible(
-        page,
-        ('input[placeholder*="Password" i]', 'input[type="password"]', 'input[name*="password" i]'),
-        required_env("DOKTORABC_PASSWORD"),
-    )
-    click_pharmacist_role(page)
-
-    if before_login_path:
-        page.screenshot(path=before_login_path, full_page=True)
-
-    click_login_button(page)
-    page.wait_for_load_state("domcontentloaded")
-    wait_for_load_states(page)
-    goto_page(page, target_url)
+    goto_page(page, login_url())
+    login_if_needed(page, context, target_url, before_login_path=before_login_path)
     wait_result = wait_for_orders_page(page, target_url)
-
-    session_state_dir = os.path.dirname(SESSION_STATE_PATH)
-    if session_state_dir:
-        os.makedirs(session_state_dir, exist_ok=True)
-
-    context.storage_state(path=SESSION_STATE_PATH)
 
     return context, page, False, wait_result
 

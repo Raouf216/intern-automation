@@ -320,10 +320,10 @@ function uploadMessage(status: NotificationStatus, filename: string, payload: Up
     }
 
     if (status === "failure") {
-      return `Datenbankimport fuer ${filename} fehlgeschlagen${payload.error ? `: ${payload.error}` : ""}`;
+      return `Datenbankimport für ${filename} fehlgeschlagen${payload.error ? `: ${payload.error}` : ""}`;
     }
 
-    return `Datenbankimport fuer ${filename}`;
+    return `Datenbankimport für ${filename}`;
   }
 
   if (isOrdersCsvInsert(payload)) {
@@ -333,15 +333,15 @@ function uploadMessage(status: NotificationStatus, filename: string, payload: Up
 
     if (status === "success") {
       const rowText = rowsInserted === null ? "Zeilen" : `${rowsInserted} Zeilen`;
-      return `${rowText} in ${table} eingefuegt: ${filename}`;
+      return `${rowText} in ${table} eingefügt: ${filename}`;
     }
 
     if (status === "failure") {
       const rowText = rowsFound === null ? "" : ` (${rowsFound} gelesene Zeilen)`;
-      return `Datenbankimport fuer ${filename} fehlgeschlagen${rowText}${payload.error ? `: ${payload.error}` : ""}`;
+      return `Datenbankimport für ${filename} fehlgeschlagen${rowText}${payload.error ? `: ${payload.error}` : ""}`;
     }
 
-    return `Datenbankimport fuer ${filename}`;
+    return `Datenbankimport für ${filename}`;
   }
 
   if (status === "triggered") {
@@ -360,7 +360,7 @@ function uploadMessage(status: NotificationStatus, filename: string, payload: Up
     return `Upload konnte nicht gespeichert werden: ${filename}${payload.error ? ` (${payload.error})` : ""}`;
   }
 
-  return `Upload-Meldung fuer ${filename}`;
+  return `Upload-Meldung für ${filename}`;
 }
 
 function isOrdersCsvInsert(payload: UploadWebhookPayload) {
@@ -445,10 +445,10 @@ function productSyncMessage(status: NotificationStatus, payload: UploadWebhookPa
   if (status === "success") {
     const summary = payload.summary || {};
     return [
-      `${numberOrZero(summary.scraped)} Produkte geprueft`,
+      `${numberOrZero(summary.scraped)} Produkte geprüft`,
       `${numberOrZero(summary.inserted)} neu`,
-      `${numberOrZero(summary.updated)} geaendert`,
-      `${numberOrZero(summary.unchanged)} unveraendert`,
+      `${numberOrZero(summary.updated)} geändert`,
+      `${numberOrZero(summary.unchanged)} unverändert`,
     ].join(", ");
   }
 

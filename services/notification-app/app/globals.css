@@ -113,35 +113,77 @@ button {
   color: #ffffff;
 }
 
-.pharmacy-logo strong {
-  position: relative;
-  z-index: 1;
-  align-self: end;
-  margin-bottom: 7px;
-  font-size: 13px;
-  font-weight: 900;
-  line-height: 1;
+.pharmacy-logo {
+  overflow: hidden;
 }
 
-.pharmacy-cross,
-.pharmacy-cross::before {
+.pharmacy-leaf {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  width: 13px;
+  height: 26px;
+  border-radius: 88% 0 88% 0;
+  background: color-mix(in srgb, var(--green) 84%, #ffffff);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.36);
+  transform-origin: 50% 100%;
+}
+
+.leaf-left {
+  transform: translateX(-58%) rotate(-34deg);
+}
+
+.leaf-center {
+  top: 8px;
+  transform: translateX(-50%) rotate(-4deg);
+}
+
+.leaf-right {
+  transform: translateX(-42%) rotate(34deg);
+}
+
+.pharmacy-stem {
   content: "";
   position: absolute;
   left: 50%;
-  top: 11px;
+  bottom: 13px;
+  width: 3px;
+  height: 19px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 82%, #ffffff);
   transform: translateX(-50%);
-  width: 9px;
-  height: 27px;
-  border-radius: 3px;
+}
+
+.pharmacy-cross {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
   background: #ffffff;
+  box-shadow: 0 6px 14px rgba(33, 23, 25, 0.18);
+}
+
+.pharmacy-cross::before,
+.pharmacy-cross::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: 999px;
+  background: var(--brand-strong);
+  transform: translate(-50%, -50%);
 }
 
 .pharmacy-cross::before {
-  left: 50%;
-  top: 9px;
-  width: 27px;
-  height: 9px;
-  transform: translateX(-50%);
+  width: 4px;
+  height: 13px;
+}
+
+.pharmacy-cross::after {
+  width: 13px;
+  height: 4px;
 }
 
 .brand-mark svg {
@@ -256,6 +298,12 @@ h3 {
   line-height: 1;
 }
 
+.metric-block.success span,
+.metric-block.success strong {
+  color: var(--green);
+}
+
+.metric-block.danger span,
 .metric-block.danger strong {
   color: var(--red);
 }
@@ -466,7 +514,7 @@ h3 {
   gap: 5px;
 }
 
-.notification-title-row time,
+.notification-time,
 .status-chip {
   min-width: 72px;
   padding: 4px 7px;
@@ -477,6 +525,23 @@ h3 {
   font-weight: 900;
   text-align: center;
   white-space: normal;
+}
+
+.notification-time {
+  min-width: 124px;
+  display: grid;
+  gap: 2px;
+}
+
+.notification-time span {
+  line-height: 1.1;
+}
+
+.notification-time small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
 }
 
 .status-chip {
@@ -995,7 +1060,7 @@ dd {
     justify-items: start;
   }
 
-  .notification-title-row time {
+  .notification-time {
     width: fit-content;
   }
 }

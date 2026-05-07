@@ -115,19 +115,19 @@ const sections: Array<{ label: string; value: SectionKey; description: string; c
     label: "DoktorABC Sync",
     value: "doktorabc_sync",
     description: "Produktsynchronisierung",
-    caption: "Button-Ausloeser fuer DoktorABC",
+    caption: "Button-Auslöser für DoktorABC",
     active: true,
   },
   {
     label: "Abrechnung Verifikation",
     value: "abrechnung_verification",
     description: "Abrechnung-Verifikation",
-    caption: "Pruefung und Ergebnisprotokoll",
+    caption: "Prüfung und Ergebnisprotokoll",
     active: false,
   },
 ];
 
-export function NotificationDashboard({ initialNotifications, initialError, config }: Props) {
+export function NotificationDashboard({ initialNotifications, initialError }: Props) {
   const [notifications, setNotifications] = useState(initialNotifications);
   const [activeSection, setActiveSection] = useState<SectionKey>("upload");
   const [loadError, setLoadError] = useState<string | null>(initialError);
@@ -247,14 +247,17 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
     <main className="page-shell">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark pharmacy-logo" aria-label="Rats-Apotheke">
+          <div className="brand-mark pharmacy-logo" aria-label="Apothekenbetrieb">
+            <span className="pharmacy-leaf leaf-left" aria-hidden="true" />
+            <span className="pharmacy-leaf leaf-center" aria-hidden="true" />
+            <span className="pharmacy-leaf leaf-right" aria-hidden="true" />
+            <span className="pharmacy-stem" aria-hidden="true" />
             <span className="pharmacy-cross" aria-hidden="true" />
-            <strong>RA</strong>
           </div>
           <div>
-            <p className="eyebrow">Rats-Apotheke Betrieb</p>
+            <p className="eyebrow">Apothekenbetrieb</p>
             <h1>Benachrichtigungen</h1>
-            <p className="subtitle">Zentrale Uebersicht fuer operative Systemmeldungen</p>
+            <p className="subtitle">Zentrale Übersicht für operative Systemmeldungen</p>
           </div>
         </div>
         <div className="topbar-actions">
@@ -265,8 +268,8 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
         </div>
       </header>
 
-      <section className="overview-band" aria-label="Upload-Uebersicht">
-        <div className="metric-block">
+      <section className="overview-band" aria-label="Upload-Übersicht">
+        <div className="metric-block success">
           <span>Erfolgreiche Uploads</span>
           <strong>{successCount}</strong>
         </div>
@@ -348,7 +351,7 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
             <span>Arbeitsbereiche</span>
           </div>
           <p className="panel-copy">
-            Uploads, DoktorABC Sync und Abrechnung-Verifikation bleiben getrennt. Der gewaehlte Bereich bleibt nach dem Aktualisieren geoeffnet.
+            Uploads, DoktorABC Sync und Abrechnung-Verifikation bleiben getrennt. Der gewählte Bereich bleibt nach dem Aktualisieren geöffnet.
           </p>
         </aside>
       </div>
@@ -390,7 +393,10 @@ function NotificationRow({ notification }: { notification: StoredNotification })
           </div>
           <div className="notification-meta">
             <span className={`status-chip chip-${notification.status}`}>{formatStatus(notification.status)}</span>
-            <time dateTime={notification.created_at}>{formatRelativeTime(notification.created_at)}</time>
+            <time className="notification-time" dateTime={notification.created_at}>
+              <span>{formatRelativeTime(notification.created_at)}</span>
+              <small>{formatExactDateTime(notification.created_at)}</small>
+            </time>
           </div>
         </div>
         {orderBotDetails ? (
@@ -415,7 +421,7 @@ function NotificationRow({ notification }: { notification: StoredNotification })
         ) : syncDetails ? (
           <dl className="detail-grid sync-grid">
             <div>
-              <dt>Geprueft</dt>
+              <dt>Geprüft</dt>
               <dd>{syncDetails.scraped}</dd>
             </div>
             <div>
@@ -423,11 +429,11 @@ function NotificationRow({ notification }: { notification: StoredNotification })
               <dd>{syncDetails.inserted}</dd>
             </div>
             <div>
-              <dt>Geaendert</dt>
+              <dt>Geändert</dt>
               <dd>{syncDetails.updated}</dd>
             </div>
             <div>
-              <dt>Unveraendert</dt>
+              <dt>Unverändert</dt>
               <dd>{syncDetails.unchanged}</dd>
             </div>
             <div>
@@ -446,7 +452,7 @@ function NotificationRow({ notification }: { notification: StoredNotification })
               <dd>{formatUploadType(notification.upload_type)}</dd>
             </div>
             <div>
-              <dt>Groesse</dt>
+              <dt>Größe</dt>
               <dd>{formatBytes(notification.size_bytes)}</dd>
             </div>
             {rowsInserted === null ? null : (
@@ -485,7 +491,7 @@ function NotificationRow({ notification }: { notification: StoredNotification })
           <details className={`sync-log-panel ${notification.status === "failure" ? "danger" : "success"}`}>
             <summary>
               <ChevronDown size={15} />
-              <span>{notification.status === "failure" ? "Fehlerdetails anzeigen" : "Aenderungsprotokoll anzeigen"}</span>
+              <span>{notification.status === "failure" ? "Fehlerdetails anzeigen" : "Änderungsprotokoll anzeigen"}</span>
             </summary>
             <SyncLogDetails details={syncDetails} status={notification.status} error={notification.error} />
           </details>
@@ -555,7 +561,7 @@ function OrderBotLogDetails({
               <strong>{details.filename || "nicht angegeben"}</strong>
             </span>
             <span>
-              <b>Groesse</b>
+              <b>Größe</b>
               <strong>{formatBytes(details.sizeBytes)}</strong>
             </span>
             <span>
@@ -576,7 +582,7 @@ function OrderBotOrderList({ list }: { list: OrderBotList }) {
   if (!list.orders.length) {
     return (
       <div className="sync-log-content">
-        <p className="sync-empty-log">Keine Order IDs fuer diesen Bereich im Payload gespeichert.</p>
+        <p className="sync-empty-log">Keine Order IDs für diesen Bereich im Payload gespeichert.</p>
       </div>
     );
   }
@@ -630,8 +636,8 @@ function SyncLogDetails({
       ) : null}
 
       {details.changedProducts.length ? (
-        <section className="sync-product-section" aria-label="Geaenderte Produkte">
-          <h4>Geaenderte Produkte</h4>
+        <section className="sync-product-section" aria-label="Geänderte Produkte">
+          <h4>Geänderte Produkte</h4>
           <div className="sync-product-list">
             {details.changedProducts.map((product) => (
               <article className="sync-product-card" key={`changed-${product.pzn}-${product.productName}`}>
@@ -1142,7 +1148,12 @@ function formatDuration(value: unknown) {
 }
 
 function formatRelativeTime(value: string) {
-  const diffSeconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Zeit unbekannt";
+  }
+
+  const diffSeconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
 
   if (diffSeconds < 60) {
     return `vor ${diffSeconds} Sek`;
@@ -1160,4 +1171,21 @@ function formatRelativeTime(value: string) {
 
   const diffDays = Math.floor(diffHours / 24);
   return `vor ${diffDays} Tg`;
+}
+
+function formatExactDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Datum unbekannt";
+  }
+
+  return new Intl.DateTimeFormat("de-DE", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
 }

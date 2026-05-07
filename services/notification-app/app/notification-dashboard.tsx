@@ -972,7 +972,11 @@ function orderListsFromPayload(payload: Record<string, unknown>): OrderBotList[]
 function orderFromPayload(row: Record<string, unknown>): OrderBotOrder {
   return {
     orderReference: stringValue(row.order_id) || stringValue(row.order_reference) || stringValue(row.orderReference),
-    createdDate: stringValue(row.created_date) || stringValue(row.createdDate) || stringValue(row.prescription_date),
+    createdDate:
+      stringValue(row.billing_date) ||
+      stringValue(row.created_date) ||
+      stringValue(row.createdDate) ||
+      stringValue(row.prescription_date),
     products: stringValue(row.products),
     prices: stringValue(row.prices) || stringValue(row.price),
     quantities: stringValue(row.quantities),

@@ -98,6 +98,7 @@ SUPABASE_SCHEMA = os.environ.get("SUPABASE_SCHEMA", "private")
 SUPABASE_EOD_ORDERS_TABLE = os.environ.get("SUPABASE_EOD_ORDERS_TABLE", "doktorabc_eod_bot_orders")
 END_OF_DAY_EXPORT_N8N_WEBHOOK_URL = (os.environ.get("END_OF_DAY_EXPORT_N8N_WEBHOOK_URL") or "").strip()
 END_OF_DAY_NOTIFICATION_WEBHOOK_URL = (os.environ.get("END_OF_DAY_NOTIFICATION_WEBHOOK_URL") or "").strip()
+SELF_PICKUP_ORDERS_API_FRAGMENT = "incoming-self-pickup"
 
 
 app = FastAPI(title="end-of-day-scraper")
@@ -290,10 +291,13 @@ def notification_order_label(order_list_type):
 
 
 def notification_order_snapshot(row):
+    billing_date = row.get("billing_date")
+
     return {
         "order_id": row.get("order_reference"),
         "order_reference": row.get("order_reference"),
-        "created_date": row.get("prescription_date"),
+        "created_date": billing_date or row.get("prescription_date"),
+        "billing_date": billing_date,
         "prescription_date": row.get("prescription_date"),
         "products": row.get("products"),
         "prices": row.get("prices"),
@@ -1101,6 +1105,28 @@ def parse_date_to_iso(value):
     return None
 
 
+def parse_datetime_to_second_iso(value):
+    if not value:
+        return None
+
+    clean_value = str(value).strip()
+
+    if not clean_value:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(clean_value.replace("Z", "+00:00"))
+    except ValueError:
+        return clean_value
+
+    parsed = parsed.replace(microsecond=0)
+    if parsed.tzinfo:
+        parsed = parsed.astimezone(timezone.utc)
+        return parsed.isoformat().replace("+00:00", "Z")
+
+    return parsed.isoformat()
+
+
 def clean_text(value):
     if value is None:
         return None
@@ -1126,16 +1152,72 @@ def normalize_price(value):
     return match.group(0) if match else cleaned
 
 
-def normalize_scraped_order(order, order_type):
+class SelfPickupBillingDateCollector:
+    def __init__(self):
+        self.billing_dates_by_reference = {}
+        self.responses = []
+        self.errors = []
+
+    def capture_response(self, response):
+        if SELF_PICKUP_ORDERS_API_FRAGMENT not in response.url:
+            return
+
+        snapshot = {
+            "url": response.url,
+            "status": response.status,
+            "results": 0,
+            "captured_billing_dates": 0,
+        }
+
+        try:
+            payload = response.json()
+            results = payload.get("results") if isinstance(payload, dict) else None
+            if not isinstance(results, list):
+                self.responses.append(snapshot)
+                return
+
+            snapshot["results"] = len(results)
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+
+                order_reference = clean_text(item.get("hashID"))
+                billing_date = parse_datetime_to_second_iso(item.get("createdAt"))
+                if order_reference and billing_date:
+                    self.billing_dates_by_reference[order_reference] = billing_date
+                    snapshot["captured_billing_dates"] += 1
+
+            self.responses.append(snapshot)
+        except Exception as exc:
+            snapshot["error"] = f"{type(exc).__name__}: {exc}"
+            self.responses.append(snapshot)
+            self.errors.append(snapshot["error"])
+
+    def snapshot(self):
+        return {
+            "captured_billing_dates": len(self.billing_dates_by_reference),
+            "response_count": len(self.responses),
+            "responses": self.responses[-10:],
+            "errors": self.errors[-10:],
+        }
+
+
+def normalize_scraped_order(order, order_type, billing_dates_by_reference=None):
     products = order.get("product_details") or []
     product_names = [product.get("product") for product in products]
     pzns = [join_pipe(product.get("pzns") or []) for product in products]
     prices = [normalize_price(product.get("price")) for product in products]
     quantities = [product.get("quantity") for product in products]
+    order_reference = clean_text(order.get("order_reference"))
+    billing_date = None
+
+    if order_type == SELF_PICKUP_ORDER_TYPE:
+        billing_date = (billing_dates_by_reference or {}).get(order_reference)
 
     return {
         "order_type": order_type,
-        "order_reference": clean_text(order.get("order_reference")),
+        "order_reference": order_reference,
+        "billing_date": billing_date,
         "prescription_date": parse_date_to_iso(order.get("prescription_date")),
         "tracking_id": clean_text(order.get("tracking_id")),
         "products": join_pipe(product_names),
@@ -1174,18 +1256,21 @@ def validate_orders(rows, raw_orders):
             )
             continue
 
-        missing_product_parts = [
+        missing_optional_parts = [
             field
             for field in ("pzns", "prices", "quantities")
             if not row.get(field)
         ]
 
-        if missing_product_parts:
+        if row.get("order_type") == SELF_PICKUP_ORDER_TYPE and not row.get("billing_date"):
+            missing_optional_parts.append("billing_date")
+
+        if missing_optional_parts:
             warnings.append(
                 {
                     "index": index,
                     "order_reference": row.get("order_reference"),
-                    "missing": missing_product_parts,
+                    "missing": missing_optional_parts,
                 }
             )
 
@@ -1840,6 +1925,7 @@ def sync_end_of_day_orders():
             for target in targets:
                 order_type = target["order_type"]
                 target_url = target["target_url"]
+                billing_date_collector = None
 
                 steps.append(
                     {
@@ -1849,6 +1935,10 @@ def sync_end_of_day_orders():
                         "target_url": target_url,
                     }
                 )
+                if order_type == SELF_PICKUP_ORDER_TYPE:
+                    billing_date_collector = SelfPickupBillingDateCollector()
+                    page.on("response", billing_date_collector.capture_response)
+
                 goto_page(page, target_url)
                 ready_for_customer_clicked = False
                 ready_for_customer_click_strategy = None
@@ -1869,12 +1959,19 @@ def sync_end_of_day_orders():
                     "ready_for_customer_click_strategy": ready_for_customer_click_strategy,
                     "current_url": page.url,
                     "wait_result": target_wait_result,
+                    "billing_date_network": billing_date_collector.snapshot() if billing_date_collector else None,
                 }
 
                 steps.append({"name": "scrape_all_pages", "ok": None, "order_type": order_type})
                 scrape_result = scrape_all_eod_orders(page)
                 raw_orders = scrape_result["orders"]
-                rows = [normalize_scraped_order(order, order_type) for order in raw_orders]
+                billing_dates_by_reference = (
+                    billing_date_collector.billing_dates_by_reference if billing_date_collector else None
+                )
+                rows = [
+                    normalize_scraped_order(order, order_type, billing_dates_by_reference)
+                    for order in raw_orders
+                ]
                 invalid_orders, warnings = validate_orders(rows, raw_orders)
                 screenshot_path = os.path.join(
                     ARTIFACTS_DIR,
@@ -1895,6 +1992,7 @@ def sync_end_of_day_orders():
                     "pages": scrape_result["pages"],
                     "scrape_steps": scrape_result["steps"],
                     "duplicate_order_references": scrape_result["duplicate_order_references"],
+                    "billing_date_network": billing_date_collector.snapshot() if billing_date_collector else None,
                     "screenshot_path": screenshot_path,
                 }
                 target_results.append(target_result)
@@ -1914,6 +2012,7 @@ def sync_end_of_day_orders():
                     "duplicate_order_references": scrape_result["duplicate_order_references"],
                     "warnings": warnings,
                     "invalid_count": len(invalid_orders),
+                    "billing_date_network": billing_date_collector.snapshot() if billing_date_collector else None,
                 }
 
                 if invalid_orders:

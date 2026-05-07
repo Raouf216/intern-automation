@@ -190,19 +190,23 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
   }
 
   const sectionCounts = useMemo(
-    () =>
-      sections.reduce(
+    () => {
+      const displayNotifications = notifications.filter((notification) => !isNoisyUploadPlaceholder(notification));
+
+      return sections.reduce(
         (counts, section) => {
-          counts[section.value] = notifications.filter((notification) => notification.section === section.value).length;
+          counts[section.value] = displayNotifications.filter((notification) => notification.section === section.value).length;
           return counts;
         },
         { upload: 0, doktorabc_sync: 0, abrechnung_verification: 0 } as Record<SectionKey, number>
-      ),
+      );
+    },
     [notifications]
   );
 
-  const visibleNotifications = notifications.filter((notification) => notification.section === activeSection);
-  const uploadNotifications = notifications.filter((notification) => notification.section === "upload");
+  const displayNotifications = notifications.filter((notification) => !isNoisyUploadPlaceholder(notification));
+  const visibleNotifications = displayNotifications.filter((notification) => notification.section === activeSection);
+  const uploadNotifications = displayNotifications.filter((notification) => notification.section === "upload");
   const successCount = uploadNotifications.filter((notification) => notification.status === "success").length;
   const failureCount = uploadNotifications.filter((notification) => notification.status === "failure").length;
   const pendingCount = uploadNotifications.filter((notification) => notification.status === "triggered").length;
@@ -765,6 +769,20 @@ function shouldShowUploadDetails(notification: StoredNotification) {
     notification.upload_type === "doktorabc_abrechnung" &&
     notification.status === "success" &&
     event === "upload_success"
+  );
+}
+
+function isNoisyUploadPlaceholder(notification: StoredNotification) {
+  const event = stringValue(notification.payload.event) || notification.event;
+  const filename = notification.filename || stringValue(notification.payload.filename);
+  const uploadType = notification.upload_type || stringValue(notification.payload.upload_type);
+
+  return (
+    notification.section === "upload" &&
+    notification.status === "info" &&
+    event === "upload_info" &&
+    (uploadType === "upload" || !uploadType) &&
+    (!filename || filename === "unknown-file")
   );
 }
 

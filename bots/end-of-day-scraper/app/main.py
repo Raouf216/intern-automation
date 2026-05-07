@@ -175,6 +175,22 @@ def response_preview(response):
     }
 
 
+def utc_timestamp(value):
+    return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def timestamptz_iso(value):
+    return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def filename_timestamp(value):
+    return timestamptz_iso(value).replace(":", "-")
+
+
+def to_check_excel_filename(value):
+    return f"to_check_{filename_timestamp(value)}.xlsx"
+
+
 def upsert_supabase_eod_orders(orders):
     if not orders:
         return {
@@ -523,7 +539,7 @@ def count_xlsx_rows(path):
         return None
 
 
-def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
+def export_end_of_day_excel_to_n8n(page, timestamp, metadata, scraped_at):
     wait_for_orders_page(page, end_of_day_url())
 
     export_button = export_button_locator(page)
@@ -532,13 +548,13 @@ def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
         export_button.click(timeout=EOD_EXPORT_BUTTON_CLICK_TIMEOUT_MS)
 
     download = download_info.value
-    suggested_filename = os.path.basename(download.suggested_filename or f"doktorabc-eod-export-{timestamp}.xlsx")
-    safe_filename = re.sub(r"[^A-Za-z0-9_. -]+", "_", suggested_filename).strip() or f"doktorabc-eod-export-{timestamp}.xlsx"
-    download_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-eod-export-{timestamp}-{safe_filename}")
+    scraped_at_iso = timestamptz_iso(scraped_at)
+    download_filename = to_check_excel_filename(scraped_at)
+    download_path = os.path.join(ARTIFACTS_DIR, download_filename)
     download.save_as(download_path)
     download_size_bytes = os.path.getsize(download_path)
     excel_row_count = count_xlsx_rows(download_path)
-    export_date = local_today_iso()
+    export_date = scraped_at.astimezone(german_timezone_for_utc(scraped_at)).date().isoformat()
 
     n8n_result = send_export_to_n8n(
         download_path,
@@ -546,27 +562,29 @@ def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
             **metadata,
             "source": "doktorabc_end_of_day_export",
             "source_url": end_of_day_url(),
-            "download_filename": safe_filename,
+            "download_filename": download_filename,
             "download_path": download_path,
             "download_size_bytes": download_size_bytes,
             "excel_row_count": excel_row_count,
             "export_date": export_date,
-            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "exported_at": scraped_at_iso,
+            "scraped_at": scraped_at_iso,
         },
     )
 
     return {
         "downloaded": True,
-        "download_filename": safe_filename,
+        "download_filename": download_filename,
         "download_path": download_path,
         "download_size_bytes": download_size_bytes,
         "excel_row_count": excel_row_count,
         "export_date": export_date,
+        "scraped_at": scraped_at_iso,
         **n8n_result,
     }
 
 
-def maybe_export_end_of_day_excel_to_n8n(page, timestamp, metadata, rows_by_order_type):
+def maybe_export_end_of_day_excel_to_n8n(page, timestamp, metadata, rows_by_order_type, scraped_at):
     eod_order_count = len(rows_by_order_type.get(EOD_ORDER_TYPE, []))
 
     if eod_order_count == 0:
@@ -583,7 +601,7 @@ def maybe_export_end_of_day_excel_to_n8n(page, timestamp, metadata, rows_by_orde
     return {
         "skipped": False,
         "eod_order_count": eod_order_count,
-        **export_end_of_day_excel_to_n8n(page, timestamp, metadata),
+        **export_end_of_day_excel_to_n8n(page, timestamp, metadata, scraped_at),
     }
 
 
@@ -1348,7 +1366,7 @@ class SelfPickupBillingDateCollector:
         }
 
 
-def normalize_scraped_order(order, order_type, billing_dates_by_reference=None):
+def normalize_scraped_order(order, order_type, billing_dates_by_reference=None, scraped_at=None):
     products = order.get("product_details") or []
     product_names = [product.get("product") for product in products]
     pzns = [join_pipe(product.get("pzns") or []) for product in products]
@@ -1360,7 +1378,7 @@ def normalize_scraped_order(order, order_type, billing_dates_by_reference=None):
     if order_type == SELF_PICKUP_ORDER_TYPE:
         billing_date = (billing_dates_by_reference or {}).get(order_reference_key(order_reference))
 
-    return {
+    row = {
         "order_type": order_type,
         "order_reference": order_reference,
         "billing_date": billing_date,
@@ -1375,6 +1393,11 @@ def normalize_scraped_order(order, order_type, billing_dates_by_reference=None):
         "address": clean_text(order.get("address")),
         "gender": clean_text(order.get("gender")),
     }
+
+    if scraped_at is not None:
+        row["scraped_at"] = scraped_at
+
+    return row
 
 
 def normalize_gender(value):
@@ -2194,7 +2217,9 @@ def configured_order_targets():
 
 def sync_end_of_day_orders():
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    scraped_at = datetime.now(timezone.utc)
+    scraped_at_iso = timestamptz_iso(scraped_at)
+    timestamp = utc_timestamp(scraped_at)
     before_login_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-eod-before-login-{timestamp}.png")
     failure_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-eod-sync-failure-{timestamp}.png")
     steps = []
@@ -2313,8 +2338,9 @@ def sync_end_of_day_orders():
                     billing_dates_by_reference = (
                         billing_date_collector.billing_dates_by_reference if billing_date_collector else None
                     )
+                    row_scraped_at = scraped_at_iso if order_type == EOD_ORDER_TYPE else None
                     rows = [
-                        normalize_scraped_order(order, order_type, billing_dates_by_reference)
+                        normalize_scraped_order(order, order_type, billing_dates_by_reference, row_scraped_at)
                         for order in raw_orders
                     ]
                 invalid_orders, warnings = validate_orders(rows, raw_orders)
@@ -2465,8 +2491,10 @@ def sync_end_of_day_orders():
                         "saved": 0,
                         "sent_to_supabase": 0,
                         "targets_count": len(target_results),
+                        "scraped_at": scraped_at_iso,
                     },
                     rows_by_order_type,
+                    scraped_at,
                 )
                 steps[-1] = {"name": "export_eod_excel_to_n8n", "ok": True, **export_result}
 
@@ -2556,8 +2584,10 @@ def sync_end_of_day_orders():
                     "targets_count": len(target_results),
                     "warnings_count": len(all_warnings),
                     "duplicate_order_references_count": len(all_duplicate_order_references),
+                    "scraped_at": scraped_at_iso,
                 },
                 rows_by_order_type,
+                scraped_at,
             )
             steps[-1] = {"name": "export_eod_excel_to_n8n", "ok": True, **export_result}
 

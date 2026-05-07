@@ -598,7 +598,7 @@ function OrderBotOrderList({ list }: { list: OrderBotList }) {
             <article className="order-bot-card" key={`${order.orderReference}-${index}`}>
               <div className="sync-product-head">
                 <strong>{order.orderReference || "Order ID fehlt"}</strong>
-                <span>{order.createdDate || "Datum fehlt"}</span>
+                <span>{order.createdDate ? formatExactDateTime(order.createdDate) : "Datum fehlt"}</span>
               </div>
               <div className="order-bot-products">
                 <span>{order.products || "Produkte fehlen"}</span>
@@ -1184,6 +1184,7 @@ function formatExactDateTime(value: string) {
   }
 
   return new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
     day: "2-digit",
     month: "2-digit",
     year: "numeric",

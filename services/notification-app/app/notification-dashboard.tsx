@@ -145,8 +145,15 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
 
   useEffect(() => {
     let isMounted = true;
+    let refreshInFlight = false;
 
     async function refreshNotifications() {
+      if (refreshInFlight) {
+        return;
+      }
+
+      refreshInFlight = true;
+
       try {
         const response = await fetch("/api/notifications", { cache: "no-store" });
         const payload = (await response.json()) as {
@@ -172,13 +179,27 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
         }
 
         setLoadError(error instanceof Error ? error.message : "Aktualisierung fehlgeschlagen");
+      } finally {
+        refreshInFlight = false;
       }
     }
 
+    function refreshWhenVisible() {
+      if (document.visibilityState === "visible") {
+        void refreshNotifications();
+      }
+    }
+
+    void refreshNotifications();
     const interval = window.setInterval(refreshNotifications, 5000);
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+
     return () => {
       isMounted = false;
       window.clearInterval(interval);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, []);
 

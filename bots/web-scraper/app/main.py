@@ -378,6 +378,7 @@ def open_saved_session(browser):
 
     try:
         page.goto(doktorabc_products_url(), wait_until="domcontentloaded")
+        page.wait_for_load_state("domcontentloaded")
         wait_for_products_page(page, timeout=15_000)
 
         return context, page, True
@@ -394,6 +395,7 @@ def open_fresh_session(browser, before_login_path=None):
     page = context.new_page()
 
     page.goto(os.environ["DOKTORABC_LOGIN_URL"], wait_until="domcontentloaded")
+    page.wait_for_load_state("domcontentloaded")
 
     page.get_by_placeholder("Email").fill(os.environ["DOKTORABC_USERNAME"])
     page.get_by_placeholder("Password").fill(os.environ["DOKTORABC_PASSWORD"])
@@ -404,6 +406,7 @@ def open_fresh_session(browser, before_login_path=None):
         page.screenshot(path=before_login_path, full_page=True)
 
     page.get_by_role("button", name="Login").click()
+    page.wait_for_load_state("domcontentloaded")
     wait_for_products_page(page)
 
     session_state_dir = os.path.dirname(SESSION_STATE_PATH)

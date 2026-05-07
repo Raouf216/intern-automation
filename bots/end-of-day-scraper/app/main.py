@@ -578,7 +578,7 @@ def browser_context_options():
 
 def goto_page(page, url):
     page.goto(url, wait_until="domcontentloaded", timeout=EOD_NAVIGATION_TIMEOUT_MS)
-    page.wait_for_timeout(EOD_AFTER_GOTO_WAIT_MS)
+    page.wait_for_load_state("domcontentloaded")
 
 
 def visible_login_form(page):
@@ -1091,7 +1091,7 @@ def select_100_rows(page):
         return debug
 
     rows_100.click(timeout=EOD_SELECT_100_CLICK_TIMEOUT_MS)
-    page.wait_for_timeout(EOD_AFTER_SELECT_100_CLICK_WAIT_MS)
+    page.wait_for_load_state("domcontentloaded")
     debug["wait_result"] = wait_for_order_list(page)
     debug["after"] = get_pagination_state(page)
     debug["clicked"] = True
@@ -1126,7 +1126,7 @@ def click_next_page(page, before_state):
 
     before_signature = pagination_signature(before_state)
     next_link.click(timeout=EOD_NEXT_CLICK_TIMEOUT_MS)
-    page.wait_for_timeout(EOD_AFTER_NEXT_CLICK_WAIT_MS)
+    page.wait_for_load_state("domcontentloaded")
 
     deadline = time.monotonic() + EOD_NEXT_CHANGE_TIMEOUT_MS / 1000
     last_state = before_state
@@ -1424,7 +1424,7 @@ def open_fresh_session(browser, target_url, order_type, before_login_path=None):
         page.screenshot(path=before_login_path, full_page=True)
 
     click_login_button(page)
-    page.wait_for_timeout(EOD_AFTER_LOGIN_CLICK_WAIT_MS)
+    page.wait_for_load_state("domcontentloaded")
     wait_for_load_states(page)
     goto_page(page, target_url)
     wait_result = wait_for_orders_page(page, target_url)
@@ -1577,7 +1577,7 @@ def sync_end_of_day_orders():
                     wait_for_load_states(page)
                     ready_for_customer_click_strategy = click_ready_for_customer(page)
                     ready_for_customer_clicked = True
-                    page.wait_for_timeout(EOD_AFTER_READY_FOR_CUSTOMER_CLICK_WAIT_MS)
+                    page.wait_for_load_state("domcontentloaded")
                     target_wait_result = wait_for_rows_100_control(page)
                 else:
                     target_wait_result = wait_for_orders_page(page, target_url)

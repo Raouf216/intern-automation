@@ -99,6 +99,10 @@ SUPABASE_EOD_ORDERS_TABLE = os.environ.get("SUPABASE_EOD_ORDERS_TABLE", "doktora
 END_OF_DAY_EXPORT_N8N_WEBHOOK_URL = (os.environ.get("END_OF_DAY_EXPORT_N8N_WEBHOOK_URL") or "").strip()
 END_OF_DAY_NOTIFICATION_WEBHOOK_URL = (os.environ.get("END_OF_DAY_NOTIFICATION_WEBHOOK_URL") or "").strip()
 SELF_PICKUP_ORDERS_API_FRAGMENT = "incoming-self-pickup"
+SELF_PICKUP_ORDERS_API_LIMIT = 15
+SELF_PICKUP_ORDERS_API_QUERY = (
+    "incoming-self-pickup?limit=15&offset=0&sort=false&productIDs=&status=ready-for-customer&search="
+)
 
 
 app = FastAPI(title="end-of-day-scraper")
@@ -1126,6 +1130,25 @@ def parse_datetime_to_second_iso(value):
     return parsed.astimezone(ZoneInfo("Europe/Berlin")).isoformat()
 
 
+def parse_datetime_to_local_date_iso(value):
+    if not value:
+        return None
+
+    clean_value = str(value).strip()
+    if not clean_value:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(clean_value.replace("Z", "+00:00"))
+    except ValueError:
+        return parse_date_to_iso(clean_value)
+
+    if not parsed.tzinfo:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(ZoneInfo("Europe/Berlin")).date().isoformat()
+
+
 def clean_text(value):
     if value is None:
         return None
@@ -1308,6 +1331,70 @@ def normalize_scraped_order(order, order_type, billing_dates_by_reference=None):
         "patient_birth_date": parse_date_to_iso(order.get("patient_birth_date")),
         "address": clean_text(order.get("address")),
         "gender": clean_text(order.get("gender")),
+    }
+
+
+def normalize_gender(value):
+    if value == 0:
+        return "female"
+
+    if value == 1:
+        return "male"
+
+    return clean_text(value)
+
+
+def normalize_self_pickup_api_order(order):
+    products = order.get("products") if isinstance(order.get("products"), list) else []
+    product_names = [product.get("productTitle") for product in products if isinstance(product, dict)]
+    pzns = [
+        join_pipe(product.get("skus") or [])
+        for product in products
+        if isinstance(product, dict)
+    ]
+    prices = [
+        str(product.get("supplyPrice"))
+        for product in products
+        if isinstance(product, dict) and product.get("supplyPrice") is not None
+    ]
+    quantities = [
+        product.get("productQuantityTitle")
+        for product in products
+        if isinstance(product, dict)
+    ]
+    customer = order.get("customer") if isinstance(order.get("customer"), dict) else {}
+    delivery = order.get("delivery") if isinstance(order.get("delivery"), dict) else {}
+    prescription = order.get("prescription") if isinstance(order.get("prescription"), dict) else {}
+    patient_name = join_pipe(
+        [
+            customer.get("firstName"),
+            customer.get("middleName"),
+            customer.get("lastName"),
+        ]
+    )
+    address = join_pipe(
+        [
+            delivery.get("address"),
+            delivery.get("zip"),
+            delivery.get("city"),
+            delivery.get("country"),
+        ]
+    )
+
+    return {
+        "order_type": SELF_PICKUP_ORDER_TYPE,
+        "order_reference": clean_text(order.get("hashID")),
+        "billing_date": parse_datetime_to_second_iso(order.get("createdAt")),
+        "prescription_date": parse_datetime_to_local_date_iso(prescription.get("approvedAt")),
+        "tracking_id": clean_text((order.get("shipping") or {}).get("trackingID")) if isinstance(order.get("shipping"), dict) else None,
+        "products": join_pipe(product_names),
+        "pzns": join_pipe(pzns),
+        "prices": join_pipe(prices),
+        "quantities": join_pipe(quantities),
+        "patient_name": patient_name,
+        "patient_birth_date": parse_datetime_to_local_date_iso(customer.get("birthday")),
+        "address": address,
+        "gender": normalize_gender(customer.get("gender")),
     }
 
 
@@ -1766,6 +1853,90 @@ def scrape_orders_on_current_page(page):
     return page.evaluate(SCRAPE_EOD_ORDERS_JS)
 
 
+def fetch_self_pickup_api_orders(page):
+    result = page.evaluate(
+        """
+        async ({ query, limit }) => {
+          const fragment = "incoming-self-pickup";
+          const discoveredUrl = performance
+            .getEntriesByType("resource")
+            .map((entry) => entry.name)
+            .find((url) => url.includes(fragment));
+          const firstUrl = new URL(discoveredUrl || query, window.location.href);
+          const pages = [];
+          const orders = [];
+          const seen = new Set();
+
+          for (let offset = 0; offset < 10000; offset += limit) {
+            const url = new URL(firstUrl.href);
+            url.searchParams.set("limit", String(limit));
+            url.searchParams.set("offset", String(offset));
+            url.searchParams.set("sort", "false");
+            url.searchParams.set("productIDs", "");
+            url.searchParams.set("status", "ready-for-customer");
+            url.searchParams.set("search", "");
+
+            const response = await fetch(url.href, {
+              credentials: "include",
+              headers: { Accept: "application/json" },
+            });
+            const payload = await response.json();
+            const results = Array.isArray(payload?.results) ? payload.results : [];
+
+            pages.push({
+              offset,
+              url: url.href,
+              status: response.status,
+              count: payload?.count ?? null,
+              results: results.length,
+              first_order_reference: results[0]?.hashID ?? null,
+              last_order_reference: results[results.length - 1]?.hashID ?? null,
+            });
+
+            for (const order of results) {
+              const key = order?.hashID;
+              if (!key || seen.has(key)) continue;
+              seen.add(key);
+              orders.push(order);
+            }
+
+            if (!response.ok || results.length < limit) {
+              break;
+            }
+
+            const total = Number(payload?.count);
+            if (Number.isFinite(total) && offset + limit >= total) {
+              break;
+            }
+          }
+
+          return { orders, pages };
+        }
+        """,
+        {
+            "query": SELF_PICKUP_ORDERS_API_QUERY,
+            "limit": SELF_PICKUP_ORDERS_API_LIMIT,
+        },
+    )
+
+    raw_orders = result.get("orders") if isinstance(result, dict) else []
+    pages = result.get("pages") if isinstance(result, dict) else []
+
+    return {
+        "orders": raw_orders,
+        "pages": pages,
+        "steps": [
+            {
+                "name": "fetch_self_pickup_api_orders",
+                "ok": True,
+                "pages": pages,
+                "orders_found": len(raw_orders),
+            }
+        ],
+        "duplicate_order_references": [],
+    }
+
+
 def scrape_all_eod_orders(page, billing_date_collector=None):
     steps = []
     rows_debug = select_100_rows(page)
@@ -2046,15 +2217,21 @@ def sync_end_of_day_orders():
                 }
 
                 steps.append({"name": "scrape_all_pages", "ok": None, "order_type": order_type})
-                scrape_result = scrape_all_eod_orders(page, billing_date_collector=billing_date_collector)
+                if order_type == SELF_PICKUP_ORDER_TYPE:
+                    scrape_result = fetch_self_pickup_api_orders(page)
+                else:
+                    scrape_result = scrape_all_eod_orders(page, billing_date_collector=billing_date_collector)
                 raw_orders = scrape_result["orders"]
-                billing_dates_by_reference = (
-                    billing_date_collector.billing_dates_by_reference if billing_date_collector else None
-                )
-                rows = [
-                    normalize_scraped_order(order, order_type, billing_dates_by_reference)
-                    for order in raw_orders
-                ]
+                if order_type == SELF_PICKUP_ORDER_TYPE:
+                    rows = [normalize_self_pickup_api_order(order) for order in raw_orders]
+                else:
+                    billing_dates_by_reference = (
+                        billing_date_collector.billing_dates_by_reference if billing_date_collector else None
+                    )
+                    rows = [
+                        normalize_scraped_order(order, order_type, billing_dates_by_reference)
+                        for order in raw_orders
+                    ]
                 invalid_orders, warnings = validate_orders(rows, raw_orders)
                 screenshot_path = os.path.join(
                     ARTIFACTS_DIR,

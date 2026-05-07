@@ -472,6 +472,10 @@ h3 {
   grid-template-columns: repeat(5, minmax(90px, 1fr));
 }
 
+.detail-grid.order-grid {
+  grid-template-columns: minmax(0, 1.2fr) minmax(90px, 0.6fr) minmax(110px, 0.7fr);
+}
+
 .detail-grid div {
   min-width: 0;
   padding: 7px 9px;
@@ -573,8 +577,14 @@ dd {
   gap: 8px;
 }
 
+.order-bot-list {
+  display: grid;
+  gap: 8px;
+}
+
 .sync-product-card,
-.sync-invalid-row {
+.sync-invalid-row,
+.order-bot-card {
   display: grid;
   gap: 10px;
   padding: 10px;
@@ -584,7 +594,8 @@ dd {
 }
 
 .sync-log-panel.danger .sync-product-card,
-.sync-log-panel.danger .sync-invalid-row {
+.sync-log-panel.danger .sync-invalid-row,
+.sync-log-panel.danger .order-bot-card {
   border-color: color-mix(in srgb, var(--red) 22%, var(--line));
 }
 
@@ -688,6 +699,30 @@ dd {
   color: var(--text);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.order-bot-products {
+  display: grid;
+  gap: 5px;
+}
+
+.order-bot-products span,
+.order-bot-products small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.order-bot-products strong {
+  color: var(--brand-strong);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.order-export-meta {
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
 }
 
 .sync-error-card {
@@ -834,6 +869,11 @@ dd {
 
   .detail-grid.sync-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .detail-grid.order-grid,
+  .order-export-meta {
+    grid-template-columns: 1fr;
   }
 
   .sync-product-head {

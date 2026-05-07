@@ -37,6 +37,7 @@ EOD_EXPORT_DOWNLOAD_TIMEOUT_MS = int(os.environ.get("EOD_EXPORT_DOWNLOAD_TIMEOUT
 SUPABASE_SCHEMA = os.environ.get("SUPABASE_SCHEMA", "private")
 SUPABASE_EOD_ORDERS_TABLE = os.environ.get("SUPABASE_EOD_ORDERS_TABLE", "doktorabc_eod_bot_orders")
 END_OF_DAY_EXPORT_N8N_WEBHOOK_URL = (os.environ.get("END_OF_DAY_EXPORT_N8N_WEBHOOK_URL") or "").strip()
+END_OF_DAY_NOTIFICATION_WEBHOOK_URL = (os.environ.get("END_OF_DAY_NOTIFICATION_WEBHOOK_URL") or "").strip()
 
 
 app = FastAPI(title="end-of-day-scraper")
@@ -174,6 +175,109 @@ def send_export_to_n8n(download_path, metadata):
         "sent_to_n8n": True,
         "n8n_status_code": response.status_code,
     }
+
+
+def send_notification(payload):
+    if not END_OF_DAY_NOTIFICATION_WEBHOOK_URL:
+        return {
+            "sent_to_notification_app": False,
+            "notification_skipped_reason": "END_OF_DAY_NOTIFICATION_WEBHOOK_URL is not configured",
+        }
+
+    try:
+        response = httpx.post(
+            END_OF_DAY_NOTIFICATION_WEBHOOK_URL,
+            json=payload,
+            timeout=30,
+        )
+    except httpx.HTTPError as exc:
+        return {
+            "sent_to_notification_app": False,
+            "notification_error": f"{type(exc).__name__}: {exc}",
+        }
+
+    if response.status_code >= 400:
+        return {
+            "sent_to_notification_app": False,
+            "notification_status_code": response.status_code,
+            "notification_error": response_preview(response),
+        }
+
+    return {
+        "sent_to_notification_app": True,
+        "notification_status_code": response.status_code,
+    }
+
+
+def notification_order_list_type(order_type):
+    if order_type == SELF_PICKUP_ORDER_TYPE:
+        return "pickup_ready"
+
+    return "eod"
+
+
+def notification_order_snapshot(row):
+    return {
+        "order_reference": row.get("order_reference"),
+        "created_date": row.get("prescription_date"),
+        "prescription_date": row.get("prescription_date"),
+        "products": row.get("products"),
+        "prices": row.get("prices"),
+        "quantities": row.get("quantities"),
+    }
+
+
+def send_orders_notification(order_type, rows, timestamp, supabase_result):
+    order_list_type = notification_order_list_type(order_type)
+    event = "doktorabc_pickup_ready_orders_success" if order_list_type == "pickup_ready" else "doktorabc_eod_orders_success"
+
+    return send_notification(
+        {
+            "event": event,
+            "status": "success",
+            "section": "doktorabc_orders",
+            "sync_type": "doktorabc_eod_bot",
+            "service": "end-of-day-scraper",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "run_id": timestamp,
+            "order_type": order_type,
+            "order_list_type": order_list_type,
+            "order_count": len(rows),
+            "summary": {
+                "orders": len(rows),
+                "sent_to_supabase": supabase_result.get("sent_to_supabase", 0),
+            },
+            "orders": [notification_order_snapshot(row) for row in rows],
+        }
+    )
+
+
+def send_excel_export_notification(export_result, timestamp):
+    return send_notification(
+        {
+            "event": "doktorabc_eod_excel_export_success",
+            "status": "success",
+            "section": "doktorabc_orders",
+            "sync_type": "doktorabc_eod_bot",
+            "service": "end-of-day-scraper",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "run_id": timestamp,
+            "order_list_type": "excel_export",
+            "filename": export_result.get("download_filename"),
+            "path": export_result.get("download_path"),
+            "size_bytes": export_result.get("download_size_bytes"),
+            "download_filename": export_result.get("download_filename"),
+            "download_path": export_result.get("download_path"),
+            "download_size_bytes": export_result.get("download_size_bytes"),
+            "sent_to_n8n": export_result.get("sent_to_n8n"),
+            "n8n_status_code": export_result.get("n8n_status_code"),
+            "n8n_skipped_reason": export_result.get("n8n_skipped_reason"),
+            "summary": {
+                "excel_files": 1,
+                "sent_to_n8n": 1 if export_result.get("sent_to_n8n") else 0,
+            },
+        }
+    )
 
 
 def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
@@ -1185,6 +1289,8 @@ def sync_end_of_day_orders():
             all_warnings = []
             all_duplicate_order_references = []
             screenshot_paths = []
+            rows_by_order_type = {}
+            notification_results = []
 
             for target in targets:
                 order_type = target["order_type"]
@@ -1288,9 +1394,35 @@ def sync_end_of_day_orders():
                         },
                     )
 
+                rows_by_order_type[order_type] = rows
                 all_rows.extend(rows)
 
             if not all_rows:
+                order_notification_summary = {"sent_to_supabase": 0}
+                for target in targets:
+                    order_type = target["order_type"]
+                    steps.append({"name": "send_order_notification", "ok": None, "order_type": order_type})
+                    notification_result = send_orders_notification(
+                        order_type,
+                        rows_by_order_type.get(order_type, []),
+                        timestamp,
+                        order_notification_summary,
+                    )
+                    notification_results.append(
+                        {
+                            "order_type": order_type,
+                            "order_count": len(rows_by_order_type.get(order_type, [])),
+                            **notification_result,
+                        }
+                    )
+                    steps[-1] = {
+                        "name": "send_order_notification",
+                        "ok": True,
+                        "order_type": order_type,
+                        "order_count": len(rows_by_order_type.get(order_type, [])),
+                        **notification_result,
+                    }
+
                 steps.append({"name": "export_eod_excel_to_n8n", "ok": None})
                 export_result = export_end_of_day_excel_to_n8n(
                     page,
@@ -1303,6 +1435,16 @@ def sync_end_of_day_orders():
                     },
                 )
                 steps[-1] = {"name": "export_eod_excel_to_n8n", "ok": True, **export_result}
+
+                steps.append({"name": "send_excel_export_notification", "ok": None})
+                excel_notification_result = send_excel_export_notification(export_result, timestamp)
+                notification_results.append(
+                    {
+                        "order_type": "excel_export",
+                        **excel_notification_result,
+                    }
+                )
+                steps[-1] = {"name": "send_excel_export_notification", "ok": True, **excel_notification_result}
 
                 return {
                     "ok": True,
@@ -1323,12 +1465,37 @@ def sync_end_of_day_orders():
                     "steps": steps,
                     "screenshot_paths": screenshot_paths,
                     "export": export_result,
+                    "notifications": notification_results,
                     "message": "No EOD or self pickup orders were found. Supabase was not changed.",
                 }
 
             steps.append({"name": "upsert_supabase", "ok": None, "rows": len(all_rows)})
             supabase_result = upsert_supabase_eod_orders(all_rows)
             steps[-1] = {"name": "upsert_supabase", "ok": True, **supabase_result}
+
+            for target in targets:
+                order_type = target["order_type"]
+                steps.append({"name": "send_order_notification", "ok": None, "order_type": order_type})
+                notification_result = send_orders_notification(
+                    order_type,
+                    rows_by_order_type.get(order_type, []),
+                    timestamp,
+                    supabase_result,
+                )
+                notification_results.append(
+                    {
+                        "order_type": order_type,
+                        "order_count": len(rows_by_order_type.get(order_type, [])),
+                        **notification_result,
+                    }
+                )
+                steps[-1] = {
+                    "name": "send_order_notification",
+                    "ok": True,
+                    "order_type": order_type,
+                    "order_count": len(rows_by_order_type.get(order_type, [])),
+                    **notification_result,
+                }
 
             steps.append({"name": "export_eod_excel_to_n8n", "ok": None})
             export_result = export_end_of_day_excel_to_n8n(
@@ -1344,6 +1511,16 @@ def sync_end_of_day_orders():
                 },
             )
             steps[-1] = {"name": "export_eod_excel_to_n8n", "ok": True, **export_result}
+
+            steps.append({"name": "send_excel_export_notification", "ok": None})
+            excel_notification_result = send_excel_export_notification(export_result, timestamp)
+            notification_results.append(
+                {
+                    "order_type": "excel_export",
+                    **excel_notification_result,
+                }
+            )
+            steps[-1] = {"name": "send_excel_export_notification", "ok": True, **excel_notification_result}
 
             return {
                 "ok": True,
@@ -1363,6 +1540,7 @@ def sync_end_of_day_orders():
                 "steps": steps,
                 "screenshot_paths": screenshot_paths,
                 "export": export_result,
+                "notifications": notification_results,
                 **supabase_result,
             }
         except Exception as exc:

@@ -1,4 +1,4 @@
-export type NotificationSection = "upload" | "doktorabc_sync" | "abrechnung_verification";
+export type NotificationSection = "upload" | "doktorabc_sync" | "doktorabc_orders" | "abrechnung_verification";
 export type NotificationStatus = "triggered" | "success" | "failure" | "info" | "warning";
 
 export type StoredNotification = {
@@ -25,6 +25,17 @@ export type UploadWebhookPayload = {
   section?: string;
   upload_type?: string;
   sync_type?: string;
+  order_type?: string;
+  order_list_type?: string;
+  order_count?: number;
+  orders?: Array<Record<string, unknown>>;
+  run_id?: string;
+  sent_to_n8n?: boolean;
+  n8n_status_code?: number;
+  n8n_skipped_reason?: string;
+  download_filename?: string;
+  download_path?: string;
+  download_size_bytes?: number;
   filename?: string;
   bucket?: string;
   path?: string;
@@ -119,6 +130,30 @@ export function normalizeUploadNotification(payload: UploadWebhookPayload): Omit
       bucket: null,
       path: payload.endpoint ? String(payload.endpoint) : null,
       size_bytes: null,
+      error: payload.error ? String(payload.error) : null,
+      source,
+      payload: payload as Record<string, unknown>,
+      created_at: timestampOrNow(payload.timestamp || payload.finished_at),
+    };
+  }
+
+  if (isEodBotNotification(payload)) {
+    return {
+      section: "doktorabc_orders",
+      event,
+      status,
+      title: eodBotTitle(status, payload),
+      message: eodBotMessage(status, payload),
+      filename: payload.filename || payload.download_filename ? String(payload.filename || payload.download_filename) : null,
+      upload_type: payload.order_list_type ? String(payload.order_list_type) : "doktorabc_eod_bot",
+      bucket: null,
+      path: payload.path || payload.download_path ? String(payload.path || payload.download_path) : null,
+      size_bytes:
+        typeof payload.size_bytes === "number"
+          ? payload.size_bytes
+          : typeof payload.download_size_bytes === "number"
+            ? payload.download_size_bytes
+            : null,
       error: payload.error ? String(payload.error) : null,
       source,
       payload: payload as Record<string, unknown>,
@@ -348,6 +383,17 @@ function isProductSync(payload: UploadWebhookPayload) {
   );
 }
 
+function isEodBotNotification(payload: UploadWebhookPayload) {
+  const event = payload.event || "";
+  return (
+    payload.section === "doktorabc_orders" ||
+    payload.sync_type === "doktorabc_eod_bot" ||
+    event === "doktorabc_eod_orders_success" ||
+    event === "doktorabc_pickup_ready_orders_success" ||
+    event === "doktorabc_eod_excel_export_success"
+  );
+}
+
 function productSyncTitle(status: NotificationStatus) {
   if (status === "success") {
     return "DoktorABC Synchronisierung erfolgreich";
@@ -376,6 +422,43 @@ function productSyncMessage(status: NotificationStatus, payload: UploadWebhookPa
   }
 
   return "DoktorABC Sync-Meldung";
+}
+
+function eodBotTitle(status: NotificationStatus, payload: UploadWebhookPayload) {
+  if (status === "failure") {
+    return "DoktorABC Orders Bot fehlgeschlagen";
+  }
+
+  if (payload.order_list_type === "pickup_ready" || payload.event === "doktorabc_pickup_ready_orders_success") {
+    return "DoktorABC Pickup READY gespeichert";
+  }
+
+  if (payload.order_list_type === "excel_export" || payload.event === "doktorabc_eod_excel_export_success") {
+    return "DoktorABC Excel exportiert";
+  }
+
+  return "DoktorABC EOD gespeichert";
+}
+
+function eodBotMessage(status: NotificationStatus, payload: UploadWebhookPayload) {
+  if (status === "failure") {
+    return payload.error ? String(payload.error) : "DoktorABC Orders Bot konnte nicht abgeschlossen werden.";
+  }
+
+  if (payload.order_list_type === "pickup_ready" || payload.event === "doktorabc_pickup_ready_orders_success") {
+    return `${numberOrZero(payload.order_count)} Pickup READY Orders gespeichert.`;
+  }
+
+  if (payload.order_list_type === "excel_export" || payload.event === "doktorabc_eod_excel_export_success") {
+    const filename = payload.download_filename || payload.filename || "Excel-Datei";
+    if (payload.sent_to_n8n) {
+      return `Excel exportiert und an n8n gesendet: ${filename}`;
+    }
+
+    return `Excel exportiert: ${filename}`;
+  }
+
+  return `${numberOrZero(payload.order_count)} EOD Orders gespeichert.`;
 }
 
 function numberOrZero(value: unknown) {

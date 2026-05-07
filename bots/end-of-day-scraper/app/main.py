@@ -4,10 +4,9 @@ import re
 import time
 import zipfile
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 import xml.etree.ElementTree as ElementTree
-from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI
@@ -478,10 +477,7 @@ def failure_parts_for_step(failed_step, steps, targets):
 
 
 def local_timezone():
-    try:
-        return ZoneInfo(os.environ.get("TZ") or "Europe/Berlin")
-    except Exception:
-        return timezone.utc
+    return german_timezone_for_utc(datetime.now(timezone.utc))
 
 
 def local_today_iso():
@@ -1109,6 +1105,30 @@ def parse_date_to_iso(value):
     return None
 
 
+def last_sunday(year, month):
+    date = datetime(year, month + 1, 1) - timedelta(days=1) if month < 12 else datetime(year, 12, 31)
+    return date - timedelta(days=(date.weekday() + 1) % 7)
+
+
+def german_timezone_for_utc(value):
+    utc_value = value.astimezone(timezone.utc)
+    year = utc_value.year
+    dst_start = last_sunday(year, 3).replace(hour=1, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    dst_end = last_sunday(year, 10).replace(hour=1, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+
+    if dst_start <= utc_value < dst_end:
+        return timezone(timedelta(hours=2))
+
+    return timezone(timedelta(hours=1))
+
+
+def to_german_datetime(value):
+    if not value.tzinfo:
+        value = value.replace(tzinfo=timezone.utc)
+
+    return value.astimezone(german_timezone_for_utc(value))
+
+
 def parse_datetime_to_second_iso(value):
     if not value:
         return None
@@ -1127,7 +1147,7 @@ def parse_datetime_to_second_iso(value):
     if not parsed.tzinfo:
         parsed = parsed.replace(tzinfo=timezone.utc)
 
-    return parsed.astimezone(ZoneInfo("Europe/Berlin")).isoformat()
+    return to_german_datetime(parsed).isoformat()
 
 
 def parse_datetime_to_local_date_iso(value):
@@ -1146,7 +1166,7 @@ def parse_datetime_to_local_date_iso(value):
     if not parsed.tzinfo:
         parsed = parsed.replace(tzinfo=timezone.utc)
 
-    return parsed.astimezone(ZoneInfo("Europe/Berlin")).date().isoformat()
+    return to_german_datetime(parsed).date().isoformat()
 
 
 def clean_text(value):
@@ -2219,10 +2239,31 @@ def sync_end_of_day_orders():
                 steps.append({"name": "scrape_all_pages", "ok": None, "order_type": order_type})
                 if order_type == SELF_PICKUP_ORDER_TYPE:
                     scrape_result = fetch_self_pickup_api_orders(page)
+                    fallback_reason = None
+                    if not scrape_result["orders"] and (get_pagination_state(page).get("order_count") or 0) > 0:
+                        fallback_reason = "api_fetch_empty_but_page_has_orders"
+                    elif any((page_result.get("status") or 0) >= 400 for page_result in scrape_result.get("pages", [])):
+                        fallback_reason = "api_fetch_failed"
+
+                    if fallback_reason:
+                        fallback_result = scrape_all_eod_orders(page, billing_date_collector=billing_date_collector)
+                        scrape_result = {
+                            **fallback_result,
+                            "steps": [
+                                *scrape_result.get("steps", []),
+                                {
+                                    "name": "fallback_to_dom_scrape",
+                                    "ok": True,
+                                    "reason": fallback_reason,
+                                },
+                                *fallback_result.get("steps", []),
+                            ],
+                            "api_pages": scrape_result.get("pages", []),
+                        }
                 else:
                     scrape_result = scrape_all_eod_orders(page, billing_date_collector=billing_date_collector)
                 raw_orders = scrape_result["orders"]
-                if order_type == SELF_PICKUP_ORDER_TYPE:
+                if order_type == SELF_PICKUP_ORDER_TYPE and raw_orders and raw_orders[0].get("hashID"):
                     rows = [normalize_self_pickup_api_order(order) for order in raw_orders]
                 else:
                     billing_dates_by_reference = (

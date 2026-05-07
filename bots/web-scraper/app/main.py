@@ -362,10 +362,18 @@ def open_saved_session(browser):
 
     print("trying saved DoktorABC session ...", flush=True)
 
-    context = browser.new_context(
-        storage_state=SESSION_STATE_PATH,
-        **browser_context_options(),
-    )
+    try:
+        context = browser.new_context(
+            storage_state=SESSION_STATE_PATH,
+            **browser_context_options(),
+        )
+    except Exception as exc:
+        print(
+            f"saved DoktorABC session could not be opened: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        return None
+
     page = context.new_page()
 
     try:
@@ -804,6 +812,8 @@ def health():
         "ok": True,
         "service": "web-scraper",
         "uptime_seconds": round(time.time() - STARTED_AT, 3),
+        "session_state_path": SESSION_STATE_PATH,
+        "session_state_exists": os.path.exists(SESSION_STATE_PATH),
     }
 
 

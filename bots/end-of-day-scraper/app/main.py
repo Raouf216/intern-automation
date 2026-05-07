@@ -1375,10 +1375,18 @@ def open_saved_session(browser, target_url, order_type):
 
     print(f"trying saved DoktorABC session for {order_type} ...", flush=True)
 
-    context = browser.new_context(
-        storage_state=SESSION_STATE_PATH,
-        **browser_context_options(),
-    )
+    try:
+        context = browser.new_context(
+            storage_state=SESSION_STATE_PATH,
+            **browser_context_options(),
+        )
+    except Exception as exc:
+        print(
+            f"saved DoktorABC session for {order_type} could not be opened: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        return None
+
     page = context.new_page()
 
     try:
@@ -1901,6 +1909,7 @@ def health():
         "target_url": end_of_day_url(),
         "self_pickup_url": self_pickup_url(),
         "session_state_path": SESSION_STATE_PATH,
+        "session_state_exists": os.path.exists(SESSION_STATE_PATH),
     }
 
 

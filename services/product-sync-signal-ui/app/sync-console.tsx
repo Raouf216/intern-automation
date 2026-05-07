@@ -10,8 +10,8 @@ import {
   KeyRound,
   Loader2,
   LockKeyhole,
-  LogIn,
   Moon,
+  PackageCheck,
   RadioTower,
   RefreshCw,
   ShieldCheck,
@@ -59,6 +59,22 @@ type EndOfDayResponse = {
   page_title?: string;
   reused_session?: boolean;
   session_state_path?: string;
+  scraped?: number;
+  saved?: number;
+  sent_to_supabase?: number;
+  targets?: Array<{
+    order_type?: string;
+    scraped?: number;
+    valid_rows?: number;
+    ready_for_customer_clicked?: boolean;
+  }>;
+  export?: {
+    downloaded?: boolean;
+    skipped?: boolean;
+    sent_to_n8n?: boolean;
+    download_filename?: string;
+    excel_row_count?: number | null;
+  };
   wait_result?: {
     stable?: boolean;
     final_snapshot?: {
@@ -92,13 +108,24 @@ type SyncNotification = {
   error?: string;
 };
 
+function legacyEndOfDayOrdersEndpoint(value: string) {
+  return value
+    .trim()
+    .replace(/\/jobs\/end-of-day\/(?:login|session-check)\/?$/i, "/jobs/end-of-day/orders/sync");
+}
+
 const configuredEndpoint = process.env.NEXT_PUBLIC_PRODUCT_SYNC_ENDPOINT || "";
-const configuredEndOfDayEndpoint = process.env.NEXT_PUBLIC_EOD_LOGIN_ENDPOINT || "";
+const configuredEndOfDayEndpoint =
+  process.env.NEXT_PUBLIC_EOD_ORDERS_ENDPOINT ||
+  legacyEndOfDayOrdersEndpoint(process.env.NEXT_PUBLIC_EOD_LOGIN_ENDPOINT || "");
+const configuredPickupReadyEndpoint = process.env.NEXT_PUBLIC_PICKUP_READY_ENDPOINT || "";
 const expectedPassword = process.env.NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD || "";
 const fallbackEndpoint = "http://178.104.144.30:8020/jobs/product-prices";
-const fallbackEndOfDayEndpoint = "http://178.104.144.30:8021/jobs/end-of-day/login";
+const fallbackEndOfDayEndpoint = "http://178.104.144.30:8021/jobs/end-of-day/orders/sync";
+const fallbackPickupReadyEndpoint = "http://178.104.144.30:8022/jobs/pickup-ready/orders/sync";
 const syncEndpoint = configuredEndpoint || fallbackEndpoint;
 const endOfDayEndpoint = configuredEndOfDayEndpoint || fallbackEndOfDayEndpoint;
+const pickupReadyEndpoint = configuredPickupReadyEndpoint || fallbackPickupReadyEndpoint;
 const staffSteps = [
   {
     before: "Alle Produkte, bei denen Informationen geändert werden, zuerst in DoktorABC auf ",
@@ -155,6 +182,18 @@ function syncSummary(payload: SyncResponse | null) {
   };
 }
 
+function botSavedCount(payload: EndOfDayResponse | null) {
+  return numberValue(payload?.sent_to_supabase ?? payload?.saved ?? payload?.scraped);
+}
+
+function exportState(payload: EndOfDayResponse | null) {
+  if (!payload?.export) return "noch nicht";
+  if (payload.export.skipped) return "übersprungen";
+  if (payload.export.sent_to_n8n) return "gesendet";
+  if (payload.export.downloaded) return "geladen";
+  return "noch nicht";
+}
+
 async function sendFinalSyncNotification(notification: SyncNotification) {
   try {
     const response = await fetch("/api/sync-notification", {
@@ -175,16 +214,22 @@ export function SyncConsole() {
   const [password, setPassword] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [isEndOfDayRunning, setIsEndOfDayRunning] = useState(false);
+  const [isPickupReadyRunning, setIsPickupReadyRunning] = useState(false);
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
   const [endOfDayStatus, setEndOfDayStatus] = useState<"idle" | "success" | "error">("idle");
+  const [pickupReadyStatus, setPickupReadyStatus] = useState<"idle" | "success" | "error">("idle");
   const [message, setMessage] = useState("Bereit für eine kontrollierte Produktsynchronisierung.");
-  const [endOfDayMessage, setEndOfDayMessage] = useState("Bereit für den End-of-Day Login-Test.");
+  const [endOfDayMessage, setEndOfDayMessage] = useState("Bereit für End-of-Day Bestellungen und Excel-Export.");
+  const [pickupReadyMessage, setPickupReadyMessage] = useState("Bereit für Pickup Ready.");
   const [result, setResult] = useState<SyncResponse | null>(null);
   const [endOfDayResult, setEndOfDayResult] = useState<EndOfDayResponse | null>(null);
+  const [pickupReadyResult, setPickupReadyResult] = useState<EndOfDayResponse | null>(null);
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [finishedAt, setFinishedAt] = useState<Date | null>(null);
   const [endOfDayStartedAt, setEndOfDayStartedAt] = useState<Date | null>(null);
   const [endOfDayFinishedAt, setEndOfDayFinishedAt] = useState<Date | null>(null);
+  const [pickupReadyStartedAt, setPickupReadyStartedAt] = useState<Date | null>(null);
+  const [pickupReadyFinishedAt, setPickupReadyFinishedAt] = useState<Date | null>(null);
   const [theme, setTheme] = useState<"light" | "night">("light");
 
   useEffect(() => {
@@ -333,7 +378,7 @@ export function SyncConsole() {
     }
   }
 
-  async function triggerEndOfDayLogin() {
+  async function triggerEndOfDayOrders() {
     if (!endOfDayEndpoint.trim()) {
       setEndOfDayStatus("error");
       setEndOfDayMessage("Der feste End-of-Day Bot-Endpunkt ist nicht konfiguriert.");
@@ -349,7 +394,7 @@ export function SyncConsole() {
 
     setIsEndOfDayRunning(true);
     setEndOfDayStatus("idle");
-    setEndOfDayMessage("End-of-Day Login läuft. Der Bot wartet extra, bis DoktorABC fertig gerendert hat.");
+    setEndOfDayMessage("End-of-Day läuft. Der Bot synchronisiert die EOD-Bestellungen und exportiert die Excel-Datei.");
     setEndOfDayResult(null);
     const runStartedAt = new Date();
     setEndOfDayStartedAt(runStartedAt);
@@ -379,11 +424,7 @@ export function SyncConsole() {
       }
 
       setEndOfDayStatus("success");
-      setEndOfDayMessage(
-        payload.reused_session
-          ? "End-of-Day Seite ist geöffnet. Bestehende DoktorABC Sitzung wurde wiederverwendet."
-          : "End-of-Day Seite ist geöffnet. Neue DoktorABC Sitzung wurde gespeichert."
-      );
+      setEndOfDayMessage(`End-of-Day abgeschlossen: ${botSavedCount(payload)} Bestellung(en) gespeichert, Export ${exportState(payload)}.`);
       setEndOfDayFinishedAt(new Date());
     } catch (error) {
       setEndOfDayStatus("error");
@@ -403,7 +444,75 @@ export function SyncConsole() {
     }
   }
 
-  const anyBotRunning = isRunning || isEndOfDayRunning;
+  async function triggerPickupReadyOrders() {
+    if (!pickupReadyEndpoint.trim()) {
+      setPickupReadyStatus("error");
+      setPickupReadyMessage("Der feste Pickup Ready Bot-Endpunkt ist nicht konfiguriert.");
+      return;
+    }
+
+    const passwordError = validateOperatorPassword();
+    if (passwordError) {
+      setPickupReadyStatus("error");
+      setPickupReadyMessage(passwordError);
+      return;
+    }
+
+    setIsPickupReadyRunning(true);
+    setPickupReadyStatus("idle");
+    setPickupReadyMessage("Pickup Ready läuft. Der Bot nutzt die bestehende Login-Logik und öffnet Ready for Customer.");
+    setPickupReadyResult(null);
+    const runStartedAt = new Date();
+    setPickupReadyStartedAt(runStartedAt);
+    setPickupReadyFinishedAt(null);
+
+    try {
+      const response = await fetch(pickupReadyEndpoint.trim(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+      const contentType = response.headers.get("content-type") || "";
+      const payload = contentType.includes("application/json")
+        ? ((await response.json()) as EndOfDayResponse)
+        : ({ ok: false, error: await response.text() } satisfies EndOfDayResponse);
+
+      setPickupReadyResult(payload);
+
+      if (!response.ok || !payload.ok) {
+        throw new Error(
+          payload.error
+            ? `Bot-Fehler: ${payload.error}`
+            : `HTTP-Fehler ${response.status}: ${response.statusText || "keine Details"}`
+        );
+      }
+
+      setPickupReadyStatus("success");
+      setPickupReadyMessage(`Pickup Ready abgeschlossen: ${botSavedCount(payload)} Bestellung(en) gespeichert.`);
+      setPickupReadyFinishedAt(new Date());
+    } catch (error) {
+      setPickupReadyStatus("error");
+      const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
+      const isFetchFailure =
+        errorMessage.toLowerCase().includes("failed to fetch") ||
+        errorMessage.toLowerCase().includes("networkerror");
+
+      setPickupReadyMessage(
+        isFetchFailure
+          ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den Pickup Ready Bot unter ${pickupReadyEndpoint} nicht erreichen oder die Antwort nicht lesen.`
+          : `Pickup Ready Anfrage fehlgeschlagen: ${errorMessage}`
+      );
+      setPickupReadyFinishedAt(new Date());
+    } finally {
+      setIsPickupReadyRunning(false);
+    }
+  }
+
+  const anyBotRunning = isRunning || isEndOfDayRunning || isPickupReadyRunning;
+  const anyBotError = status === "error" || endOfDayStatus === "error" || pickupReadyStatus === "error";
+  const anyBotSuccess = status === "success" || endOfDayStatus === "success" || pickupReadyStatus === "success";
 
   return (
     <main className="page">
@@ -423,9 +532,9 @@ export function SyncConsole() {
               {theme === "night" ? <Sun size={17} /> : <Moon size={17} />}
               <span>{theme === "night" ? "Hell" : "Nacht"}</span>
             </button>
-            <div className={`state-pill state-${status}`}>
+            <div className={`state-pill state-${anyBotError ? "error" : anyBotSuccess ? "success" : status}`}>
               {anyBotRunning ? <Loader2 size={16} className="spin" /> : <ShieldCheck size={16} />}
-              <span>{anyBotRunning ? "Läuft" : status === "error" || endOfDayStatus === "error" ? "Prüfen" : status === "success" || endOfDayStatus === "success" ? "Erfolgreich" : "Bereit"}</span>
+              <span>{anyBotRunning ? "Läuft" : anyBotError ? "Prüfen" : anyBotSuccess ? "Erfolgreich" : "Bereit"}</span>
             </div>
           </div>
         </header>
@@ -479,12 +588,27 @@ export function SyncConsole() {
                   <CalendarCheck size={22} />
                   <span>
                     <b>End-of-Day</b>
-                    <small>Login und Ladeprüfung</small>
+                    <small>Bestellungen und Excel-Export</small>
                   </span>
                 </div>
-                <button className="trigger-button eod-button" type="button" onClick={triggerEndOfDayLogin} disabled={anyBotRunning}>
-                  {isEndOfDayRunning ? <Loader2 size={21} className="spin" /> : <LogIn size={21} />}
-                  <span>{isEndOfDayRunning ? "End-of-Day läuft" : "End-of-Day öffnen"}</span>
+                <button className="trigger-button eod-button" type="button" onClick={triggerEndOfDayOrders} disabled={anyBotRunning}>
+                  {isEndOfDayRunning ? <Loader2 size={21} className="spin" /> : <CalendarCheck size={21} />}
+                  <span>{isEndOfDayRunning ? "End-of-Day läuft" : "End-of-Day starten"}</span>
+                  <ArrowRight size={20} />
+                </button>
+              </section>
+
+              <section className="secondary-bot-card" aria-label="Pickup Ready Bot">
+                <div>
+                  <PackageCheck size={22} />
+                  <span>
+                    <b>Pickup Ready</b>
+                    <small>Ready for Customer</small>
+                  </span>
+                </div>
+                <button className="trigger-button pickup-button" type="button" onClick={triggerPickupReadyOrders} disabled={anyBotRunning}>
+                  {isPickupReadyRunning ? <Loader2 size={21} className="spin" /> : <PackageCheck size={21} />}
+                  <span>{isPickupReadyRunning ? "Pickup Ready läuft" : "Pickup Ready starten"}</span>
                   <ArrowRight size={20} />
                 </button>
               </section>
@@ -536,7 +660,7 @@ export function SyncConsole() {
               <div className="surface-heading compact mini">
                 <div>
                   <p className="section-kicker">End-of-Day</p>
-                  <h3>Login-Prüfung</h3>
+                  <h3>Bestellungen & Export</h3>
                 </div>
                 {isEndOfDayRunning ? <Loader2 size={20} className="spin" /> : endOfDayStatus === "success" ? <CheckCircle2 size={20} /> : endOfDayStatus === "error" ? <AlertTriangle size={20} /> : <CalendarCheck size={20} />}
               </div>
@@ -558,8 +682,12 @@ export function SyncConsole() {
                   </dd>
                 </div>
                 <div>
-                  <dt>Gerendert</dt>
-                  <dd>{endOfDayResult?.wait_result?.stable ? "stabil" : "noch nicht"}</dd>
+                  <dt>Gespeichert</dt>
+                  <dd>{endOfDayResult ? botSavedCount(endOfDayResult) : "noch nicht"}</dd>
+                </div>
+                <div>
+                  <dt>Export</dt>
+                  <dd>{exportState(endOfDayResult)}</dd>
                 </div>
                 <div>
                   <dt>Gestartet</dt>
@@ -571,6 +699,51 @@ export function SyncConsole() {
                 </div>
               </dl>
               {endOfDayResult?.current_url ? <code className="eod-url">{endOfDayResult.current_url}</code> : null}
+            </div>
+
+            <div className="eod-result-panel">
+              <div className="surface-heading compact mini">
+                <div>
+                  <p className="section-kicker">Pickup Ready</p>
+                  <h3>Ready for Customer</h3>
+                </div>
+                {isPickupReadyRunning ? <Loader2 size={20} className="spin" /> : pickupReadyStatus === "success" ? <CheckCircle2 size={20} /> : pickupReadyStatus === "error" ? <AlertTriangle size={20} /> : <PackageCheck size={20} />}
+              </div>
+              <div className={`message message-${isPickupReadyRunning ? "running" : pickupReadyStatus}`}>
+                {isPickupReadyRunning ? <Loader2 size={18} className="spin" /> : pickupReadyStatus === "success" ? <CheckCircle2 size={18} /> : pickupReadyStatus === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
+                <p>{pickupReadyMessage}</p>
+              </div>
+              <dl className="eod-facts">
+                <div>
+                  <dt>Sitzung</dt>
+                  <dd>
+                    {pickupReadyStatus === "error"
+                      ? "fehlgeschlagen"
+                      : pickupReadyResult
+                        ? pickupReadyResult.reused_session
+                          ? "wiederverwendet"
+                          : "neu"
+                        : "noch nicht"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Gespeichert</dt>
+                  <dd>{pickupReadyResult ? botSavedCount(pickupReadyResult) : "noch nicht"}</dd>
+                </div>
+                <div>
+                  <dt>Gefunden</dt>
+                  <dd>{pickupReadyResult ? numberValue(pickupReadyResult.scraped) : "noch nicht"}</dd>
+                </div>
+                <div>
+                  <dt>Gestartet</dt>
+                  <dd>{pickupReadyStartedAt ? pickupReadyStartedAt.toLocaleTimeString() : "noch nicht"}</dd>
+                </div>
+                <div>
+                  <dt>Beendet</dt>
+                  <dd>{pickupReadyFinishedAt ? pickupReadyFinishedAt.toLocaleTimeString() : "noch nicht"}</dd>
+                </div>
+              </dl>
+              {pickupReadyResult?.current_url ? <code className="eod-url">{pickupReadyResult.current_url}</code> : null}
             </div>
           </aside>
         </div>

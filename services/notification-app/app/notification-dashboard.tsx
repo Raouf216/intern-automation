@@ -250,7 +250,12 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
         <div className="brand">
           <div className="brand-mark pharmacy-logo" aria-label="Medizinische Cannabis-Apotheke">
             <img className="cannabis-art" src="/cannabis.png" alt="" aria-hidden="true" />
-            <span className="pharmacy-cross" aria-hidden="true" />
+            <svg className="pharmacy-badge" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+              <path className="pharmacy-badge-bowl" d="M9 20h14c-.9 4.1-3.1 6.2-7 6.2S9.9 24.1 9 20Z" />
+              <path className="pharmacy-badge-snake" d="M17.2 6.5c-4.8.3-4.7 5.2-.9 6.1 4.3 1 4.3 5.2-.3 6.2" />
+              <path className="pharmacy-badge-snake" d="M16 7.2v13.5" />
+              <circle className="pharmacy-badge-eye" cx="17.8" cy="6.7" r="1.35" />
+            </svg>
           </div>
           <div>
             <p className="eyebrow">Apothekenbetrieb</p>

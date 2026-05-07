@@ -11,6 +11,7 @@
   --brand-soft: #fff1f3;
   --red: #b42318;
   --red-soft: #fff1ef;
+  --pharmacy-badge-red: #8e1825;
   --green: #027a48;
   --green-soft: #edfdf5;
   --amber: #a15c07;
@@ -54,6 +55,7 @@ body[data-theme="night"] {
   --brand-soft: rgba(255, 154, 165, 0.13);
   --red: #ff8a7d;
   --red-soft: rgba(255, 138, 125, 0.13);
+  --pharmacy-badge-red: #7a0f1b;
   --green: #6ee7a8;
   --green-soft: rgba(110, 231, 168, 0.12);
   --amber: #ffd38a;
@@ -144,41 +146,43 @@ button {
   transform: scale(1.14) translateY(1px);
 }
 
-.pharmacy-cross {
+.pharmacy-badge {
   position: absolute;
-  right: 6px;
-  bottom: 6px;
+  right: 4px;
+  bottom: 4px;
   z-index: 4;
-  width: 18px;
-  height: 18px;
+  width: 23px;
+  height: 23px;
   border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 5px;
-  background: #ffffff;
-  box-shadow: 0 7px 15px rgba(10, 39, 23, 0.28);
+  background: linear-gradient(180deg, #ffffff 0%, #fff4f5 100%);
+  box-shadow:
+    0 7px 15px rgba(10, 39, 23, 0.28),
+    inset 0 0 0 1px rgba(142, 24, 37, 0.08);
+  color: var(--pharmacy-badge-red);
 }
 
-.pharmacy-cross::before,
-.pharmacy-cross::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  border-radius: 999px;
-  background: var(--brand-strong);
-  transform: translate(-50%, -50%);
+.pharmacy-badge-bowl,
+.pharmacy-badge-snake {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.pharmacy-cross::before {
-  width: 4px;
-  height: 12px;
+.pharmacy-badge-bowl {
+  stroke-width: 3.2;
 }
 
-.pharmacy-cross::after {
-  width: 12px;
-  height: 4px;
+.pharmacy-badge-snake {
+  stroke-width: 3;
 }
 
-.brand-mark svg {
+.pharmacy-badge-eye {
+  fill: currentColor;
+}
+
+.brand-mark svg:not(.pharmacy-badge) {
   color: var(--brand-strong);
 }
 

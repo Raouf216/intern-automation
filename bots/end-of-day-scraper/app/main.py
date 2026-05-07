@@ -3,6 +3,7 @@ import os
 import re
 import time
 import zipfile
+import json
 from datetime import datetime, timezone
 from urllib.parse import quote
 import xml.etree.ElementTree as ElementTree
@@ -68,6 +69,7 @@ EOD_LOGIN_FORM_CHECK_TIMEOUT_MS = 800
 EOD_LOGIN_FIELD_TIMEOUT_MS = 5_000
 EOD_PHARMACIST_ROLE_CLICK_TIMEOUT_MS = 5_000
 EOD_LOGIN_BUTTON_CLICK_TIMEOUT_MS = 10_000
+EOD_LOGIN_SUCCESS_TIMEOUT_MS = int_env("EOD_LOGIN_SUCCESS_TIMEOUT_MS", 45_000)
 EOD_LOAD_STATE_DOMCONTENTLOADED_TIMEOUT_MS = 10_000
 EOD_LOAD_STATE_LOAD_TIMEOUT_MS = 10_000
 EOD_LOAD_STATE_NETWORKIDLE_TIMEOUT_MS = 5_000
@@ -580,9 +582,92 @@ def browser_context_options():
     }
 
 
+def log_event(event, **details):
+    payload = {
+        "event": event,
+        "service": "end-of-day-scraper",
+        **details,
+    }
+    print(json.dumps(payload, sort_keys=True, default=str), flush=True)
+
+
+def failure_screenshot_path(label):
+    safe_label = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "failure"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return os.path.join(ARTIFACTS_DIR, f"doktorabc-{safe_label}-{timestamp}.png")
+
+
+def capture_failure_screenshot(page, label):
+    path = failure_screenshot_path(label)
+
+    try:
+        os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+        page.screenshot(path=path, full_page=True)
+        log_event("screenshot_saved", label=label, path=path, url=page.url)
+        return path
+    except Exception as exc:
+        log_event("screenshot_failed", label=label, error=f"{type(exc).__name__}: {exc}")
+        return None
+
+
+def page_readiness_diagnostics(page):
+    try:
+        return page.evaluate(
+            """
+            () => {
+              const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+              const visible = (element) => {
+                if (!element) return false;
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return (
+                  style.display !== "none" &&
+                  style.visibility !== "hidden" &&
+                  Number(style.opacity) !== 0 &&
+                  rect.width > 0 &&
+                  rect.height > 0
+                );
+              };
+              const emailVisible = Array.from(
+                document.querySelectorAll('input[placeholder*="Email" i], input[type="email"], input[name*="email" i]')
+              ).some(visible);
+              const passwordVisible = Array.from(
+                document.querySelectorAll('input[placeholder*="Password" i], input[type="password"], input[name*="password" i]')
+              ).some(visible);
+              const rows100Visible = Array.from(
+                document.querySelectorAll("#pagination-container #rows-per-page-container li")
+              ).some((element) => visible(element) && /^100$/.test(normalize(element.innerText)));
+              const errorText = Array.from(
+                document.querySelectorAll('[role="alert"], [class*="error" i], [class*="danger" i], [class*="invalid" i]')
+              )
+                .filter(visible)
+                .map((element) => normalize(element.innerText))
+                .filter(Boolean)
+                .join(" | ");
+
+              return {
+                url: window.location.href,
+                title: document.title,
+                readyState: document.readyState,
+                emailVisible,
+                passwordVisible,
+                rows100Visible,
+                paginationVisible: visible(document.querySelector("#pagination-container")),
+                orderMarkerCount: document.querySelectorAll('button[id$="-mark-order"], [id^="order-"][id$="-badge"]').length,
+                errorText,
+              };
+            }
+            """
+        )
+    except Exception as exc:
+        return {"diagnostics_error": f"{type(exc).__name__}: {exc}", "url": getattr(page, "url", None)}
+
+
 def goto_page(page, url):
+    log_event("goto_start", url=url)
     page.goto(url, wait_until="domcontentloaded", timeout=EOD_NAVIGATION_TIMEOUT_MS)
     page.wait_for_load_state("domcontentloaded")
+    log_event("goto_domcontentloaded", url=page.url)
 
 
 def visible_login_form(page):
@@ -652,14 +737,127 @@ def save_session_state(context):
         os.makedirs(session_state_dir, exist_ok=True)
 
     context.storage_state(path=SESSION_STATE_PATH)
+    log_event("session_state_saved", path=SESSION_STATE_PATH)
+
+
+LOGIN_AUTHENTICATED_JS = """
+() => {
+  const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+  const visible = (element) => {
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      Number(style.opacity) !== 0 &&
+      rect.width > 0 &&
+      rect.height > 0
+    );
+  };
+  const emailVisible = Array.from(
+    document.querySelectorAll('input[placeholder*="Email" i], input[type="email"], input[name*="email" i]')
+  ).some(visible);
+  const passwordVisible = Array.from(
+    document.querySelectorAll('input[placeholder*="Password" i], input[type="password"], input[name*="password" i]')
+  ).some(visible);
+  const onLoginUrl = /login/i.test(window.location.href);
+  const loginButtonVisible = Array.from(document.querySelectorAll("button, input[type='submit']"))
+    .some((element) => visible(element) && /login/i.test(normalize(element.innerText || element.value)));
+  const loginVisible = emailVisible || passwordVisible || loginButtonVisible;
+  const rows100Visible = Array.from(
+    document.querySelectorAll("#pagination-container #rows-per-page-container li")
+  ).some((element) => visible(element) && /^100$/.test(normalize(element.innerText)));
+  const orderMarkerCount = document.querySelectorAll('button[id$="-mark-order"], [id^="order-"][id$="-badge"]').length;
+  const paginationVisible = visible(document.querySelector("#pagination-container"));
+  const errorText = Array.from(
+    document.querySelectorAll('[role="alert"], [class*="error" i], [class*="danger" i], [class*="invalid" i]')
+  )
+    .filter(visible)
+    .map((element) => normalize(element.innerText))
+    .filter(Boolean)
+    .join(" | ");
+  const bodyText = normalize(document.body?.innerText || "");
+  const credentialError =
+    loginVisible &&
+    (
+      Boolean(errorText) ||
+      /invalid|incorrect|wrong|failed|denied|unauthorized|ungueltig|falsch|fehler/i.test(bodyText)
+    );
+
+  if (credentialError) {
+    return {
+      status: "login_error",
+      url: window.location.href,
+      readyState: document.readyState,
+      errorText: errorText || bodyText.slice(0, 500),
+    };
+  }
+
+  if ((!loginVisible && !onLoginUrl) || rows100Visible || orderMarkerCount > 0 || paginationVisible) {
+    return {
+      status: "authenticated",
+      url: window.location.href,
+      readyState: document.readyState,
+      rows100Visible,
+      orderMarkerCount,
+      paginationVisible,
+    };
+  }
+
+  return false;
+}
+"""
+
+
+def wait_for_business_condition(page, name, script, timeout_ms, ready_statuses, screenshot_label=None):
+    log_event("business_wait_start", name=name, timeout_ms=timeout_ms, url=page.url)
+
+    try:
+        handle = page.wait_for_function(script, timeout=timeout_ms, polling=250)
+        result = handle.json_value()
+    except PlaywrightTimeoutError as exc:
+        screenshot_path = capture_failure_screenshot(page, screenshot_label or name)
+        diagnostics = page_readiness_diagnostics(page)
+        log_event(
+            "business_wait_timeout",
+            name=name,
+            timeout_ms=timeout_ms,
+            screenshot_path=screenshot_path,
+            diagnostics=diagnostics,
+        )
+        raise RuntimeError(
+            f"{name} did not become ready in {timeout_ms}ms. "
+            f"Screenshot: {screenshot_path}. Diagnostics: {diagnostics}"
+        ) from exc
+
+    status = result.get("status") if isinstance(result, dict) else None
+    if status not in ready_statuses:
+        screenshot_path = capture_failure_screenshot(page, screenshot_label or name)
+        diagnostics = page_readiness_diagnostics(page)
+        log_event(
+            "business_wait_failed",
+            name=name,
+            status=status,
+            result=result,
+            screenshot_path=screenshot_path,
+            diagnostics=diagnostics,
+        )
+        raise RuntimeError(
+            f"{name} failed with status {status}. "
+            f"Result: {result}. Screenshot: {screenshot_path}. Diagnostics: {diagnostics}"
+        )
+
+    log_event("business_wait_ready", name=name, result=result)
+    return result
 
 
 def login_if_needed(page, context, target_url, before_login_path=None):
     if not visible_login_form(page):
-        print("DoktorABC session is already authenticated", flush=True)
+        log_event("login_not_needed", url=page.url)
         return False
 
-    print("DoktorABC login page visible -> logging in", flush=True)
+    log_event("login_required", url=page.url, target_url=target_url)
 
     fill_first_visible(
         page,
@@ -677,15 +875,20 @@ def login_if_needed(page, context, target_url, before_login_path=None):
         page.screenshot(path=before_login_path, full_page=True)
 
     click_login_button(page)
-    page.wait_for_load_state("domcontentloaded")
+    wait_for_load_states(page)
+    wait_for_business_condition(
+        page,
+        "doktorabc_login_success",
+        LOGIN_AUTHENTICATED_JS,
+        EOD_LOGIN_SUCCESS_TIMEOUT_MS,
+        ready_statuses={"authenticated"},
+        screenshot_label="eod-login-success-timeout",
+    )
 
     if not page.url.startswith(target_url):
         goto_page(page, target_url)
     else:
         page.wait_for_load_state("domcontentloaded")
-
-    if visible_login_form(page):
-        raise RuntimeError("DoktorABC login failed; login page is still visible.")
 
     save_session_state(context)
 
@@ -694,19 +897,27 @@ def login_if_needed(page, context, target_url, before_login_path=None):
 
 def wait_for_load_states(page):
     try:
+        log_event("load_state_wait_start", state="domcontentloaded", url=page.url)
         page.wait_for_load_state("domcontentloaded", timeout=EOD_LOAD_STATE_DOMCONTENTLOADED_TIMEOUT_MS)
+        log_event("load_state_wait_ok", state="domcontentloaded", url=page.url)
     except PlaywrightTimeoutError:
+        log_event("load_state_wait_timeout", state="domcontentloaded", url=page.url)
         pass
 
     try:
+        log_event("load_state_wait_start", state="load", url=page.url)
         page.wait_for_load_state("load", timeout=EOD_LOAD_STATE_LOAD_TIMEOUT_MS)
+        log_event("load_state_wait_ok", state="load", url=page.url)
     except PlaywrightTimeoutError:
+        log_event("load_state_wait_timeout", state="load", url=page.url)
         pass
 
     try:
+        log_event("load_state_wait_start", state="networkidle", url=page.url)
         page.wait_for_load_state("networkidle", timeout=EOD_LOAD_STATE_NETWORKIDLE_TIMEOUT_MS)
+        log_event("load_state_wait_ok", state="networkidle", url=page.url)
     except PlaywrightTimeoutError:
-        print("networkidle did not arrive; falling back to DOM stability wait", flush=True)
+        log_event("load_state_wait_timeout", state="networkidle", url=page.url)
 
 
 def page_render_snapshot(page):
@@ -818,9 +1029,31 @@ def wait_for_orders_page(page, target_url, timeout_ms=None):
     wait_for_load_states(page)
 
     if visible_login_form(page):
-        raise RuntimeError("DoktorABC session is not authenticated; login page is visible.")
+        screenshot_path = capture_failure_screenshot(page, "eod-login-visible-while-waiting-for-orders")
+        diagnostics = page_readiness_diagnostics(page)
+        raise RuntimeError(
+            "DoktorABC session is not authenticated; login page is visible. "
+            f"Screenshot: {screenshot_path}. Diagnostics: {diagnostics}"
+        )
 
-    ready_result = wait_for_rows_100_control(page, timeout_ms=timeout_ms or EOD_ROWS_100_TIMEOUT_MS)
+    log_event("business_wait_start", name="doktorabc_orders_page_ready", timeout_ms=timeout_ms or EOD_ROWS_100_TIMEOUT_MS, url=page.url)
+    try:
+        ready_result = wait_for_rows_100_control(page, timeout_ms=timeout_ms or EOD_ROWS_100_TIMEOUT_MS)
+    except Exception as exc:
+        screenshot_path = capture_failure_screenshot(page, "eod-orders-page-ready-timeout")
+        diagnostics = page_readiness_diagnostics(page)
+        log_event(
+            "business_wait_failed",
+            name="doktorabc_orders_page_ready",
+            screenshot_path=screenshot_path,
+            diagnostics=diagnostics,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise RuntimeError(
+            f"DoktorABC orders page did not become usable. Screenshot: {screenshot_path}. "
+            f"Diagnostics: {diagnostics}. Original error: {type(exc).__name__}: {exc}"
+        ) from exc
+    log_event("business_wait_ready", name="doktorabc_orders_page_ready", result=ready_result)
 
     return {
         **ready_result,

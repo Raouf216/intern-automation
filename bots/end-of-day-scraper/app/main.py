@@ -23,6 +23,20 @@ DEFAULT_DOKTORABC_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
+
+
+def int_env(name, default):
+    value = os.environ.get(name)
+
+    if value is None or not value.strip():
+        return default
+
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid integer environment variable {name}={value!r}") from exc
+
+
 DOKTORABC_USER_AGENT = (
     os.environ.get("DOKTORABC_USER_AGENT", DEFAULT_DOKTORABC_USER_AGENT).strip()
     or DEFAULT_DOKTORABC_USER_AGENT
@@ -30,10 +44,47 @@ DOKTORABC_USER_AGENT = (
 DEFAULT_END_OF_DAY_URL = "https://pharmacies.doktorabc.com/end-of-day"
 EOD_ORDER_TYPE = "eod"
 SELF_PICKUP_ORDER_TYPE = "self pickup"
-EOD_READY_TIMEOUT_MS = int(os.environ.get("EOD_READY_TIMEOUT_MS", "30000"))
-EOD_MAX_PAGES = int(os.environ.get("EOD_MAX_PAGES", "100"))
-EOD_EXPORT_WAIT_BEFORE_CLICK_MS = int(os.environ.get("EOD_EXPORT_WAIT_BEFORE_CLICK_MS", "30000"))
-EOD_EXPORT_DOWNLOAD_TIMEOUT_MS = int(os.environ.get("EOD_EXPORT_DOWNLOAD_TIMEOUT_MS", "30000"))
+EOD_MAX_PAGES = int_env("EOD_MAX_PAGES", 100)
+EOD_AFTER_GOTO_WAIT_MS = int_env("EOD_AFTER_GOTO_WAIT_MS", 2_000)
+EOD_AFTER_READY_FOR_CUSTOMER_CLICK_WAIT_MS = int_env("EOD_AFTER_READY_FOR_CUSTOMER_CLICK_WAIT_MS", 2_000)
+EOD_AFTER_SELECT_100_CLICK_WAIT_MS = int_env("EOD_AFTER_SELECT_100_CLICK_WAIT_MS", 1_500)
+EOD_AFTER_NEXT_CLICK_WAIT_MS = int_env("EOD_AFTER_NEXT_CLICK_WAIT_MS", 1_500)
+EOD_READY_TIMEOUT_MS = 30_000
+EOD_NAVIGATION_TIMEOUT_MS = 30_000
+EOD_SUPABASE_TIMEOUT_SECONDS = 30
+EOD_N8N_UPLOAD_TIMEOUT_SECONDS = 30
+EOD_NOTIFICATION_TIMEOUT_SECONDS = 30
+EOD_EXPORT_DOWNLOAD_TIMEOUT_MS = 30_000
+EOD_EXPORT_BUTTON_VISIBLE_TIMEOUT_MS = 5_000
+EOD_EXPORT_BUTTON_CLICK_TIMEOUT_MS = 10_000
+EOD_LOGIN_FORM_CHECK_TIMEOUT_MS = 800
+EOD_LOGIN_FIELD_TIMEOUT_MS = 5_000
+EOD_PHARMACIST_ROLE_CLICK_TIMEOUT_MS = 5_000
+EOD_LOGIN_BUTTON_CLICK_TIMEOUT_MS = 10_000
+EOD_LOAD_STATE_DOMCONTENTLOADED_TIMEOUT_MS = 10_000
+EOD_LOAD_STATE_LOAD_TIMEOUT_MS = 10_000
+EOD_LOAD_STATE_NETWORKIDLE_TIMEOUT_MS = 5_000
+EOD_RENDER_STABILITY_TIMEOUT_MS = 30_000
+EOD_RENDER_STABILITY_STABLE_MS = 4_000
+EOD_RENDER_STABILITY_POLL_MS = 700
+EOD_ORDER_LIST_TIMEOUT_MS = 30_000
+EOD_ORDER_LIST_STABLE_MS = 1_500
+EOD_ROWS_100_TIMEOUT_MS = 30_000
+EOD_ROWS_100_PROBE_TIMEOUT_MS = 500
+EOD_EMPTY_LIST_MIN_WAIT_MS = 5_000
+EOD_EMPTY_LIST_STABLE_MS = 1_500
+EOD_EMPTY_LIST_POLL_MS = 500
+EOD_READY_FOR_CUSTOMER_VISIBLE_TIMEOUT_MS = 30_000
+EOD_READY_FOR_CUSTOMER_CLICK_TIMEOUT_MS = 10_000
+EOD_SELECT_100_VISIBLE_TIMEOUT_MS = 5_000
+EOD_SELECT_100_CLICK_TIMEOUT_MS = 10_000
+EOD_NEXT_VISIBLE_TIMEOUT_MS = 10_000
+EOD_NEXT_CLICK_TIMEOUT_MS = 10_000
+EOD_NEXT_CHANGE_TIMEOUT_MS = 30_000
+EOD_NEXT_CHANGE_POLL_MS = 500
+EOD_AFTER_LOGIN_CLICK_WAIT_MS = 2_000
+EOD_PZN_POPUP_WAIT_MS = 350
+EOD_PZN_CLOSE_WAIT_MS = 100
 SUPABASE_SCHEMA = os.environ.get("SUPABASE_SCHEMA", "private")
 SUPABASE_EOD_ORDERS_TABLE = os.environ.get("SUPABASE_EOD_ORDERS_TABLE", "doktorabc_eod_bot_orders")
 END_OF_DAY_EXPORT_N8N_WEBHOOK_URL = (os.environ.get("END_OF_DAY_EXPORT_N8N_WEBHOOK_URL") or "").strip()
@@ -124,7 +175,7 @@ def upsert_supabase_eod_orders(orders):
             "Prefer": "resolution=merge-duplicates,return=minimal",
         },
         json=orders,
-        timeout=30,
+        timeout=EOD_SUPABASE_TIMEOUT_SECONDS,
     )
 
     if response.status_code >= 400:
@@ -142,7 +193,7 @@ def export_button_locator(page):
 
     for locator in (role_button, text_button):
         try:
-            locator.wait_for(state="visible", timeout=5_000)
+            locator.wait_for(state="visible", timeout=EOD_EXPORT_BUTTON_VISIBLE_TIMEOUT_MS)
             return locator
         except PlaywrightTimeoutError:
             continue
@@ -165,7 +216,7 @@ def send_export_to_n8n(download_path, metadata):
             END_OF_DAY_EXPORT_N8N_WEBHOOK_URL,
             data={key: "" if value is None else str(value) for key, value in metadata.items()},
             files={"file": (filename, file_handle, content_type)},
-            timeout=30,
+            timeout=EOD_N8N_UPLOAD_TIMEOUT_SECONDS,
         )
 
     if response.status_code >= 400:
@@ -188,7 +239,7 @@ def send_notification(payload):
         response = httpx.post(
             END_OF_DAY_NOTIFICATION_WEBHOOK_URL,
             json=payload,
-            timeout=30,
+            timeout=EOD_NOTIFICATION_TIMEOUT_SECONDS,
         )
     except httpx.HTTPError as exc:
         return {
@@ -281,14 +332,13 @@ def send_excel_export_notification(export_result, timestamp):
 
 
 def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
-    page.goto(end_of_day_url(), wait_until="domcontentloaded", timeout=30_000)
+    goto_page(page, end_of_day_url())
     wait_for_orders_page(page, end_of_day_url())
-    page.wait_for_timeout(EOD_EXPORT_WAIT_BEFORE_CLICK_MS)
 
     export_button = export_button_locator(page)
 
     with page.expect_download(timeout=EOD_EXPORT_DOWNLOAD_TIMEOUT_MS) as download_info:
-        export_button.click(timeout=10_000)
+        export_button.click(timeout=EOD_EXPORT_BUTTON_CLICK_TIMEOUT_MS)
 
     download = download_info.value
     suggested_filename = os.path.basename(download.suggested_filename or f"doktorabc-eod-export-{timestamp}.xlsx")
@@ -334,6 +384,11 @@ def browser_context_options():
     }
 
 
+def goto_page(page, url):
+    page.goto(url, wait_until="domcontentloaded", timeout=EOD_NAVIGATION_TIMEOUT_MS)
+    page.wait_for_timeout(EOD_AFTER_GOTO_WAIT_MS)
+
+
 def visible_login_form(page):
     if "login" in page.url.lower():
         return True
@@ -344,7 +399,7 @@ def visible_login_form(page):
         'input[name*="email" i]',
     ):
         try:
-            page.locator(selector).first.wait_for(state="visible", timeout=800)
+            page.locator(selector).first.wait_for(state="visible", timeout=EOD_LOGIN_FORM_CHECK_TIMEOUT_MS)
             return True
         except PlaywrightTimeoutError:
             continue
@@ -356,7 +411,7 @@ def fill_first_visible(page, selectors, value):
     for selector in selectors:
         try:
             field = page.locator(selector).first
-            field.wait_for(state="visible", timeout=5_000)
+            field.wait_for(state="visible", timeout=EOD_LOGIN_FIELD_TIMEOUT_MS)
             field.fill(value)
             return
         except PlaywrightTimeoutError:
@@ -367,9 +422,9 @@ def fill_first_visible(page, selectors, value):
 
 def click_pharmacist_role(page):
     for clicker in (
-        lambda: page.get_by_text("Pharmacist", exact=True).click(timeout=5_000),
-        lambda: page.get_by_label("Pharmacist").click(timeout=5_000),
-        lambda: page.locator('text=/pharmacist/i').first.click(timeout=5_000),
+        lambda: page.get_by_text("Pharmacist", exact=True).click(timeout=EOD_PHARMACIST_ROLE_CLICK_TIMEOUT_MS),
+        lambda: page.get_by_label("Pharmacist").click(timeout=EOD_PHARMACIST_ROLE_CLICK_TIMEOUT_MS),
+        lambda: page.locator('text=/pharmacist/i').first.click(timeout=EOD_PHARMACIST_ROLE_CLICK_TIMEOUT_MS),
     ):
         try:
             clicker()
@@ -382,9 +437,9 @@ def click_pharmacist_role(page):
 
 def click_login_button(page):
     for clicker in (
-        lambda: page.get_by_role("button", name=re.compile("login", re.I)).click(timeout=10_000),
-        lambda: page.locator('button:has-text("Login")').first.click(timeout=10_000),
-        lambda: page.locator('input[type="submit"]').first.click(timeout=10_000),
+        lambda: page.get_by_role("button", name=re.compile("login", re.I)).click(timeout=EOD_LOGIN_BUTTON_CLICK_TIMEOUT_MS),
+        lambda: page.locator('button:has-text("Login")').first.click(timeout=EOD_LOGIN_BUTTON_CLICK_TIMEOUT_MS),
+        lambda: page.locator('input[type="submit"]').first.click(timeout=EOD_LOGIN_BUTTON_CLICK_TIMEOUT_MS),
     ):
         try:
             clicker()
@@ -397,17 +452,17 @@ def click_login_button(page):
 
 def wait_for_load_states(page):
     try:
-        page.wait_for_load_state("domcontentloaded", timeout=30_000)
+        page.wait_for_load_state("domcontentloaded", timeout=EOD_LOAD_STATE_DOMCONTENTLOADED_TIMEOUT_MS)
     except PlaywrightTimeoutError:
         pass
 
     try:
-        page.wait_for_load_state("load", timeout=30_000)
+        page.wait_for_load_state("load", timeout=EOD_LOAD_STATE_LOAD_TIMEOUT_MS)
     except PlaywrightTimeoutError:
         pass
 
     try:
-        page.wait_for_load_state("networkidle", timeout=30_000)
+        page.wait_for_load_state("networkidle", timeout=EOD_LOAD_STATE_NETWORKIDLE_TIMEOUT_MS)
     except PlaywrightTimeoutError:
         print("networkidle did not arrive; falling back to DOM stability wait", flush=True)
 
@@ -465,7 +520,12 @@ def page_render_snapshot(page):
     )
 
 
-def wait_for_render_stability(page, timeout_ms=30_000, stable_ms=4_000, poll_ms=700):
+def wait_for_render_stability(
+    page,
+    timeout_ms=EOD_RENDER_STABILITY_TIMEOUT_MS,
+    stable_ms=EOD_RENDER_STABILITY_STABLE_MS,
+    poll_ms=EOD_RENDER_STABILITY_POLL_MS,
+):
     deadline = time.monotonic() + timeout_ms / 1000
     stable_since = None
     previous_key = None
@@ -511,14 +571,14 @@ def wait_for_render_stability(page, timeout_ms=30_000, stable_ms=4_000, poll_ms=
 
 def wait_for_orders_page(page, target_url, timeout_ms=None):
     if not page.url.startswith(target_url):
-        page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
+        goto_page(page, target_url)
 
     wait_for_load_states(page)
 
     if visible_login_form(page):
         raise RuntimeError("DoktorABC session is not authenticated; login page is visible.")
 
-    ready_result = wait_for_rows_100_control(page, timeout_ms=30_000)
+    ready_result = wait_for_rows_100_control(page, timeout_ms=timeout_ms or EOD_ROWS_100_TIMEOUT_MS)
 
     return {
         **ready_result,
@@ -636,8 +696,8 @@ def validate_orders(rows, raw_orders):
     return invalid, warnings
 
 
-def wait_for_order_list(page, timeout_ms=30_000):
-    stability = wait_for_render_stability(page, timeout_ms=timeout_ms, stable_ms=1_500)
+def wait_for_order_list(page, timeout_ms=EOD_ORDER_LIST_TIMEOUT_MS):
+    stability = wait_for_render_stability(page, timeout_ms=timeout_ms, stable_ms=EOD_ORDER_LIST_STABLE_MS)
     pagination_state = get_pagination_state(page)
     order_count = pagination_state.get("order_count") or 0
 
@@ -677,7 +737,7 @@ def render_stability_key(snapshot):
     )
 
 
-def wait_for_rows_100_control(page, timeout_ms=30_000):
+def wait_for_rows_100_control(page, timeout_ms=EOD_ROWS_100_TIMEOUT_MS):
     rows_100 = rows_100_locator(page)
     started_at = time.monotonic()
     deadline = time.monotonic() + timeout_ms / 1000
@@ -688,7 +748,7 @@ def wait_for_rows_100_control(page, timeout_ms=30_000):
 
     while time.monotonic() < deadline:
         try:
-            rows_100.wait_for(state="visible", timeout=500)
+            rows_100.wait_for(state="visible", timeout=EOD_ROWS_100_PROBE_TIMEOUT_MS)
             return {
                 "ready": True,
                 "waited_for": "rows_100_control",
@@ -704,14 +764,14 @@ def wait_for_rows_100_control(page, timeout_ms=30_000):
         stability_key = render_stability_key(snapshot)
         now = time.monotonic()
 
-        empty_wait_elapsed = (now - started_at) * 1000 >= 5_000
+        empty_wait_elapsed = (now - started_at) * 1000 >= EOD_EMPTY_LIST_MIN_WAIT_MS
         if (
             empty_wait_elapsed
             and render_ready(snapshot)
             and (pagination_state.get("order_count") or 0) == 0
             and stability_key == previous_key
         ):
-            if stable_since is not None and (now - stable_since) * 1000 >= 1_500:
+            if stable_since is not None and (now - stable_since) * 1000 >= EOD_EMPTY_LIST_STABLE_MS:
                 return {
                     "ready": True,
                     "waited_for": "empty_order_list_render_stability",
@@ -722,7 +782,7 @@ def wait_for_rows_100_control(page, timeout_ms=30_000):
             stable_since = now if render_ready(snapshot) else None
             previous_key = stability_key
 
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(EOD_EMPTY_LIST_POLL_MS)
 
     raise RuntimeError(
         "DoktorABC orders page did not show the 100 rows control or a stable empty list. "
@@ -752,8 +812,8 @@ def click_ready_for_customer(page):
 
     for name, locator in candidates:
         try:
-            locator.wait_for(state="visible", timeout=30_000)
-            locator.click(timeout=10_000)
+            locator.wait_for(state="visible", timeout=EOD_READY_FOR_CUSTOMER_VISIBLE_TIMEOUT_MS)
+            locator.click(timeout=EOD_READY_FOR_CUSTOMER_CLICK_TIMEOUT_MS)
             return name
         except PlaywrightTimeoutError:
             continue
@@ -827,7 +887,7 @@ def select_100_rows(page):
     debug = {"clicked": False, "before": get_pagination_state(page)}
     rows_100 = rows_100_locator(page)
     try:
-        rows_100.wait_for(state="visible", timeout=5_000)
+        rows_100.wait_for(state="visible", timeout=EOD_SELECT_100_VISIBLE_TIMEOUT_MS)
     except PlaywrightTimeoutError:
         debug["wait_result"] = wait_for_order_list(page)
         debug["after"] = get_pagination_state(page)
@@ -838,8 +898,8 @@ def select_100_rows(page):
 
         return debug
 
-    rows_100.click(timeout=10_000)
-    page.wait_for_timeout(1_000)
+    rows_100.click(timeout=EOD_SELECT_100_CLICK_TIMEOUT_MS)
+    page.wait_for_timeout(EOD_AFTER_SELECT_100_CLICK_WAIT_MS)
     debug["wait_result"] = wait_for_order_list(page)
     debug["after"] = get_pagination_state(page)
     debug["clicked"] = True
@@ -868,18 +928,19 @@ def click_next_page(page, before_state):
     next_link = page.locator('#pagination-container nav[aria-label="pagination"] a[aria-label="Go to next page"]').first
 
     try:
-        next_link.wait_for(state="visible", timeout=10_000)
+        next_link.wait_for(state="visible", timeout=EOD_NEXT_VISIBLE_TIMEOUT_MS)
     except PlaywrightTimeoutError:
         return False, get_pagination_state(page), "next_not_visible"
 
     before_signature = pagination_signature(before_state)
-    next_link.click(timeout=10_000)
+    next_link.click(timeout=EOD_NEXT_CLICK_TIMEOUT_MS)
+    page.wait_for_timeout(EOD_AFTER_NEXT_CLICK_WAIT_MS)
 
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + EOD_NEXT_CHANGE_TIMEOUT_MS / 1000
     last_state = before_state
 
     while time.monotonic() < deadline:
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(EOD_NEXT_CHANGE_POLL_MS)
         state = get_pagination_state(page)
         last_state = state
 
@@ -959,7 +1020,7 @@ async () => {
     if (!trigger) return [];
     trigger.scrollIntoView({ block: "center", inline: "center" });
     trigger.click();
-    await delay(350);
+    await delay(__PZN_POPUP_WAIT_MS__);
 
     const popupSelectors = '[role="dialog"],[role="tooltip"],[data-radix-popper-content-wrapper]';
     const popupText = Array.from(document.querySelectorAll(popupSelectors))
@@ -974,7 +1035,7 @@ async () => {
 
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     document.body.click();
-    await delay(100);
+    await delay(__PZN_CLOSE_WAIT_MS__);
 
     return codes;
   };
@@ -1032,6 +1093,12 @@ async () => {
   return orders;
 }
 """
+SCRAPE_EOD_ORDERS_JS = (
+    SCRAPE_EOD_ORDERS_JS.replace("__PZN_POPUP_WAIT_MS__", str(EOD_PZN_POPUP_WAIT_MS)).replace(
+        "__PZN_CLOSE_WAIT_MS__",
+        str(EOD_PZN_CLOSE_WAIT_MS),
+    )
+)
 
 
 def scrape_orders_on_current_page(page):
@@ -1123,7 +1190,7 @@ def open_saved_session(browser, target_url, order_type):
     page = context.new_page()
 
     try:
-        page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
+        goto_page(page, target_url)
         wait_result = wait_for_orders_page(page, target_url)
         return context, page, True, wait_result
     except Exception as exc:
@@ -1138,7 +1205,7 @@ def open_fresh_session(browser, target_url, order_type, before_login_path=None):
     context = browser.new_context(**browser_context_options())
     page = context.new_page()
 
-    page.goto(required_env("DOKTORABC_LOGIN_URL"), wait_until="domcontentloaded", timeout=30_000)
+    goto_page(page, required_env("DOKTORABC_LOGIN_URL"))
     wait_for_load_states(page)
 
     fill_first_visible(
@@ -1157,9 +1224,9 @@ def open_fresh_session(browser, target_url, order_type, before_login_path=None):
         page.screenshot(path=before_login_path, full_page=True)
 
     click_login_button(page)
-    page.wait_for_timeout(2_000)
+    page.wait_for_timeout(EOD_AFTER_LOGIN_CLICK_WAIT_MS)
     wait_for_load_states(page)
-    page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
+    goto_page(page, target_url)
     wait_result = wait_for_orders_page(page, target_url)
 
     session_state_dir = os.path.dirname(SESSION_STATE_PATH)
@@ -1304,14 +1371,14 @@ def sync_end_of_day_orders():
                         "target_url": target_url,
                     }
                 )
-                page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
+                goto_page(page, target_url)
                 ready_for_customer_clicked = False
                 ready_for_customer_click_strategy = None
                 if order_type == SELF_PICKUP_ORDER_TYPE:
                     wait_for_load_states(page)
                     ready_for_customer_click_strategy = click_ready_for_customer(page)
                     ready_for_customer_clicked = True
-                    page.wait_for_timeout(1_000)
+                    page.wait_for_timeout(EOD_AFTER_READY_FOR_CUSTOMER_CLICK_WAIT_MS)
                     target_wait_result = wait_for_rows_100_control(page)
                 else:
                     target_wait_result = wait_for_orders_page(page, target_url)

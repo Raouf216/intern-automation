@@ -1120,11 +1120,10 @@ def parse_datetime_to_second_iso(value):
         return clean_value
 
     parsed = parsed.replace(microsecond=0)
-    if parsed.tzinfo:
-        parsed = parsed.astimezone(timezone.utc)
-        return parsed.isoformat().replace("+00:00", "Z")
+    if not parsed.tzinfo:
+        parsed = parsed.replace(tzinfo=timezone.utc)
 
-    return parsed.isoformat()
+    return parsed.astimezone(ZoneInfo("Europe/Berlin")).isoformat()
 
 
 def clean_text(value):

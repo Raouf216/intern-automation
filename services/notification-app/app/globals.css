@@ -545,6 +545,12 @@ dd {
   transform: rotate(180deg);
 }
 
+.order-toggle-stack {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .sync-log-content {
   max-height: 440px;
   display: grid;
@@ -722,7 +728,7 @@ dd {
 }
 
 .order-export-meta {
-  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
 }
 
 .sync-error-card {

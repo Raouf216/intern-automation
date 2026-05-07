@@ -2,8 +2,11 @@ import mimetypes
 import os
 import re
 import time
+import zipfile
 from datetime import datetime, timezone
 from urllib.parse import quote
+import xml.etree.ElementTree as ElementTree
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI
@@ -44,6 +47,10 @@ DOKTORABC_USER_AGENT = (
 DEFAULT_END_OF_DAY_URL = "https://pharmacies.doktorabc.com/end-of-day"
 EOD_ORDER_TYPE = "eod"
 SELF_PICKUP_ORDER_TYPE = "self pickup"
+EOD_ORDER_LIST_TYPE = "eod"
+PICKUP_READY_ORDER_LIST_TYPE = "pickup_ready"
+COMBINED_ORDER_LIST_TYPE = "eod_and_pickup"
+EXCEL_EXPORT_ORDER_LIST_TYPE = "excel_export"
 EOD_MAX_PAGES = int_env("EOD_MAX_PAGES", 100)
 EOD_AFTER_GOTO_WAIT_MS = int_env("EOD_AFTER_GOTO_WAIT_MS", 2_000)
 EOD_AFTER_READY_FOR_CUSTOMER_CLICK_WAIT_MS = int_env("EOD_AFTER_READY_FOR_CUSTOMER_CLICK_WAIT_MS", 2_000)
@@ -262,13 +269,27 @@ def send_notification(payload):
 
 def notification_order_list_type(order_type):
     if order_type == SELF_PICKUP_ORDER_TYPE:
-        return "pickup_ready"
+        return PICKUP_READY_ORDER_LIST_TYPE
 
-    return "eod"
+    return EOD_ORDER_LIST_TYPE
+
+
+def notification_order_label(order_list_type):
+    if order_list_type == PICKUP_READY_ORDER_LIST_TYPE:
+        return "Self Pickup READY"
+
+    if order_list_type == EXCEL_EXPORT_ORDER_LIST_TYPE:
+        return "Excel Export"
+
+    if order_list_type == COMBINED_ORDER_LIST_TYPE:
+        return "EOD und Self Pickup"
+
+    return "EOD"
 
 
 def notification_order_snapshot(row):
     return {
+        "order_id": row.get("order_reference"),
         "order_reference": row.get("order_reference"),
         "created_date": row.get("prescription_date"),
         "prescription_date": row.get("prescription_date"),
@@ -278,27 +299,54 @@ def notification_order_snapshot(row):
     }
 
 
-def send_orders_notification(order_type, rows, timestamp, supabase_result):
+def notification_order_list_payload(order_type, rows):
     order_list_type = notification_order_list_type(order_type)
-    event = "doktorabc_pickup_ready_orders_success" if order_list_type == "pickup_ready" else "doktorabc_eod_orders_success"
+
+    return {
+        "order_type": order_type,
+        "order_list_type": order_list_type,
+        "label": notification_order_label(order_list_type),
+        "order_count": len(rows),
+        "orders": [notification_order_snapshot(row) for row in rows],
+    }
+
+
+def notification_order_lists_payload(rows_by_order_type, targets):
+    return {
+        notification_order_list_type(target["order_type"]): notification_order_list_payload(
+            target["order_type"],
+            rows_by_order_type.get(target["order_type"], []),
+        )
+        for target in targets
+    }
+
+
+def send_orders_sync_notification(rows_by_order_type, targets, timestamp, supabase_result):
+    order_lists = notification_order_lists_payload(rows_by_order_type, targets)
+    eod_count = order_lists.get(EOD_ORDER_LIST_TYPE, {}).get("order_count", 0)
+    pickup_count = order_lists.get(PICKUP_READY_ORDER_LIST_TYPE, {}).get("order_count", 0)
+    total_count = sum(order_list.get("order_count", 0) for order_list in order_lists.values())
 
     return send_notification(
         {
-            "event": event,
+            "event": "doktorabc_eod_pickup_orders_success",
             "status": "success",
-            "section": "doktorabc_orders",
+            "section": "doktorabc_sync",
             "sync_type": "doktorabc_eod_bot",
             "service": "end-of-day-scraper",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "run_id": timestamp,
-            "order_type": order_type,
-            "order_list_type": order_list_type,
-            "order_count": len(rows),
+            "order_list_type": COMBINED_ORDER_LIST_TYPE,
+            "order_count": total_count,
+            "eod_order_count": eod_count,
+            "pickup_ready_order_count": pickup_count,
+            "order_lists": order_lists,
             "summary": {
-                "orders": len(rows),
+                "orders": total_count,
+                "eod_orders": eod_count,
+                "pickup_ready_orders": pickup_count,
                 "sent_to_supabase": supabase_result.get("sent_to_supabase", 0),
             },
-            "orders": [notification_order_snapshot(row) for row in rows],
         }
     )
 
@@ -308,27 +356,164 @@ def send_excel_export_notification(export_result, timestamp):
         {
             "event": "doktorabc_eod_excel_export_success",
             "status": "success",
-            "section": "doktorabc_orders",
+            "section": "upload",
+            "upload_type": "doktorabc_eod_excel_export",
             "sync_type": "doktorabc_eod_bot",
             "service": "end-of-day-scraper",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "run_id": timestamp,
-            "order_list_type": "excel_export",
+            "order_list_type": EXCEL_EXPORT_ORDER_LIST_TYPE,
             "filename": export_result.get("download_filename"),
             "path": export_result.get("download_path"),
             "size_bytes": export_result.get("download_size_bytes"),
             "download_filename": export_result.get("download_filename"),
             "download_path": export_result.get("download_path"),
             "download_size_bytes": export_result.get("download_size_bytes"),
+            "excel_row_count": export_result.get("excel_row_count"),
+            "export_date": export_result.get("export_date"),
             "sent_to_n8n": export_result.get("sent_to_n8n"),
             "n8n_status_code": export_result.get("n8n_status_code"),
             "n8n_skipped_reason": export_result.get("n8n_skipped_reason"),
             "summary": {
                 "excel_files": 1,
+                "excel_rows": export_result.get("excel_row_count"),
                 "sent_to_n8n": 1 if export_result.get("sent_to_n8n") else 0,
             },
         }
     )
+
+
+def send_failure_notification(
+    failure_part,
+    timestamp,
+    error,
+    failed_step,
+    page_url=None,
+    screenshot_path=None,
+    rows_by_order_type=None,
+    extra=None,
+):
+    rows_by_order_type = rows_by_order_type or {}
+    extra = extra or {}
+    order_type = None
+    section = "doktorabc_sync"
+    upload_type = None
+
+    if failure_part == PICKUP_READY_ORDER_LIST_TYPE:
+        event = "doktorabc_pickup_ready_orders_failure"
+        order_type = SELF_PICKUP_ORDER_TYPE
+    elif failure_part == EXCEL_EXPORT_ORDER_LIST_TYPE:
+        event = "doktorabc_eod_excel_export_failure"
+        section = "upload"
+        upload_type = "doktorabc_eod_excel_export"
+    else:
+        event = "doktorabc_eod_orders_failure"
+        failure_part = EOD_ORDER_LIST_TYPE
+        order_type = EOD_ORDER_TYPE
+
+    payload = {
+        "event": event,
+        "status": "failure",
+        "section": section,
+        "sync_type": "doktorabc_eod_bot",
+        "service": "end-of-day-scraper",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "run_id": timestamp,
+        "order_type": order_type,
+        "order_list_type": failure_part,
+        "label": notification_order_label(failure_part),
+        "error": error,
+        "failed_step": failed_step,
+        "current_url": page_url,
+        "screenshot_path": screenshot_path,
+        **extra,
+    }
+
+    if upload_type:
+        payload["upload_type"] = upload_type
+
+    if order_type:
+        rows = rows_by_order_type.get(order_type, [])
+        payload["order_count"] = len(rows)
+        payload["orders"] = [notification_order_snapshot(row) for row in rows]
+
+    return send_notification(payload)
+
+
+def failure_parts_for_step(failed_step, steps, targets):
+    if failed_step in {"export_eod_excel_to_n8n", "send_excel_export_notification"}:
+        return [EXCEL_EXPORT_ORDER_LIST_TYPE]
+
+    pending_order_type = next(
+        (
+            step.get("order_type")
+            for step in reversed(steps)
+            if step.get("ok") is None and step.get("order_type")
+        ),
+        None,
+    )
+
+    if pending_order_type:
+        return [notification_order_list_type(pending_order_type)]
+
+    if failed_step == "upsert_supabase":
+        return list(dict.fromkeys(notification_order_list_type(target["order_type"]) for target in targets))
+
+    last_order_type = next(
+        (step.get("order_type") for step in reversed(steps) if step.get("order_type")),
+        None,
+    )
+
+    return [notification_order_list_type(last_order_type)] if last_order_type else [EOD_ORDER_LIST_TYPE]
+
+
+def local_timezone():
+    try:
+        return ZoneInfo(os.environ.get("TZ") or "Europe/Berlin")
+    except Exception:
+        return timezone.utc
+
+
+def local_today_iso():
+    return datetime.now(local_timezone()).date().isoformat()
+
+
+def worksheet_sort_key(name):
+    match = re.search(r"sheet(\d+)\.xml$", name)
+    return int(match.group(1)) if match else 10_000
+
+
+def count_xlsx_rows(path):
+    if not path.lower().endswith(".xlsx"):
+        return None
+
+    try:
+        with zipfile.ZipFile(path) as workbook:
+            worksheets = sorted(
+                [
+                    name
+                    for name in workbook.namelist()
+                    if re.match(r"xl/worksheets/sheet\d+\.xml$", name)
+                ],
+                key=worksheet_sort_key,
+            )
+
+            if not worksheets:
+                return None
+
+            row_count = 0
+            with workbook.open(worksheets[0]) as sheet:
+                for _, element in ElementTree.iterparse(sheet, events=("end",)):
+                    if element.tag.rsplit("}", 1)[-1] == "row" and any(
+                        child.tag.rsplit("}", 1)[-1] == "c" for child in element
+                    ):
+                        row_count += 1
+                    element.clear()
+
+            return row_count
+    except Exception as exc:
+        print(f"could not count rows in exported Excel file: {type(exc).__name__}: {exc}", flush=True)
+        return None
 
 
 def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
@@ -345,6 +530,9 @@ def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
     safe_filename = re.sub(r"[^A-Za-z0-9_. -]+", "_", suggested_filename).strip() or f"doktorabc-eod-export-{timestamp}.xlsx"
     download_path = os.path.join(ARTIFACTS_DIR, f"doktorabc-eod-export-{timestamp}-{safe_filename}")
     download.save_as(download_path)
+    download_size_bytes = os.path.getsize(download_path)
+    excel_row_count = count_xlsx_rows(download_path)
+    export_date = local_today_iso()
 
     n8n_result = send_export_to_n8n(
         download_path,
@@ -354,7 +542,9 @@ def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
             "source_url": end_of_day_url(),
             "download_filename": safe_filename,
             "download_path": download_path,
-            "download_size_bytes": os.path.getsize(download_path),
+            "download_size_bytes": download_size_bytes,
+            "excel_row_count": excel_row_count,
+            "export_date": export_date,
             "exported_at": datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -363,7 +553,9 @@ def export_end_of_day_excel_to_n8n(page, timestamp, metadata):
         "downloaded": True,
         "download_filename": safe_filename,
         "download_path": download_path,
-        "download_size_bytes": os.path.getsize(download_path),
+        "download_size_bytes": download_size_bytes,
+        "excel_row_count": excel_row_count,
+        "export_date": export_date,
         **n8n_result,
     }
 
@@ -1324,6 +1516,13 @@ def sync_end_of_day_orders():
         browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
         context = None
         page = None
+        all_rows = []
+        target_results = []
+        all_warnings = []
+        all_duplicate_order_references = []
+        screenshot_paths = []
+        rows_by_order_type = {}
+        notification_results = []
 
         try:
             first_target = targets[0]
@@ -1350,14 +1549,6 @@ def sync_end_of_day_orders():
                 "current_url": page.url,
                 "wait_result": wait_result,
             }
-
-            all_rows = []
-            target_results = []
-            all_warnings = []
-            all_duplicate_order_references = []
-            screenshot_paths = []
-            rows_by_order_type = {}
-            notification_results = []
 
             for target in targets:
                 order_type = target["order_type"]
@@ -1439,12 +1630,51 @@ def sync_end_of_day_orders():
                 }
 
                 if invalid_orders:
+                    rows_by_order_type[order_type] = rows
+                    error_message = "Some scraped orders are missing required fields. Supabase was not changed."
+                    steps.append(
+                        {
+                            "name": "send_failure_notification",
+                            "ok": None,
+                            "order_type": order_type,
+                            "failed_step": "validate_scraped_orders",
+                        }
+                    )
+                    failure_notification_result = send_failure_notification(
+                        notification_order_list_type(order_type),
+                        timestamp,
+                        error_message,
+                        "validate_scraped_orders",
+                        page_url=page.url,
+                        screenshot_path=screenshot_path,
+                        rows_by_order_type=rows_by_order_type,
+                        extra={
+                            "invalid_count": len(invalid_orders),
+                            "invalid_examples": invalid_orders[:10],
+                            "warnings": warnings[:20],
+                        },
+                    )
+                    notification_results.append(
+                        {
+                            "order_type": order_type,
+                            "order_list_type": notification_order_list_type(order_type),
+                            **failure_notification_result,
+                        }
+                    )
+                    steps[-1] = {
+                        "name": "send_failure_notification",
+                        "ok": True,
+                        "order_type": order_type,
+                        "order_list_type": notification_order_list_type(order_type),
+                        **failure_notification_result,
+                    }
+
                     return JSONResponse(
                         status_code=422,
                         content={
                             "ok": False,
                             "failed_step": "validate_scraped_orders",
-                            "error": "Some scraped orders are missing required fields. Supabase was not changed.",
+                            "error": error_message,
                             "order_type": order_type,
                             "current_url": page.url,
                             "reused_session": reused_session,
@@ -1458,6 +1688,7 @@ def sync_end_of_day_orders():
                             "targets": target_results,
                             "steps": steps,
                             "screenshot_paths": screenshot_paths,
+                            "notifications": notification_results,
                         },
                     )
 
@@ -1466,29 +1697,27 @@ def sync_end_of_day_orders():
 
             if not all_rows:
                 order_notification_summary = {"sent_to_supabase": 0}
-                for target in targets:
-                    order_type = target["order_type"]
-                    steps.append({"name": "send_order_notification", "ok": None, "order_type": order_type})
-                    notification_result = send_orders_notification(
-                        order_type,
-                        rows_by_order_type.get(order_type, []),
-                        timestamp,
-                        order_notification_summary,
-                    )
-                    notification_results.append(
-                        {
-                            "order_type": order_type,
-                            "order_count": len(rows_by_order_type.get(order_type, [])),
-                            **notification_result,
-                        }
-                    )
-                    steps[-1] = {
-                        "name": "send_order_notification",
-                        "ok": True,
-                        "order_type": order_type,
-                        "order_count": len(rows_by_order_type.get(order_type, [])),
+                steps.append({"name": "send_order_notification", "ok": None, "order_list_type": COMBINED_ORDER_LIST_TYPE})
+                notification_result = send_orders_sync_notification(
+                    rows_by_order_type,
+                    targets,
+                    timestamp,
+                    order_notification_summary,
+                )
+                notification_results.append(
+                    {
+                        "order_list_type": COMBINED_ORDER_LIST_TYPE,
+                        "order_count": 0,
                         **notification_result,
                     }
+                )
+                steps[-1] = {
+                    "name": "send_order_notification",
+                    "ok": True,
+                    "order_list_type": COMBINED_ORDER_LIST_TYPE,
+                    "order_count": 0,
+                    **notification_result,
+                }
 
                 steps.append({"name": "export_eod_excel_to_n8n", "ok": None})
                 export_result = export_end_of_day_excel_to_n8n(
@@ -1540,29 +1769,27 @@ def sync_end_of_day_orders():
             supabase_result = upsert_supabase_eod_orders(all_rows)
             steps[-1] = {"name": "upsert_supabase", "ok": True, **supabase_result}
 
-            for target in targets:
-                order_type = target["order_type"]
-                steps.append({"name": "send_order_notification", "ok": None, "order_type": order_type})
-                notification_result = send_orders_notification(
-                    order_type,
-                    rows_by_order_type.get(order_type, []),
-                    timestamp,
-                    supabase_result,
-                )
-                notification_results.append(
-                    {
-                        "order_type": order_type,
-                        "order_count": len(rows_by_order_type.get(order_type, [])),
-                        **notification_result,
-                    }
-                )
-                steps[-1] = {
-                    "name": "send_order_notification",
-                    "ok": True,
-                    "order_type": order_type,
-                    "order_count": len(rows_by_order_type.get(order_type, [])),
+            steps.append({"name": "send_order_notification", "ok": None, "order_list_type": COMBINED_ORDER_LIST_TYPE})
+            notification_result = send_orders_sync_notification(
+                rows_by_order_type,
+                targets,
+                timestamp,
+                supabase_result,
+            )
+            notification_results.append(
+                {
+                    "order_list_type": COMBINED_ORDER_LIST_TYPE,
+                    "order_count": len(all_rows),
                     **notification_result,
                 }
+            )
+            steps[-1] = {
+                "name": "send_order_notification",
+                "ok": True,
+                "order_list_type": COMBINED_ORDER_LIST_TYPE,
+                "order_count": len(all_rows),
+                **notification_result,
+            }
 
             steps.append({"name": "export_eod_excel_to_n8n", "ok": None})
             export_result = export_end_of_day_excel_to_n8n(
@@ -1619,18 +1846,44 @@ def sync_end_of_day_orders():
                 except Exception:
                     failure_screenshot_path = None
 
+            failed_step = next((step["name"] for step in reversed(steps) if step.get("ok") is None), "unknown")
+            error_message = f"{type(exc).__name__}: {exc}"
+            failure_notification_results = []
+            for failure_part in failure_parts_for_step(failed_step, steps, targets):
+                notification_result = send_failure_notification(
+                    failure_part,
+                    timestamp,
+                    error_message,
+                    failed_step,
+                    page_url=page.url if page else None,
+                    screenshot_path=failure_screenshot_path,
+                    rows_by_order_type=rows_by_order_type,
+                    extra={
+                        "supabase_schema": SUPABASE_SCHEMA,
+                        "supabase_table": SUPABASE_EOD_ORDERS_TABLE,
+                    },
+                )
+                failure_notification_results.append(
+                    {
+                        "order_list_type": failure_part,
+                        **notification_result,
+                    }
+                )
+            notification_results.extend(failure_notification_results)
+
             return JSONResponse(
                 status_code=500,
                 content={
                     "ok": False,
-                    "failed_step": next((step["name"] for step in reversed(steps) if step.get("ok") is None), "unknown"),
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "failed_step": failed_step,
+                    "error": error_message,
                     "current_url": page.url if page else None,
                     "session_state_path": SESSION_STATE_PATH,
                     "supabase_schema": SUPABASE_SCHEMA,
                     "supabase_table": SUPABASE_EOD_ORDERS_TABLE,
                     "steps": steps,
                     "screenshot_path": failure_screenshot_path,
+                    "notifications": notification_results,
                 },
             )
         finally:

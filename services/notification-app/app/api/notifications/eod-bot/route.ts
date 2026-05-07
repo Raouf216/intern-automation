@@ -11,10 +11,17 @@ export async function POST(request: Request) {
   }
 
   try {
+    const event = payload.event || "";
+    const isExcelExport =
+      payload.order_list_type === "excel_export" ||
+      payload.upload_type === "doktorabc_eod_excel_export" ||
+      event === "doktorabc_eod_excel_export_success" ||
+      event === "doktorabc_eod_excel_export_failure";
     const notification = normalizeUploadNotification({
       ...payload,
-      section: "doktorabc_orders",
+      section: isExcelExport ? "upload" : "doktorabc_sync",
       sync_type: "doktorabc_eod_bot",
+      upload_type: isExcelExport ? payload.upload_type || "doktorabc_eod_excel_export" : payload.upload_type,
     });
     const stored = await insertNotification(notification);
 
@@ -31,9 +38,13 @@ export async function GET() {
     ok: true,
     route: "/api/notifications/eod-bot",
     accepts: [
+      "doktorabc_eod_pickup_orders_success",
       "doktorabc_eod_orders_success",
+      "doktorabc_eod_orders_failure",
       "doktorabc_pickup_ready_orders_success",
+      "doktorabc_pickup_ready_orders_failure",
       "doktorabc_eod_excel_export_success",
+      "doktorabc_eod_excel_export_failure",
     ],
   });
 }

@@ -1,4 +1,4 @@
-export type NotificationSection = "upload" | "doktorabc_sync" | "doktorabc_orders" | "abrechnung_verification";
+export type NotificationSection = "upload" | "doktorabc_sync" | "abrechnung_verification";
 export type NotificationStatus = "triggered" | "success" | "failure" | "info" | "warning";
 
 export type StoredNotification = {
@@ -28,7 +28,10 @@ export type UploadWebhookPayload = {
   order_type?: string;
   order_list_type?: string;
   order_count?: number;
+  eod_order_count?: number;
+  pickup_ready_order_count?: number;
   orders?: Array<Record<string, unknown>>;
+  order_lists?: Record<string, Record<string, unknown>>;
   run_id?: string;
   sent_to_n8n?: boolean;
   n8n_status_code?: number;
@@ -36,6 +39,8 @@ export type UploadWebhookPayload = {
   download_filename?: string;
   download_path?: string;
   download_size_bytes?: number;
+  excel_row_count?: number | null;
+  export_date?: string;
   filename?: string;
   bucket?: string;
   path?: string;
@@ -43,6 +48,9 @@ export type UploadWebhookPayload = {
   timestamp?: string;
   service?: string;
   error?: string;
+  failed_step?: string;
+  current_url?: string;
+  screenshot_path?: string;
   stage?: string;
   orders_table?: string;
   orders_schema?: string;
@@ -59,6 +67,11 @@ export type UploadWebhookPayload = {
   duration_ms?: number | null;
   endpoint?: string;
   summary?: {
+    orders?: number;
+    eod_orders?: number;
+    pickup_ready_orders?: number;
+    excel_rows?: number | null;
+    excel_files?: number;
     scraped?: number;
     inserted?: number;
     updated?: number;
@@ -118,6 +131,34 @@ export function normalizeUploadNotification(payload: UploadWebhookPayload): Omit
   const event = String(payload.event || `upload_${status}`);
   const source = String(payload.service || "n8n");
 
+  if (isEodBotNotification(payload)) {
+    const isExcel = isEodExcelExport(payload);
+
+    return {
+      section: isExcel ? "upload" : "doktorabc_sync",
+      event,
+      status,
+      title: eodBotTitle(status, payload),
+      message: eodBotMessage(status, payload),
+      filename: payload.filename || payload.download_filename ? String(payload.filename || payload.download_filename) : null,
+      upload_type: isExcel
+        ? String(payload.upload_type || "doktorabc_eod_excel_export")
+        : String(payload.order_list_type || "doktorabc_eod_bot"),
+      bucket: null,
+      path: payload.path || payload.download_path || payload.current_url ? String(payload.path || payload.download_path || payload.current_url) : null,
+      size_bytes:
+        typeof payload.size_bytes === "number"
+          ? payload.size_bytes
+          : typeof payload.download_size_bytes === "number"
+            ? payload.download_size_bytes
+            : null,
+      error: payload.error ? String(payload.error) : null,
+      source,
+      payload: payload as Record<string, unknown>,
+      created_at: timestampOrNow(payload.timestamp || payload.finished_at),
+    };
+  }
+
   if (isProductSync(payload)) {
     return {
       section: "doktorabc_sync",
@@ -130,30 +171,6 @@ export function normalizeUploadNotification(payload: UploadWebhookPayload): Omit
       bucket: null,
       path: payload.endpoint ? String(payload.endpoint) : null,
       size_bytes: null,
-      error: payload.error ? String(payload.error) : null,
-      source,
-      payload: payload as Record<string, unknown>,
-      created_at: timestampOrNow(payload.timestamp || payload.finished_at),
-    };
-  }
-
-  if (isEodBotNotification(payload)) {
-    return {
-      section: "doktorabc_orders",
-      event,
-      status,
-      title: eodBotTitle(status, payload),
-      message: eodBotMessage(status, payload),
-      filename: payload.filename || payload.download_filename ? String(payload.filename || payload.download_filename) : null,
-      upload_type: payload.order_list_type ? String(payload.order_list_type) : "doktorabc_eod_bot",
-      bucket: null,
-      path: payload.path || payload.download_path ? String(payload.path || payload.download_path) : null,
-      size_bytes:
-        typeof payload.size_bytes === "number"
-          ? payload.size_bytes
-          : typeof payload.download_size_bytes === "number"
-            ? payload.download_size_bytes
-            : null,
       error: payload.error ? String(payload.error) : null,
       source,
       payload: payload as Record<string, unknown>,
@@ -376,10 +393,11 @@ function uploadTypeFromPayload(payload: UploadWebhookPayload) {
 function isProductSync(payload: UploadWebhookPayload) {
   const event = payload.event || "";
   return (
-    payload.section === "doktorabc_sync" ||
-    payload.sync_type === "doktorabc_products" ||
-    event === "doktorabc_sync_success" ||
-    event === "doktorabc_sync_failure"
+    payload.sync_type !== "doktorabc_eod_bot" &&
+    (payload.section === "doktorabc_sync" ||
+      payload.sync_type === "doktorabc_products" ||
+      event === "doktorabc_sync_success" ||
+      event === "doktorabc_sync_failure")
   );
 }
 
@@ -387,10 +405,27 @@ function isEodBotNotification(payload: UploadWebhookPayload) {
   const event = payload.event || "";
   return (
     payload.section === "doktorabc_orders" ||
+    (payload.section === "doktorabc_sync" && payload.sync_type === "doktorabc_eod_bot") ||
+    (payload.section === "upload" && payload.sync_type === "doktorabc_eod_bot") ||
     payload.sync_type === "doktorabc_eod_bot" ||
+    payload.upload_type === "doktorabc_eod_excel_export" ||
+    event === "doktorabc_eod_pickup_orders_success" ||
     event === "doktorabc_eod_orders_success" ||
+    event === "doktorabc_eod_orders_failure" ||
     event === "doktorabc_pickup_ready_orders_success" ||
-    event === "doktorabc_eod_excel_export_success"
+    event === "doktorabc_pickup_ready_orders_failure" ||
+    event === "doktorabc_eod_excel_export_success" ||
+    event === "doktorabc_eod_excel_export_failure"
+  );
+}
+
+function isEodExcelExport(payload: UploadWebhookPayload) {
+  const event = payload.event || "";
+  return (
+    payload.order_list_type === "excel_export" ||
+    payload.upload_type === "doktorabc_eod_excel_export" ||
+    event === "doktorabc_eod_excel_export_success" ||
+    event === "doktorabc_eod_excel_export_failure"
   );
 }
 
@@ -426,15 +461,31 @@ function productSyncMessage(status: NotificationStatus, payload: UploadWebhookPa
 
 function eodBotTitle(status: NotificationStatus, payload: UploadWebhookPayload) {
   if (status === "failure") {
-    return "DoktorABC Orders Bot fehlgeschlagen";
+    if (isEodExcelExport(payload)) {
+      return "DoktorABC Excel Export fehlgeschlagen";
+    }
+
+    if (payload.order_list_type === "pickup_ready" || payload.event === "doktorabc_pickup_ready_orders_failure") {
+      return "DoktorABC Self Pickup fehlgeschlagen";
+    }
+
+    if (payload.order_list_type === "eod" || payload.event === "doktorabc_eod_orders_failure") {
+      return "DoktorABC EOD fehlgeschlagen";
+    }
+
+    return "DoktorABC EOD/Self Pickup fehlgeschlagen";
   }
 
   if (payload.order_list_type === "pickup_ready" || payload.event === "doktorabc_pickup_ready_orders_success") {
     return "DoktorABC Pickup READY gespeichert";
   }
 
-  if (payload.order_list_type === "excel_export" || payload.event === "doktorabc_eod_excel_export_success") {
-    return "DoktorABC Excel exportiert";
+  if (isEodExcelExport(payload)) {
+    return "DoktorABC Excel Export erfolgreich";
+  }
+
+  if (payload.order_list_type === "eod_and_pickup" || payload.event === "doktorabc_eod_pickup_orders_success") {
+    return "DoktorABC EOD und Self Pickup gespeichert";
   }
 
   return "DoktorABC EOD gespeichert";
@@ -442,23 +493,63 @@ function eodBotTitle(status: NotificationStatus, payload: UploadWebhookPayload) 
 
 function eodBotMessage(status: NotificationStatus, payload: UploadWebhookPayload) {
   if (status === "failure") {
-    return payload.error ? String(payload.error) : "DoktorABC Orders Bot konnte nicht abgeschlossen werden.";
+    const label = eodFailureLabel(payload);
+    const step = payload.failed_step ? ` (${payload.failed_step})` : "";
+    return payload.error
+      ? `${label}${step}: ${payload.error}`
+      : `${label}${step}: konnte nicht abgeschlossen werden.`;
   }
 
   if (payload.order_list_type === "pickup_ready" || payload.event === "doktorabc_pickup_ready_orders_success") {
     return `${numberOrZero(payload.order_count)} Pickup READY Orders gespeichert.`;
   }
 
-  if (payload.order_list_type === "excel_export" || payload.event === "doktorabc_eod_excel_export_success") {
-    const filename = payload.download_filename || payload.filename || "Excel-Datei";
+  if (isEodExcelExport(payload)) {
+    const rows = numberOrZero(payload.excel_row_count ?? payload.summary?.excel_rows);
+    const exportDate = payload.export_date || formatDateOnly(payload.timestamp) || "heute";
     if (payload.sent_to_n8n) {
-      return `Excel exportiert und an n8n gesendet: ${filename}`;
+      return `${rows} Excel-Zeilen am ${exportDate} exportiert und an n8n gesendet.`;
     }
 
-    return `Excel exportiert: ${filename}`;
+    return `${rows} Excel-Zeilen am ${exportDate} exportiert.`;
+  }
+
+  if (payload.order_list_type === "eod_and_pickup" || payload.event === "doktorabc_eod_pickup_orders_success") {
+    const eodCount = numberOrZero(payload.eod_order_count ?? payload.summary?.eod_orders);
+    const pickupCount = numberOrZero(payload.pickup_ready_order_count ?? payload.summary?.pickup_ready_orders);
+    return `EOD: ${eodCount} Orders, Self Pickup: ${pickupCount} Orders gespeichert.`;
   }
 
   return `${numberOrZero(payload.order_count)} EOD Orders gespeichert.`;
+}
+
+function eodFailureLabel(payload: UploadWebhookPayload) {
+  if (isEodExcelExport(payload)) {
+    return "Excel Export";
+  }
+
+  if (payload.order_list_type === "pickup_ready" || payload.event === "doktorabc_pickup_ready_orders_failure") {
+    return "Self Pickup";
+  }
+
+  if (payload.order_list_type === "eod" || payload.event === "doktorabc_eod_orders_failure") {
+    return "EOD";
+  }
+
+  return "EOD/Self Pickup";
+}
+
+function formatDateOnly(value: string | undefined) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toISOString().slice(0, 10);
 }
 
 function numberOrZero(value: unknown) {

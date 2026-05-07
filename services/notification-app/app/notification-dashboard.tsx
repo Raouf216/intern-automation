@@ -26,7 +26,7 @@ type ConfigStatus = {
   schema: string;
 };
 
-type SectionKey = "upload" | "doktorabc_sync" | "doktorabc_orders" | "abrechnung_verification";
+type SectionKey = "upload" | "doktorabc_sync" | "abrechnung_verification";
 
 type Props = {
   initialNotifications: StoredNotification[];
@@ -82,15 +82,27 @@ type OrderBotOrder = {
   quantities: string;
 };
 
+type OrderBotList = {
+  id: string;
+  label: string;
+  orderCount: number;
+  orders: OrderBotOrder[];
+};
+
 type OrderBotDetails = {
   kind: "orders" | "excel";
   label: string;
   orderCount: number;
-  orders: OrderBotOrder[];
+  lists: OrderBotList[];
   filename: string;
   sizeBytes: number | null;
   sentToN8n: boolean;
   n8nStatusCode: number | null;
+  excelRowCount: number | null;
+  exportDate: string;
+  failedStep: string;
+  currentUrl: string;
+  screenshotPath: string;
 };
 
 const sections: Array<{ label: string; value: SectionKey; description: string; caption: string; active: boolean }> = [
@@ -106,13 +118,6 @@ const sections: Array<{ label: string; value: SectionKey; description: string; c
     value: "doktorabc_sync",
     description: "Produktsynchronisierung",
     caption: "Button-Ausloeser fuer DoktorABC",
-    active: true,
-  },
-  {
-    label: "DoktorABC Orders",
-    value: "doktorabc_orders",
-    description: "EOD und Pickup READY",
-    caption: "Orders Bot und Excel Export",
     active: true,
   },
   {
@@ -191,7 +196,7 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
           counts[section.value] = notifications.filter((notification) => notification.section === section.value).length;
           return counts;
         },
-        { upload: 0, doktorabc_sync: 0, doktorabc_orders: 0, abrechnung_verification: 0 } as Record<SectionKey, number>
+        { upload: 0, doktorabc_sync: 0, abrechnung_verification: 0 } as Record<SectionKey, number>
       ),
     [notifications]
   );
@@ -323,7 +328,7 @@ export function NotificationDashboard({ initialNotifications, initialError, conf
             <span>Bereiche</span>
           </div>
           <p className="panel-copy">
-            Upload-Meldungen werden gespeichert und automatisch aktualisiert. DoktorABC Sync und Abrechnung-Verifikation bleiben als getrennte Arbeitsbereiche vorgesehen.
+            Upload-Meldungen werden gespeichert und automatisch aktualisiert. DoktorABC Sync enthaelt Produktsync sowie EOD/Self-Pickup Botmeldungen.
           </p>
         </aside>
       </div>
@@ -367,12 +372,16 @@ function NotificationRow({ notification }: { notification: StoredNotification })
               <dd>{orderBotDetails.label}</dd>
             </div>
             <div>
-              <dt>Orders</dt>
-              <dd>{orderBotDetails.kind === "orders" ? orderBotDetails.orderCount : "Excel"}</dd>
+              <dt>{orderBotDetails.kind === "excel" ? "Excel-Zeilen" : "Orders"}</dt>
+              <dd>{orderBotDetails.kind === "excel" ? formatNumber(orderBotDetails.excelRowCount) : orderCountSummary(orderBotDetails.lists)}</dd>
             </div>
             <div>
-              <dt>Status</dt>
-              <dd>{orderBotDetails.kind === "excel" && orderBotDetails.sentToN8n ? "n8n erreicht" : formatStatus(notification.status)}</dd>
+              <dt>{orderBotDetails.kind === "excel" ? "Datum" : "Status"}</dt>
+              <dd>
+                {orderBotDetails.kind === "excel"
+                  ? orderBotDetails.exportDate || "nicht angegeben"
+                  : formatStatus(notification.status)}
+              </dd>
             </div>
           </dl>
         ) : syncDetails ? (
@@ -421,17 +430,29 @@ function NotificationRow({ notification }: { notification: StoredNotification })
           </dl>
         ) : null}
         {orderBotDetails ? (
-          <details className={`sync-log-panel ${notification.status === "failure" ? "danger" : "success"}`}>
-            <summary>
-              <ChevronDown size={15} />
-              <span>
-                {orderBotDetails.kind === "orders"
-                  ? `Alle ${orderBotDetails.orderCount} Order IDs anzeigen`
-                  : "Excel Export Details anzeigen"}
-              </span>
-            </summary>
-            <OrderBotLogDetails details={orderBotDetails} status={notification.status} error={notification.error} />
-          </details>
+          orderBotDetails.kind === "orders" && notification.status !== "failure" ? (
+            <div className="order-toggle-stack">
+              {orderBotDetails.lists.map((list) => (
+                <details className="sync-log-panel success" key={list.id}>
+                  <summary>
+                    <ChevronDown size={15} />
+                    <span>
+                      {list.label}: {list.orderCount} Order IDs anzeigen
+                    </span>
+                  </summary>
+                  <OrderBotOrderList list={list} />
+                </details>
+              ))}
+            </div>
+          ) : (
+            <details className={`sync-log-panel ${notification.status === "failure" ? "danger" : "success"}`}>
+              <summary>
+                <ChevronDown size={15} />
+                <span>{notification.status === "failure" ? "Fehlerdetails anzeigen" : "Excel Export Details anzeigen"}</span>
+              </summary>
+              <OrderBotLogDetails details={orderBotDetails} status={notification.status} error={notification.error} />
+            </details>
+          )
         ) : syncDetails ? (
           <details className={`sync-log-panel ${notification.status === "failure" ? "danger" : "success"}`}>
             <summary>
@@ -463,6 +484,26 @@ function OrderBotLogDetails({
           <strong>Fehler</strong>
           <span>{error || "Der Orders Bot konnte nicht abgeschlossen werden."}</span>
         </div>
+        {details.failedStep ? (
+          <div className="sync-product-meta compact">
+            <span>
+              <b>Schritt</b>
+              <strong>{details.failedStep}</strong>
+            </span>
+            {details.currentUrl ? (
+              <span>
+                <b>URL</b>
+                <strong>{details.currentUrl}</strong>
+              </span>
+            ) : null}
+            {details.screenshotPath ? (
+              <span>
+                <b>Screenshot</b>
+                <strong>{details.screenshotPath}</strong>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -473,6 +514,14 @@ function OrderBotLogDetails({
         <section className="sync-product-section" aria-label="Excel Export">
           <h4>Excel Export</h4>
           <div className="sync-product-meta order-export-meta">
+            <span>
+              <b>Zeilen</b>
+              <strong>{formatNumber(details.excelRowCount)}</strong>
+            </span>
+            <span>
+              <b>Datum</b>
+              <strong>{details.exportDate || "nicht angegeben"}</strong>
+            </span>
             <span>
               <b>Datei</b>
               <strong>{details.filename || "nicht angegeben"}</strong>
@@ -491,14 +540,27 @@ function OrderBotLogDetails({
     );
   }
 
+  const [firstList] = details.lists;
+  return firstList ? <OrderBotOrderList list={firstList} /> : null;
+}
+
+function OrderBotOrderList({ list }: { list: OrderBotList }) {
+  if (!list.orders.length) {
+    return (
+      <div className="sync-log-content">
+        <p className="sync-empty-log">Keine Order IDs fuer diesen Bereich im Payload gespeichert.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="sync-log-content">
-      <section className="sync-product-section" aria-label={`${details.label} Order IDs`}>
+      <section className="sync-product-section" aria-label={`${list.label} Order IDs`}>
         <h4>
-          {details.label}: {details.orderCount} Orders
+          {list.label}: {list.orderCount} Orders
         </h4>
         <div className="order-bot-list">
-          {details.orders.map((order, index) => (
+          {list.orders.map((order, index) => (
             <article className="order-bot-card" key={`${order.orderReference}-${index}`}>
               <div className="sync-product-head">
                 <strong>{order.orderReference || "Order ID fehlt"}</strong>
@@ -627,11 +689,7 @@ function SyncLogDetails({
 
 function emptyCopy(section: SectionKey) {
   if (section === "doktorabc_sync") {
-    return "Sobald die Produktsynchronisierung Meldungen sendet, werden sie hier als eigener Verlauf angezeigt.";
-  }
-
-  if (section === "doktorabc_orders") {
-    return "Sobald der EOD Orders Bot Meldungen sendet, erscheinen EOD, Pickup READY und Excel Export hier getrennt.";
+    return "Sobald Produktsync oder EOD/Self-Pickup Botmeldungen eintreffen, werden sie hier angezeigt.";
   }
 
   if (section === "abrechnung_verification") {
@@ -662,6 +720,10 @@ function formatUploadType(value: string | null) {
     return "DoktorABC Abrechnung";
   }
 
+  if (value === "doktorabc_eod_excel_export") {
+    return "DoktorABC Excel Export";
+  }
+
   if (value === "oed") {
     return "OED";
   }
@@ -679,6 +741,18 @@ function formatBytes(value: number | null) {
   }
 
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatNumber(value: number | null) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "nicht angegeben";
+}
+
+function orderCountSummary(lists: OrderBotList[]) {
+  if (!lists.length) {
+    return "nicht angegeben";
+  }
+
+  return lists.map((list) => `${list.label}: ${list.orderCount}`).join(", ");
 }
 
 function rowsInsertedFromPayload(payload: Record<string, unknown>) {
@@ -726,50 +800,132 @@ function orderBotDetailsFromPayload(payload: Record<string, unknown>): OrderBotD
   const event = stringValue(payload.event);
   const isOrderBot =
     payload.section === "doktorabc_orders" ||
+    (payload.section === "doktorabc_sync" && payload.sync_type === "doktorabc_eod_bot") ||
+    (payload.section === "upload" && payload.sync_type === "doktorabc_eod_bot") ||
     payload.sync_type === "doktorabc_eod_bot" ||
+    payload.upload_type === "doktorabc_eod_excel_export" ||
+    event === "doktorabc_eod_pickup_orders_success" ||
     event === "doktorabc_eod_orders_success" ||
+    event === "doktorabc_eod_orders_failure" ||
     event === "doktorabc_pickup_ready_orders_success" ||
-    event === "doktorabc_eod_excel_export_success";
+    event === "doktorabc_pickup_ready_orders_failure" ||
+    event === "doktorabc_eod_excel_export_success" ||
+    event === "doktorabc_eod_excel_export_failure";
 
   if (!isOrderBot) {
     return null;
   }
 
   const orderListType = stringValue(payload.order_list_type);
-  const isExcel = orderListType === "excel_export" || event === "doktorabc_eod_excel_export_success";
-  const orders = arrayRecordValue(payload.orders).map((row) => ({
-    orderReference: stringValue(row.order_reference) || stringValue(row.orderReference),
-    createdDate: stringValue(row.created_date) || stringValue(row.createdDate) || stringValue(row.prescription_date),
-    products: stringValue(row.products),
-    prices: stringValue(row.prices),
-    quantities: stringValue(row.quantities),
-  }));
+  const isExcel =
+    orderListType === "excel_export" ||
+    payload.upload_type === "doktorabc_eod_excel_export" ||
+    event === "doktorabc_eod_excel_export_success" ||
+    event === "doktorabc_eod_excel_export_failure";
+  const failedStep = stringValue(payload.failed_step);
+  const currentUrl = stringValue(payload.current_url);
+  const screenshotPath = stringValue(payload.screenshot_path);
 
   if (isExcel) {
     return {
       kind: "excel",
       label: "Excel Export",
       orderCount: 0,
-      orders: [],
+      lists: [],
       filename: stringValue(payload.download_filename) || stringValue(payload.filename),
       sizeBytes: nullableNumberValue(payload.download_size_bytes ?? payload.size_bytes),
       sentToN8n: Boolean(payload.sent_to_n8n),
       n8nStatusCode: nullableNumberValue(payload.n8n_status_code),
+      excelRowCount: nullableNumberValue(payload.excel_row_count ?? recordValue(payload.summary)?.excel_rows),
+      exportDate: stringValue(payload.export_date),
+      failedStep,
+      currentUrl,
+      screenshotPath,
     };
   }
 
-  const label = orderListType === "pickup_ready" || event === "doktorabc_pickup_ready_orders_success" ? "Pickup READY" : "EOD";
+  const orderLists = orderListsFromPayload(payload);
+  const orderCount = orderLists.reduce((sum, list) => sum + list.orderCount, 0);
+  const label =
+    orderLists.length > 1
+      ? "EOD und Self Pickup"
+      : orderLists[0]?.label || orderListLabel(orderListType || "eod");
 
   return {
     kind: "orders",
     label,
-    orderCount: numberValue(payload.order_count) || orders.length,
-    orders,
+    orderCount: numberValue(payload.order_count) || orderCount,
+    lists: orderLists,
     filename: "",
     sizeBytes: null,
     sentToN8n: false,
     n8nStatusCode: null,
+    excelRowCount: null,
+    exportDate: "",
+    failedStep,
+    currentUrl,
+    screenshotPath,
   };
+}
+
+function orderListsFromPayload(payload: Record<string, unknown>): OrderBotList[] {
+  const rawLists = recordValue(payload.order_lists);
+
+  if (rawLists) {
+    return Object.entries(rawLists)
+      .map(([id, value]) => {
+        const list = recordValue(value);
+        const orderListType = stringValue(list?.order_list_type) || id;
+        const orders = arrayRecordValue(list?.orders).map(orderFromPayload);
+        const explicitCount = nullableNumberValue(list?.order_count);
+
+        return {
+          id,
+          label: stringValue(list?.label) || orderListLabel(orderListType),
+          orderCount: explicitCount ?? orders.length,
+          orders,
+        };
+      })
+      .filter((list) => list.id || list.orders.length || list.orderCount > 0);
+  }
+
+  const orders = arrayRecordValue(payload.orders).map(orderFromPayload);
+  const orderListType = stringValue(payload.order_list_type) || "eod";
+
+  if (!orders.length && nullableNumberValue(payload.order_count) === null) {
+    return [];
+  }
+
+  return [
+    {
+      id: orderListType,
+      label: orderListLabel(orderListType),
+      orderCount: nullableNumberValue(payload.order_count) ?? orders.length,
+      orders,
+    },
+  ];
+}
+
+function orderFromPayload(row: Record<string, unknown>): OrderBotOrder {
+  return {
+    orderReference: stringValue(row.order_id) || stringValue(row.order_reference) || stringValue(row.orderReference),
+    createdDate: stringValue(row.created_date) || stringValue(row.createdDate) || stringValue(row.prescription_date),
+    products: stringValue(row.products),
+    prices: stringValue(row.prices) || stringValue(row.price),
+    quantities: stringValue(row.quantities),
+  };
+}
+
+function orderListLabel(value: string) {
+  if (value === "pickup_ready" || value === "self pickup") {
+    return "Self Pickup READY";
+  }
+
+  if (value === "eod_and_pickup") {
+    return "EOD und Self Pickup";
+  }
+
+  return "EOD";
 }
 
 function recordValue(value: unknown) {

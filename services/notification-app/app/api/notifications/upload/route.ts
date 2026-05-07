@@ -34,6 +34,8 @@ export async function GET() {
       "orders_csv_insert_failure",
       "doktorabc_sync_success",
       "doktorabc_sync_failure",
+      "doktorabc_eod_excel_export_success",
+      "doktorabc_eod_excel_export_failure",
     ],
   });
 }

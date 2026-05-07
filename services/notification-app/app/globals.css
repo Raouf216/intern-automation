@@ -98,9 +98,18 @@ button {
   gap: 12px;
 }
 
+.brand {
+  min-width: 0;
+}
+
+.brand > div:last-child {
+  min-width: 0;
+}
+
 .brand-mark {
-  width: 58px;
-  height: 58px;
+  width: 62px;
+  height: 62px;
+  flex: 0 0 62px;
   position: relative;
   display: grid;
   place-items: center;
@@ -115,54 +124,37 @@ button {
 
 .pharmacy-logo {
   overflow: hidden;
+  border-color: rgba(42, 124, 69, 0.42);
+  background:
+    radial-gradient(circle at 50% 28%, rgba(221, 255, 143, 0.16), transparent 50%),
+    linear-gradient(145deg, #102816 0%, #07170e 100%);
+  box-shadow:
+    0 16px 30px rgba(14, 74, 38, 0.2),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
-.pharmacy-leaf {
+.cannabis-art {
   position: absolute;
-  left: 50%;
-  top: 12px;
-  width: 13px;
-  height: 26px;
-  border-radius: 88% 0 88% 0;
-  background: color-mix(in srgb, var(--green) 84%, #ffffff);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.36);
-  transform-origin: 50% 100%;
-}
-
-.leaf-left {
-  transform: translateX(-58%) rotate(-34deg);
-}
-
-.leaf-center {
-  top: 8px;
-  transform: translateX(-50%) rotate(-4deg);
-}
-
-.leaf-right {
-  transform: translateX(-42%) rotate(34deg);
-}
-
-.pharmacy-stem {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: 13px;
-  width: 3px;
-  height: 19px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--green) 82%, #ffffff);
-  transform: translateX(-50%);
+  inset: 2px;
+  z-index: 1;
+  width: calc(100% - 4px);
+  height: calc(100% - 4px);
+  object-fit: contain;
+  object-position: center;
+  transform: scale(1.14) translateY(1px);
 }
 
 .pharmacy-cross {
   position: absolute;
-  right: 8px;
-  bottom: 8px;
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
+  right: 6px;
+  bottom: 6px;
+  z-index: 4;
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 5px;
   background: #ffffff;
-  box-shadow: 0 6px 14px rgba(33, 23, 25, 0.18);
+  box-shadow: 0 7px 15px rgba(10, 39, 23, 0.28);
 }
 
 .pharmacy-cross::before,
@@ -178,11 +170,11 @@ button {
 
 .pharmacy-cross::before {
   width: 4px;
-  height: 13px;
+  height: 12px;
 }
 
 .pharmacy-cross::after {
-  width: 13px;
+  width: 12px;
   height: 4px;
 }
 
@@ -231,6 +223,8 @@ h3 {
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .theme-toggle,
@@ -1007,6 +1001,18 @@ dd {
   .feed-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .brand {
+    width: 100%;
+  }
+
+  .brand > div:last-child {
+    flex: 1 1 0;
+  }
+
+  .subtitle {
+    max-width: 28ch;
   }
 
   .overview-band,

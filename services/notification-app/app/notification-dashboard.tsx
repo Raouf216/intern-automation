@@ -249,14 +249,7 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark pharmacy-logo" aria-label="Medizinische Cannabis-Apotheke">
-            <span className="pharmacy-leaf leaf-far-left" aria-hidden="true" />
-            <span className="pharmacy-leaf leaf-mid-left" aria-hidden="true" />
-            <span className="pharmacy-leaf leaf-inner-left" aria-hidden="true" />
-            <span className="pharmacy-leaf leaf-center" aria-hidden="true" />
-            <span className="pharmacy-leaf leaf-inner-right" aria-hidden="true" />
-            <span className="pharmacy-leaf leaf-mid-right" aria-hidden="true" />
-            <span className="pharmacy-leaf leaf-far-right" aria-hidden="true" />
-            <span className="pharmacy-stem" aria-hidden="true" />
+            <img className="cannabis-art" src="/cannabis.png" alt="" aria-hidden="true" />
             <span className="pharmacy-cross" aria-hidden="true" />
           </div>
           <div>

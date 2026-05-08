@@ -808,6 +808,10 @@ body[data-theme="night"] .message-error {
   border-left-color: var(--green);
 }
 
+.pickup-result-clickable {
+  border-left-color: var(--cyan);
+}
+
 .pickup-result-already_picked {
   border-left-color: var(--gold);
 }

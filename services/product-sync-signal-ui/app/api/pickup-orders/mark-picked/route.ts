@@ -21,11 +21,39 @@ type PendingPickupOrderRow = SupabaseOrderRow & {
 
 type MarkPickedResult = {
   order_reference: string;
-  status: "picked" | "already_picked" | "not_found" | "wrong_order_type" | "error";
+  status: "picked" | "already_picked" | "clickable" | "not_found" | "wrong_order_type" | "error";
   message: string;
   order_type?: string | null;
   scraped_at?: string | null;
   picked?: boolean | null;
+  dry_run?: boolean;
+  would_click?: boolean;
+  bot_status?: string;
+};
+
+type PickupDoneBotResult = {
+  order_reference?: string;
+  status?: string;
+  message?: string;
+  dry_run?: boolean;
+  would_click?: boolean;
+  clicked?: boolean;
+  button_visible?: boolean;
+  button_enabled?: boolean;
+};
+
+type PickupDoneBotResponse = {
+  ok?: boolean;
+  error?: string;
+  dry_run?: boolean;
+  checked?: number;
+  clickable?: number;
+  clicked?: number;
+  not_found?: number;
+  errors?: number;
+  current_url?: string;
+  screenshot_path?: string | null;
+  results?: PickupDoneBotResult[];
 };
 
 function requiredEnv(name: string) {
@@ -58,6 +86,22 @@ function supabaseTableName() {
 
 function operatorPassword() {
   return (process.env.NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD || "").trim();
+}
+
+function pickupDoneBotEndpoint() {
+  return (process.env.PICKUP_DONE_BOT_ENDPOINT || process.env.PICKUP_MARK_BOT_ENDPOINT || "").trim();
+}
+
+function booleanValue(value: unknown, fallback: boolean) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+
+  return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
+}
+
+function pickupDoneDryRunDefault() {
+  return booleanValue(process.env.PICKUP_DONE_DRY_RUN ?? process.env.PICKUP_MARK_DRY_RUN, true);
 }
 
 function validateOperatorPassword(payload: Record<string, unknown>) {
@@ -248,6 +292,72 @@ async function processOrderReference(orderReference: string, pickedAt: string): 
   }
 }
 
+async function callPickupDoneBot(orderReferences: string[], dryRun: boolean) {
+  const endpoint = pickupDoneBotEndpoint();
+
+  if (!endpoint) {
+    return null;
+  }
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      order_references: orderReferences,
+      dry_run: dryRun,
+    }),
+    cache: "no-store",
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json")
+    ? ((await response.json()) as PickupDoneBotResponse)
+    : ({ ok: false, error: await response.text() } satisfies PickupDoneBotResponse);
+
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || `Pickup action bot failed (${response.status}): ${response.statusText || "no details"}`);
+  }
+
+  return payload;
+}
+
+function botResultToMarkResult(result: PickupDoneBotResult): MarkPickedResult {
+  const status = result.status || "error";
+  const orderReference = String(result.order_reference || "");
+
+  if (status === "clickable") {
+    return {
+      order_reference: orderReference,
+      status: "clickable",
+      dry_run: true,
+      would_click: result.would_click,
+      bot_status: status,
+      message: result.message || "Dry run passed. The DoktorABC button is clickable.",
+    };
+  }
+
+  if (status === "not_found") {
+    return {
+      order_reference: orderReference,
+      status: "not_found",
+      dry_run: result.dry_run,
+      would_click: result.would_click,
+      bot_status: status,
+      message: result.message || "Order was not found in DoktorABC.",
+    };
+  }
+
+  return {
+    order_reference: orderReference,
+    status: "error",
+    dry_run: result.dry_run,
+    would_click: result.would_click,
+    bot_status: status,
+    message: result.message || `Pickup action bot returned status: ${status}`,
+  };
+}
+
 export async function GET(request: Request) {
   const passwordError = validateRequestPassword(request);
 
@@ -327,23 +437,73 @@ export async function POST(request: Request) {
     );
   }
 
+  const dryRun = booleanValue(payload.dry_run ?? payload.dryRun, pickupDoneDryRunDefault());
+  let botPayload: PickupDoneBotResponse | null = null;
+
+  try {
+    botPayload = await callPickupDoneBot(orderReferences, dryRun);
+  } catch (error) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : "Pickup action bot failed.",
+      },
+      { status: 502 }
+    );
+  }
+
+  if (botPayload?.dry_run) {
+    const results = (botPayload.results || []).map(botResultToMarkResult);
+    const clickable = results.filter((result) => result.status === "clickable").length;
+    const errors = results.filter((result) => result.status !== "clickable").length;
+
+    return NextResponse.json({
+      ok: true,
+      dry_run: true,
+      checked: results.length,
+      clickable,
+      picked: 0,
+      already_picked: 0,
+      errors,
+      table: supabaseTableName(),
+      schema: supabaseSchema(),
+      bot: botPayload,
+      results,
+    });
+  }
+
+  const referencesToMark = botPayload
+    ? (botPayload.results || [])
+        .filter((result) => result.status === "clicked")
+        .map((result) => String(result.order_reference || "").trim())
+        .filter(Boolean)
+    : orderReferences;
+  const botFailures = botPayload
+    ? (botPayload.results || [])
+        .filter((result) => result.status !== "clicked")
+        .map(botResultToMarkResult)
+    : [];
+
   const pickedAt = new Date().toISOString();
   const results = await Promise.all(
-    orderReferences.map((orderReference) => processOrderReference(orderReference, pickedAt))
+    referencesToMark.map((orderReference) => processOrderReference(orderReference, pickedAt))
   );
-  const picked = results.filter((result) => result.status === "picked").length;
-  const alreadyPicked = results.filter((result) => result.status === "already_picked").length;
-  const errors = results.filter((result) => ["not_found", "wrong_order_type", "error"].includes(result.status)).length;
+  const combinedResults = [...results, ...botFailures];
+  const picked = combinedResults.filter((result) => result.status === "picked").length;
+  const alreadyPicked = combinedResults.filter((result) => result.status === "already_picked").length;
+  const errors = combinedResults.filter((result) => ["not_found", "wrong_order_type", "error"].includes(result.status)).length;
 
   return NextResponse.json({
     ok: true,
-    checked: results.length,
+    dry_run: false,
+    checked: combinedResults.length,
     picked,
     already_picked: alreadyPicked,
     errors,
     picked_at: pickedAt,
     table: supabaseTableName(),
     schema: supabaseSchema(),
-    results,
+    bot: botPayload,
+    results: combinedResults,
   });
 }

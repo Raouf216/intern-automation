@@ -89,17 +89,22 @@ type EndOfDayResponse = {
 
 type PickupMarkResult = {
   order_reference: string;
-  status: "picked" | "already_picked" | "not_found" | "wrong_order_type" | "error";
+  status: "picked" | "already_picked" | "clickable" | "not_found" | "wrong_order_type" | "error";
   message: string;
   order_type?: string | null;
   scraped_at?: string | null;
   picked?: boolean | null;
+  dry_run?: boolean;
+  would_click?: boolean;
+  bot_status?: string;
 };
 
 type PickupMarkResponse = {
   ok?: boolean;
   error?: string;
+  dry_run?: boolean;
   checked?: number;
+  clickable?: number;
   picked?: number;
   already_picked?: number;
   errors?: number;
@@ -230,6 +235,7 @@ function exportState(payload: EndOfDayResponse | null) {
 function pickupMarkStatusLabel(status: PickupMarkResult["status"]) {
   if (status === "picked") return "markiert";
   if (status === "already_picked") return "bereits abgeholt";
+  if (status === "clickable") return "klickbar";
   if (status === "not_found") return "nicht gefunden";
   if (status === "wrong_order_type") return "falscher Typ";
   return "Fehler";
@@ -617,16 +623,23 @@ export function SyncConsole() {
       }
 
       const errors = numberValue(payload.errors);
+      const clickable = numberValue(payload.clickable);
       const picked = numberValue(payload.picked);
       const alreadyPicked = numberValue(payload.already_picked);
       setPickupMarkStatus(errors ? "error" : "success");
       setPickupMarkMessage(
-        errors
+        payload.dry_run
+          ? errors
+            ? `Trockenlauf abgeschlossen: ${clickable} klickbar, ${errors} Fehler.`
+            : `Trockenlauf erfolgreich: ${clickable} Self-Pickup Button(s) sind klickbar.`
+          : errors
           ? `Prüfung abgeschlossen: ${picked} markiert, ${alreadyPicked} bereits abgeholt, ${errors} Fehler.`
           : `Erfolgreich abgeschlossen: ${picked} markiert, ${alreadyPicked} bereits abgeholt.`
       );
-      setSelectedPickupReferences([]);
-      await refreshPendingPickupOrders({ preserveMessage: true });
+      if (!payload.dry_run) {
+        setSelectedPickupReferences([]);
+        await refreshPendingPickupOrders({ preserveMessage: true });
+      }
     } catch (error) {
       setPickupMarkStatus("error");
       setPickupMarkMessage(error instanceof Error ? error.message : "Self-Pickup Markierung fehlgeschlagen.");
@@ -744,6 +757,10 @@ export function SyncConsole() {
         <div>
           <dt>Geprüft</dt>
           <dd>{pickupMarkResult ? numberValue(pickupMarkResult.checked) : "noch nicht"}</dd>
+        </div>
+        <div>
+          <dt>Klickbar</dt>
+          <dd>{pickupMarkResult ? numberValue(pickupMarkResult.clickable) : "noch nicht"}</dd>
         </div>
         <div>
           <dt>Markiert</dt>

@@ -45,7 +45,7 @@ function supabaseTableName() {
 }
 
 function operatorPassword() {
-  return (process.env.PRODUCT_SYNC_OPERATOR_PASSWORD || process.env.NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD || "").trim();
+  return (process.env.NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD || "").trim();
 }
 
 function validateOperatorPassword(payload: Record<string, unknown>) {

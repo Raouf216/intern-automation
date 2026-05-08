@@ -14,6 +14,7 @@ import {
   PackageCheck,
   RadioTower,
   RefreshCw,
+  Search,
   ShieldCheck,
   Sparkles,
   Sun,
@@ -282,6 +283,7 @@ export function SyncConsole() {
   const [pickupMarkResult, setPickupMarkResult] = useState<PickupMarkResponse | null>(null);
   const [pendingPickupOrders, setPendingPickupOrders] = useState<PendingPickupOrder[]>([]);
   const [selectedPickupReferences, setSelectedPickupReferences] = useState<string[]>([]);
+  const [pickupSearchTerm, setPickupSearchTerm] = useState("");
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [finishedAt, setFinishedAt] = useState<Date | null>(null);
   const [endOfDayStartedAt, setEndOfDayStartedAt] = useState<Date | null>(null);
@@ -311,6 +313,20 @@ export function SyncConsole() {
       { label: "Unverändert", value: numberValue(result?.unchanged) },
     ],
     [result]
+  );
+
+  const normalizedPickupSearchTerm = pickupSearchTerm.trim().toLowerCase();
+  const visiblePendingPickupOrders = useMemo(
+    () =>
+      normalizedPickupSearchTerm
+        ? pendingPickupOrders.filter((order) =>
+            order.order_reference.toLowerCase().includes(normalizedPickupSearchTerm)
+          )
+        : pendingPickupOrders,
+    [normalizedPickupSearchTerm, pendingPickupOrders]
+  );
+  const hasPickupSearchMiss = Boolean(
+    normalizedPickupSearchTerm && pendingPickupOrders.length && visiblePendingPickupOrders.length === 0
   );
 
   function validateOperatorPassword() {
@@ -834,26 +850,39 @@ export function SyncConsole() {
                       <span>{selectedPickupReferences.length === pendingPickupOrders.length ? "Auswahl leeren" : "Alle auswählen"}</span>
                     </button>
                   </div>
-                  <div className="pending-pickup-list" aria-label="Offene Self Pickup Bestellungen">
-                    {pendingPickupOrders.length ? (
-                      pendingPickupOrders.map((order) => (
-                        <label className="pending-pickup-row" key={order.order_reference}>
-                          <input
-                            type="checkbox"
-                            checked={selectedPickupReferences.includes(order.order_reference)}
-                            onChange={() => togglePickupSelection(order.order_reference)}
-                            disabled={anyBotRunning}
-                          />
-                          <span>
-                            <strong>{order.order_reference}</strong>
-                            <small>{order.patient_name || "Name fehlt"}</small>
-                            <small>{formatPickupDate(order.billing_date)}</small>
-                          </span>
-                        </label>
-                      ))
-                    ) : (
-                      <p className="empty-pickup-list">Keine offene Self-Pickup Bestellung geladen.</p>
-                    )}
+                  <div className="pending-pickup-shell" aria-label="Offene Self Pickup Bestellungen">
+                    <label className="pickup-search-field">
+                      <Search size={17} />
+                      <input
+                        value={pickupSearchTerm}
+                        onChange={(event) => setPickupSearchTerm(event.target.value)}
+                        placeholder="Bestell-ID suchen"
+                        aria-label="Bestell-ID suchen"
+                      />
+                    </label>
+                    <div className="pending-pickup-list">
+                      {visiblePendingPickupOrders.length ? (
+                        visiblePendingPickupOrders.map((order) => (
+                          <label className="pending-pickup-row" key={order.order_reference}>
+                            <input
+                              type="checkbox"
+                              checked={selectedPickupReferences.includes(order.order_reference)}
+                              onChange={() => togglePickupSelection(order.order_reference)}
+                              disabled={anyBotRunning}
+                            />
+                            <span>
+                              <strong>{order.order_reference}</strong>
+                              <small>{order.patient_name || "Name fehlt"}</small>
+                              <small>{formatPickupDate(order.billing_date)}</small>
+                            </span>
+                          </label>
+                        ))
+                      ) : hasPickupSearchMiss ? (
+                        <p className="empty-pickup-list">Diese Bestell-ID existiert nicht in der geladenen Liste.</p>
+                      ) : (
+                        <p className="empty-pickup-list">Keine offene Self-Pickup Bestellung geladen.</p>
+                      )}
+                    </div>
                   </div>
                   <button
                     className="trigger-button pickup-mark-button"

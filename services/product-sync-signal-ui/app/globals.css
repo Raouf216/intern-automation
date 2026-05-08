@@ -501,16 +501,57 @@ body[data-theme="night"] .state-error {
   opacity: 0.68;
 }
 
+.pending-pickup-shell {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--green) 28%, var(--line));
+  border-radius: 8px;
+  padding: 12px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 94%, var(--green) 6%), var(--surface));
+}
+
+.pickup-search-field {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--green) 36%, var(--line));
+  border-radius: 8px;
+  padding: 0 13px;
+  color: var(--green);
+  background: var(--surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 10px 22px rgba(4, 120, 87, 0.08);
+}
+
+.pickup-search-field input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  font-size: 14px;
+  font-weight: 850;
+  outline: none;
+}
+
+.pickup-search-field input::placeholder {
+  color: var(--muted);
+}
+
 .pending-pickup-list {
   width: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 360px;
+  max-height: 440px;
   overflow-x: hidden;
   overflow-y: auto;
-  padding-right: 4px;
+  padding-right: 5px;
 }
 
 .pending-pickup-row {
@@ -541,8 +582,10 @@ body[data-theme="night"] .state-error {
 
 .pending-pickup-row strong {
   overflow-wrap: anywhere;
-  color: var(--ink);
-  font-size: 14px;
+  color: var(--green);
+  font-size: 16px;
+  font-weight: 950;
+  letter-spacing: 0;
 }
 
 .pending-pickup-row small,

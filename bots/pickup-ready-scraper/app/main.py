@@ -3152,9 +3152,15 @@ def _mark_pickup_done_orders_unlocked(payload):
         )
     finally:
         if context:
-            context.close()
+            try:
+                context.close()
+            except Exception as exc:
+                log_event("browser_context_cleanup_failed", error=f"{type(exc).__name__}: {exc}")
         if browser:
-            browser.close()
+            try:
+                browser.close()
+            except Exception as exc:
+                log_event("browser_cleanup_failed", error=f"{type(exc).__name__}: {exc}")
 
 
 def mark_pickup_done_orders(payload):

@@ -29,6 +29,7 @@ ABRECHNUNG_STORAGE_BUCKET = os.environ.get("ABRECHNUNG_STORAGE_BUCKET", "abrechn
 ABRECHNUNG_STORAGE_PREFIX = os.environ.get("ABRECHNUNG_STORAGE_PREFIX", "doktorabc-abrechnung").strip("/")
 ABRECHNUNG_UPLOAD_PASSWORD = os.environ.get("ABRECHNUNG_UPLOAD_PASSWORD", "")
 N8N_UPLOAD_WEBHOOK_URL = os.environ.get("N8N_UPLOAD_WEBHOOK_URL", "").strip()
+N8N_ABRECHNUNG_SUCCESS_WEBHOOK_URL = os.environ.get("N8N_ABRECHNUNG_SUCCESS_WEBHOOK_URL", "").strip()
 SUPABASE_ORDERS_TABLE = os.environ.get("SUPABASE_ORDERS_TABLE", "orders_csv").strip()
 SUPABASE_DB_SCHEMA = os.environ.get("SUPABASE_DB_SCHEMA", "public").strip()
 SUPABASE_ABRECHNUNG_TABLE = os.environ.get("SUPABASE_ABRECHNUNG_TABLE", "doktorabc_billing").strip()
@@ -588,8 +589,10 @@ async def notify_n8n_upload_event(
     error: str | None = None,
     event: str | None = None,
     extra: dict[str, object] | None = None,
+    webhook_url: str | None = None,
 ):
-    if not N8N_UPLOAD_WEBHOOK_URL:
+    target_webhook_url = N8N_UPLOAD_WEBHOOK_URL if webhook_url is None else webhook_url
+    if not target_webhook_url:
         return
 
     payload = {
@@ -612,7 +615,7 @@ async def notify_n8n_upload_event(
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(N8N_UPLOAD_WEBHOOK_URL, json=payload)
+            response = await client.post(target_webhook_url, json=payload)
             response.raise_for_status()
     except Exception as exc:
         print(
@@ -720,6 +723,7 @@ def health():
             and ABRECHNUNG_UPLOAD_PASSWORD
         ),
         "n8n_upload_webhook_configured": bool(N8N_UPLOAD_WEBHOOK_URL),
+        "n8n_abrechnung_success_webhook_configured": bool(N8N_ABRECHNUNG_SUCCESS_WEBHOOK_URL),
         "oed_password_configured": bool(UPLOAD_PASSWORD),
         "abrechnung_password_configured": bool(ABRECHNUNG_UPLOAD_PASSWORD),
         "oed_bucket": SUPABASE_STORAGE_BUCKET,
@@ -952,6 +956,27 @@ async def upload_abrechnung_file(
                 "rows_skipped": billing_rows_skipped,
                 "type_counts": billing_parse.type_counts,
             },
+        )
+        await notify_n8n_upload_event(
+            status="success",
+            upload_type=upload_type,
+            filename=filename,
+            bucket=ABRECHNUNG_STORAGE_BUCKET,
+            object_path=object_path,
+            size_bytes=size_bytes,
+            event="doktorabc_abrechnung_insert_success",
+            extra={
+                "stage": "doktorabc_abrechnung_insert",
+                "billing_table": SUPABASE_ABRECHNUNG_TABLE,
+                "billing_schema": SUPABASE_ABRECHNUNG_SCHEMA,
+                "billing_period_from": start_date.isoformat(),
+                "billing_period_to": end_date.isoformat(),
+                "rows_found": billing_rows_found,
+                "rows_inserted": billing_inserted,
+                "rows_skipped": billing_rows_skipped,
+                "type_counts": billing_parse.type_counts,
+            },
+            webhook_url=N8N_ABRECHNUNG_SUCCESS_WEBHOOK_URL,
         )
     except Exception as exc:
         if not upload_started:

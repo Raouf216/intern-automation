@@ -1,0 +1,58 @@
+services:
+  pickup-action-bot:
+    container_name: pickup-action-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${PICKUP_ACTION_BOT_PORT:-8023}:8000"
+    environment:
+      - PORT=8000
+      - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Europe/Berlin}
+      - DOKTORABC_LOGIN_URL=${DOKTORABC_LOGIN_URL:-}
+      - DOKTORABC_SELF_PICKUP_URL=${DOKTORABC_SELF_PICKUP_URL:-}
+      - DOKTORABC_SCRAPER_SERVICE_NAME=pickup-action-bot
+      - EOD_ORDER_TARGET_MODE=pickup_ready
+      - DOKTORABC_USERNAME=${DOKTORABC_USERNAME:-}
+      - DOKTORABC_PASSWORD=${DOKTORABC_PASSWORD:-}
+      - DOKTORABC_HEADLESS=${DOKTORABC_HEADLESS:-true}
+      - DOKTORABC_PERSISTENT_CONTEXT_ENABLED=${PICKUP_ACTION_PERSISTENT_CONTEXT_ENABLED:-true}
+      - DOKTORABC_PERSISTENT_CONTEXT_DIR=${PICKUP_ACTION_PERSISTENT_CONTEXT_DIR:-/app/artifacts/doktorabc-pickup-action-profile}
+      - DOKTORABC_USER_AGENT=${DOKTORABC_USER_AGENT:-Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36}
+      - EOD_MAX_PAGES=${EOD_MAX_PAGES:-100}
+      - EOD_AFTER_GOTO_WAIT_MS=${EOD_AFTER_GOTO_WAIT_MS:-2000}
+      - EOD_AFTER_READY_FOR_CUSTOMER_CLICK_WAIT_MS=${EOD_AFTER_READY_FOR_CUSTOMER_CLICK_WAIT_MS:-2000}
+      - EOD_AFTER_SELECT_100_CLICK_WAIT_MS=${EOD_AFTER_SELECT_100_CLICK_WAIT_MS:-1500}
+      - EOD_AFTER_NEXT_CLICK_WAIT_MS=${EOD_AFTER_NEXT_CLICK_WAIT_MS:-1500}
+      - PICKUP_READY_AUTO_SYNC_ENABLED=false
+      - PICKUP_READY_BEFORE_OPEN_DELAY_MIN_SECONDS=${PICKUP_ACTION_BEFORE_OPEN_DELAY_MIN_SECONDS:-0}
+      - PICKUP_READY_BEFORE_OPEN_DELAY_MAX_SECONDS=${PICKUP_ACTION_BEFORE_OPEN_DELAY_MAX_SECONDS:-2}
+      - PICKUP_DONE_DRY_RUN=${PICKUP_DONE_DRY_RUN:-true}
+      - ARTIFACTS_DIR=/app/artifacts
+      - DOKTORABC_SESSION_STATE_PATH=${PICKUP_ACTION_SESSION_STATE_PATH:-/app/artifacts/doktorabc-pickup-action-storage-state.json}
+    volumes:
+      - "${WEB_SCRAPER_ARTIFACTS_DIR:-../../web-scraper-artifacts}:/app/artifacts"
+    networks:
+      - default
+      - dokploy-network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  dokploy-network:
+    external: true

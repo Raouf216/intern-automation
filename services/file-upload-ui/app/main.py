@@ -7,7 +7,7 @@ from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from starlette.requests import Request
 
 try:
@@ -45,6 +45,20 @@ ALLOWED_EXTENSIONS = {
 }
 
 app = FastAPI(title="file-upload-ui")
+
+
+UPLOAD_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#027a48"/>
+  <path d="M10 7h8l5 5v13H10z" fill="#fff"/>
+  <path d="M18 7v5h5" fill="#d1fadf"/>
+  <path d="M16 22V13m0 0-4 4m4-4 4 4" fill="none" stroke="#027a48" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M22 21h5M24.5 18.5v5" stroke="#c91528" stroke-width="2" stroke-linecap="round"/>
+</svg>"""
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+async def favicon():
+    return Response(content=UPLOAD_ICON_SVG, media_type="image/svg+xml")
 
 
 BILLING_SOURCE_COLUMNS = (
@@ -1040,6 +1054,7 @@ HTML = """
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <title>Rats-Apotheke Upload</title>
     <style>
       :root {

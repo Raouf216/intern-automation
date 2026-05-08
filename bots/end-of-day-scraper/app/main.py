@@ -677,6 +677,18 @@ def capture_failure_screenshot(page, label):
         return None
 
 
+def capture_optional_screenshot(page, path, label):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        page.screenshot(path=path, full_page=True)
+        log_event("screenshot_saved", label=label, path=path, url=page.url)
+        return path, None
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        log_event("screenshot_failed", label=label, path=path, error=error)
+        return None, error
+
+
 def page_readiness_diagnostics(page):
     try:
         return page.evaluate(
@@ -2356,8 +2368,13 @@ def sync_end_of_day_orders():
                     ARTIFACTS_DIR,
                     f"doktorabc-{safe_slug(order_type)}-after-sync-{timestamp}.png",
                 )
-                page.screenshot(path=screenshot_path, full_page=True)
-                screenshot_paths.append(screenshot_path)
+                screenshot_path, screenshot_error = capture_optional_screenshot(
+                    page,
+                    screenshot_path,
+                    f"{safe_slug(order_type)}-after-sync",
+                )
+                if screenshot_path:
+                    screenshot_paths.append(screenshot_path)
 
                 target_result = {
                     "order_type": order_type,
@@ -2373,6 +2390,7 @@ def sync_end_of_day_orders():
                     "duplicate_order_references": scrape_result["duplicate_order_references"],
                     "billing_date_network": billing_date_collector.snapshot() if billing_date_collector else None,
                     "screenshot_path": screenshot_path,
+                    "screenshot_error": screenshot_error,
                 }
                 target_results.append(target_result)
                 all_warnings.extend(warnings)

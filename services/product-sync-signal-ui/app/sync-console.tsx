@@ -809,22 +809,21 @@ export function SyncConsole() {
               </div>
             </label>
 
-            <section className="staff-note" aria-label="Hinweis für Mitarbeitende">
-              <h3>Hinweis für Mitarbeitende</h3>
-              <ol>
-                {staffSteps.map((step, index) => (
-                  <li key={`${index}-${step.before || step.emphasis}`}>
-                    {step.before}
-                    {step.emphasis ? <strong className="attention-word">{step.emphasis}</strong> : null}
-                    {step.after}
-                  </li>
-                ))}
-              </ol>
-            </section>
-
             <div className="bot-action-list">
               <section className="bot-action-row">
                 <div className="primary-bot-card">
+                  <section className="staff-note" aria-label="Hinweis für Mitarbeitende">
+                    <h3>Hinweis für Mitarbeitende</h3>
+                    <ol>
+                      {staffSteps.map((step, index) => (
+                        <li key={`${index}-${step.before || step.emphasis}`}>
+                          {step.before}
+                          {step.emphasis ? <strong className="attention-word">{step.emphasis}</strong> : null}
+                          {step.after}
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
                   <button className="trigger-button" type="button" onClick={triggerSync} disabled={anyBotRunning}>
                     {isRunning ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
                     <span>{isRunning ? "Synchronisierung läuft" : "Produkte synchronisieren (DoktorABC)"}</span>

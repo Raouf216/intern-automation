@@ -98,6 +98,7 @@ SUPABASE_EOD_ORDERS_TABLE = os.environ.get("SUPABASE_EOD_ORDERS_TABLE", "doktora
 END_OF_DAY_EXPORT_N8N_WEBHOOK_URL = (os.environ.get("END_OF_DAY_EXPORT_N8N_WEBHOOK_URL") or "").strip()
 END_OF_DAY_NOTIFICATION_WEBHOOK_URL = (os.environ.get("END_OF_DAY_NOTIFICATION_WEBHOOK_URL") or "").strip()
 SERVICE_NAME = (os.environ.get("DOKTORABC_SCRAPER_SERVICE_NAME") or "end-of-day-scraper").strip() or "end-of-day-scraper"
+EOD_ORDERS_API_FRAGMENT = "end-of-day?"
 SELF_PICKUP_ORDERS_API_FRAGMENT = "incoming-self-pickup"
 SELF_PICKUP_ORDERS_API_LIMIT = 15
 SELF_PICKUP_ORDERS_API_QUERY = (
@@ -1243,15 +1244,16 @@ def normalize_price(value):
     return match.group(0) if match else cleaned
 
 
-class SelfPickupBillingDateCollector:
-    def __init__(self):
+class BillingDateCollector:
+    def __init__(self, api_fragment):
+        self.api_fragment = api_fragment
         self.billing_dates_by_reference = {}
         self.responses = []
         self.errors = []
         self.fetched_urls = set()
 
     def capture_response(self, response):
-        if SELF_PICKUP_ORDERS_API_FRAGMENT not in response.url:
+        if self.api_fragment not in response.url:
             return
 
         try:
@@ -1329,7 +1331,7 @@ class SelfPickupBillingDateCollector:
                   return responses;
                 }
                 """,
-                SELF_PICKUP_ORDERS_API_FRAGMENT,
+                self.api_fragment,
             )
         except Exception as exc:
             self.capture_error("performance", None, exc)
@@ -1366,6 +1368,11 @@ class SelfPickupBillingDateCollector:
         }
 
 
+class SelfPickupBillingDateCollector(BillingDateCollector):
+    def __init__(self):
+        super().__init__(SELF_PICKUP_ORDERS_API_FRAGMENT)
+
+
 def normalize_scraped_order(order, order_type, billing_dates_by_reference=None, scraped_at=None):
     products = order.get("product_details") or []
     product_names = [product.get("product") for product in products]
@@ -1373,10 +1380,7 @@ def normalize_scraped_order(order, order_type, billing_dates_by_reference=None, 
     prices = [normalize_price(product.get("price")) for product in products]
     quantities = [product.get("quantity") for product in products]
     order_reference = clean_text(order.get("order_reference"))
-    billing_date = None
-
-    if order_type == SELF_PICKUP_ORDER_TYPE:
-        billing_date = (billing_dates_by_reference or {}).get(order_reference_key(order_reference))
+    billing_date = (billing_dates_by_reference or {}).get(order_reference_key(order_reference))
 
     row = {
         "order_type": order_type,
@@ -1495,7 +1499,7 @@ def validate_orders(rows, raw_orders):
             if not row.get(field)
         ]
 
-        if row.get("order_type") == SELF_PICKUP_ORDER_TYPE and not row.get("billing_date"):
+        if row.get("order_type") in {EOD_ORDER_TYPE, SELF_PICKUP_ORDER_TYPE} and not row.get("billing_date"):
             missing_optional_parts.append("billing_date")
 
         if missing_optional_parts:
@@ -2280,6 +2284,10 @@ def sync_end_of_day_orders():
                 )
                 if order_type == SELF_PICKUP_ORDER_TYPE:
                     billing_date_collector = SelfPickupBillingDateCollector()
+                elif order_type == EOD_ORDER_TYPE:
+                    billing_date_collector = BillingDateCollector(EOD_ORDERS_API_FRAGMENT)
+
+                if billing_date_collector:
                     page.on("response", billing_date_collector.capture_response)
 
                 goto_page(page, target_url)

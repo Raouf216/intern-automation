@@ -209,7 +209,7 @@ body[data-theme="night"] .state-error {
 
 .command-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 0.8fr);
+  grid-template-columns: 1fr;
   gap: 0;
 }
 
@@ -219,7 +219,7 @@ body[data-theme="night"] .state-error {
 }
 
 .command-surface {
-  border-right: 1px solid var(--line);
+  border-right: 0;
 }
 
 .status-surface {
@@ -360,7 +360,33 @@ body[data-theme="night"] .state-error {
 
 .bot-action-list {
   display: grid;
+  gap: 18px;
+}
+
+.bot-action-row {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.82fr) minmax(360px, 1fr);
+  align-items: stretch;
+  gap: 18px;
+}
+
+.primary-bot-card,
+.action-status-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.primary-bot-card {
+  display: grid;
+  align-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--red) 6%);
+}
+
+.action-status-panel {
+  display: grid;
   gap: 14px;
+  padding: 16px;
 }
 
 .secondary-bot-card {
@@ -933,7 +959,10 @@ body[data-theme="night"] code {
 
   .command-surface {
     border-right: 0;
-    border-bottom: 1px solid var(--line);
+  }
+
+  .bot-action-row {
+    grid-template-columns: 1fr;
   }
 }
 

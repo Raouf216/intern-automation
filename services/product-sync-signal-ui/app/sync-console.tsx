@@ -625,6 +625,141 @@ export function SyncConsole() {
   const anyBotSuccess =
     status === "success" || endOfDayStatus === "success" || pickupMarkStatus === "success";
 
+  const productStatusPanel = (
+    <aside className="status-surface action-status-panel" aria-label="Produktsync Ergebnis">
+      <div className="surface-heading compact">
+        <div>
+          <p className="section-kicker">Live-Ergebnis</p>
+          <h2>Laufübersicht</h2>
+        </div>
+        {status === "success" ? <CheckCircle2 size={25} /> : status === "error" ? <AlertTriangle size={25} /> : <Sparkles size={25} />}
+      </div>
+
+      <div className={`message message-${isRunning ? "running" : status}`}>
+        {isRunning ? <Loader2 size={18} className="spin" /> : status === "success" ? <CheckCircle2 size={18} /> : status === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
+        <p>{message}</p>
+      </div>
+
+      <div className="metric-grid">
+        {metrics.map((metric) => (
+          <div className="metric" key={metric.label}>
+            <span>{metric.label}</span>
+            <strong>{metric.value}</strong>
+          </div>
+        ))}
+      </div>
+
+      <div className="timeline">
+        <div>
+          <Clock3 size={15} />
+          <span>Gestartet</span>
+          <strong>{startedAt ? startedAt.toLocaleTimeString() : "noch nicht"}</strong>
+        </div>
+        <div>
+          <Clock3 size={15} />
+          <span>Beendet</span>
+          <strong>{finishedAt ? finishedAt.toLocaleTimeString() : "noch nicht"}</strong>
+        </div>
+      </div>
+    </aside>
+  );
+
+  const endOfDayStatusPanel = (
+    <aside className="status-surface action-status-panel" aria-label="End-of-Day Ergebnis">
+      <div className="surface-heading compact mini">
+        <div>
+          <p className="section-kicker">End-of-Day</p>
+          <h3>Bestellungen & Export</h3>
+        </div>
+        {isEndOfDayRunning ? <Loader2 size={20} className="spin" /> : endOfDayStatus === "success" ? <CheckCircle2 size={20} /> : endOfDayStatus === "error" ? <AlertTriangle size={20} /> : <CalendarCheck size={20} />}
+      </div>
+      <div className={`message message-${isEndOfDayRunning ? "running" : endOfDayStatus}`}>
+        {isEndOfDayRunning ? <Loader2 size={18} className="spin" /> : endOfDayStatus === "success" ? <CheckCircle2 size={18} /> : endOfDayStatus === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
+        <p>{endOfDayMessage}</p>
+      </div>
+      <dl className="eod-facts">
+        <div>
+          <dt>Sitzung</dt>
+          <dd>
+            {endOfDayStatus === "error"
+              ? "fehlgeschlagen"
+              : endOfDayResult
+                ? endOfDayResult.reused_session
+                  ? "wiederverwendet"
+                  : "neu"
+                : "noch nicht"}
+          </dd>
+        </div>
+        <div>
+          <dt>Gespeichert</dt>
+          <dd>{endOfDayResult ? botSavedCount(endOfDayResult) : "noch nicht"}</dd>
+        </div>
+        <div>
+          <dt>Export</dt>
+          <dd>{exportState(endOfDayResult)}</dd>
+        </div>
+        <div>
+          <dt>Gestartet</dt>
+          <dd>{endOfDayStartedAt ? endOfDayStartedAt.toLocaleTimeString() : "noch nicht"}</dd>
+        </div>
+        <div>
+          <dt>Beendet</dt>
+          <dd>{endOfDayFinishedAt ? endOfDayFinishedAt.toLocaleTimeString() : "noch nicht"}</dd>
+        </div>
+      </dl>
+      {endOfDayResult?.current_url ? <code className="eod-url">{endOfDayResult.current_url}</code> : null}
+    </aside>
+  );
+
+  const pickupStatusPanel = (
+    <aside className="status-surface action-status-panel" aria-label="Self Pickup Ergebnis">
+      <div className="surface-heading compact mini">
+        <div>
+          <p className="section-kicker">Self Pickup</p>
+          <h3>Abholstatus</h3>
+        </div>
+        {isPickupMarkRunning ? <Loader2 size={20} className="spin" /> : pickupMarkStatus === "success" ? <CheckCircle2 size={20} /> : pickupMarkStatus === "error" ? <AlertTriangle size={20} /> : <PackageCheck size={20} />}
+      </div>
+      <div className={`message message-${isPickupMarkRunning ? "running" : pickupMarkStatus}`}>
+        {isPickupMarkRunning ? <Loader2 size={18} className="spin" /> : pickupMarkStatus === "success" ? <CheckCircle2 size={18} /> : pickupMarkStatus === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
+        <p>{pickupMarkMessage}</p>
+      </div>
+      <dl className="eod-facts">
+        <div>
+          <dt>Geprüft</dt>
+          <dd>{pickupMarkResult ? numberValue(pickupMarkResult.checked) : "noch nicht"}</dd>
+        </div>
+        <div>
+          <dt>Markiert</dt>
+          <dd>{pickupMarkResult ? numberValue(pickupMarkResult.picked) : "noch nicht"}</dd>
+        </div>
+        <div>
+          <dt>Bereits abgeholt</dt>
+          <dd>{pickupMarkResult ? numberValue(pickupMarkResult.already_picked) : "noch nicht"}</dd>
+        </div>
+        <div>
+          <dt>Fehler</dt>
+          <dd>{pickupMarkResult ? numberValue(pickupMarkResult.errors) : "noch nicht"}</dd>
+        </div>
+      </dl>
+      {pickupMarkResult?.results?.length ? (
+        <div className="pickup-result-list">
+          {pickupMarkResult.results.map((row) => (
+            <article className={`pickup-result pickup-result-${row.status}`} key={row.order_reference}>
+              <div>
+                <strong>{row.order_reference}</strong>
+                <span>{pickupMarkStatusLabel(row.status)}</span>
+              </div>
+              <p>{row.message}</p>
+              {row.scraped_at ? <code>{new Date(row.scraped_at).toLocaleString("de-DE")}</code> : null}
+              {row.order_type ? <small>{row.order_type}</small> : null}
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </aside>
+  );
+
   return (
     <main className="page">
       <section className="workspace" aria-label="Konsole für die DoktorABC Produktsynchronisierung">
@@ -688,87 +823,98 @@ export function SyncConsole() {
             </section>
 
             <div className="bot-action-list">
-              <button className="trigger-button" type="button" onClick={triggerSync} disabled={anyBotRunning}>
-                {isRunning ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
-                <span>{isRunning ? "Synchronisierung läuft" : "Produkte synchronisieren (DoktorABC)"}</span>
-                <ArrowRight size={20} />
-              </button>
-
-              <section className="secondary-bot-card" aria-label="End-of-Day Bot">
-                <div>
-                  <CalendarCheck size={22} />
-                  <span>
-                    <b>End-of-Day</b>
-                    <small>Bestellungen und Excel-Export</small>
-                  </span>
+              <section className="bot-action-row">
+                <div className="primary-bot-card">
+                  <button className="trigger-button" type="button" onClick={triggerSync} disabled={anyBotRunning}>
+                    {isRunning ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
+                    <span>{isRunning ? "Synchronisierung läuft" : "Produkte synchronisieren (DoktorABC)"}</span>
+                    <ArrowRight size={20} />
+                  </button>
                 </div>
-                <button className="trigger-button eod-button" type="button" onClick={triggerEndOfDayOrders} disabled={anyBotRunning}>
-                  {isEndOfDayRunning ? <Loader2 size={21} className="spin" /> : <CalendarCheck size={21} />}
-                  <span>{isEndOfDayRunning ? "End-of-Day läuft" : "End-of-Day starten"}</span>
-                  <ArrowRight size={20} />
-                </button>
+                {productStatusPanel}
               </section>
 
-              <section className="secondary-bot-card manual-pickup-card" aria-label="Self Pickup Abholung">
-                <div>
-                  <PackageCheck size={22} />
-                  <span>
-                    <b>Self Pickup abgeholt</b>
-                    <small>Offene Abholungen aus Supabase</small>
-                  </span>
-                </div>
-                <div className="pickup-list-actions">
-                  <button className="inline-action-button" type="button" onClick={() => refreshPendingPickupOrders()} disabled={anyBotRunning}>
-                    {isPickupPendingLoading ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}
-                    <span>{isPickupPendingLoading ? "Lade Liste" : "Liste aktualisieren"}</span>
+              <section className="bot-action-row">
+                <section className="secondary-bot-card" aria-label="End-of-Day Bot">
+                  <div>
+                    <CalendarCheck size={22} />
+                    <span>
+                      <b>End-of-Day</b>
+                      <small>Bestellungen und Excel-Export</small>
+                    </span>
+                  </div>
+                  <button className="trigger-button eod-button" type="button" onClick={triggerEndOfDayOrders} disabled={anyBotRunning}>
+                    {isEndOfDayRunning ? <Loader2 size={21} className="spin" /> : <CalendarCheck size={21} />}
+                    <span>{isEndOfDayRunning ? "End-of-Day läuft" : "End-of-Day starten"}</span>
+                    <ArrowRight size={20} />
                   </button>
+                </section>
+                {endOfDayStatusPanel}
+              </section>
+
+              <section className="bot-action-row">
+                <section className="secondary-bot-card manual-pickup-card" aria-label="Self Pickup Abholung">
+                  <div>
+                    <PackageCheck size={22} />
+                    <span>
+                      <b>Self Pickup abgeholt</b>
+                      <small>Offene Abholungen aus Supabase</small>
+                    </span>
+                  </div>
+                  <div className="pickup-list-actions">
+                    <button className="inline-action-button" type="button" onClick={() => refreshPendingPickupOrders()} disabled={anyBotRunning}>
+                      {isPickupPendingLoading ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}
+                      <span>{isPickupPendingLoading ? "Lade Liste" : "Liste aktualisieren"}</span>
+                    </button>
+                    <button
+                      className="inline-action-button"
+                      type="button"
+                      onClick={toggleAllPickupSelections}
+                      disabled={anyBotRunning || pendingPickupOrders.length === 0}
+                    >
+                      <CheckCircle2 size={17} />
+                      <span>{selectedPickupReferences.length === pendingPickupOrders.length ? "Auswahl leeren" : "Alle auswählen"}</span>
+                    </button>
+                  </div>
+                  <div className="pending-pickup-list" aria-label="Offene Self Pickup Bestellungen">
+                    {pendingPickupOrders.length ? (
+                      pendingPickupOrders.map((order) => (
+                        <label className="pending-pickup-row" key={order.order_reference}>
+                          <input
+                            type="checkbox"
+                            checked={selectedPickupReferences.includes(order.order_reference)}
+                            onChange={() => togglePickupSelection(order.order_reference)}
+                            disabled={anyBotRunning}
+                          />
+                          <span>
+                            <strong>{order.order_reference}</strong>
+                            <small>{order.patient_name || "Name fehlt"}</small>
+                            <small>{formatPickupDate(order.billing_date)}</small>
+                          </span>
+                        </label>
+                      ))
+                    ) : (
+                      <p className="empty-pickup-list">Keine offene Self-Pickup Bestellung geladen.</p>
+                    )}
+                  </div>
                   <button
-                    className="inline-action-button"
+                    className="trigger-button pickup-mark-button"
                     type="button"
-                    onClick={toggleAllPickupSelections}
-                    disabled={anyBotRunning || pendingPickupOrders.length === 0}
+                    onClick={triggerPickupMarkOrders}
+                    disabled={anyBotRunning || selectedPickupReferences.length === 0}
                   >
-                    <CheckCircle2 size={17} />
-                    <span>{selectedPickupReferences.length === pendingPickupOrders.length ? "Auswahl leeren" : "Alle auswählen"}</span>
+                    {isPickupMarkRunning ? <Loader2 size={21} className="spin" /> : <PackageCheck size={21} />}
+                    <span>
+                      {isPickupMarkRunning
+                        ? "Wird geprüft"
+                        : selectedPickupReferences.length
+                          ? `${selectedPickupReferences.length} als abgeholt markieren`
+                          : "Bestellung auswählen"}
+                    </span>
+                    <ArrowRight size={20} />
                   </button>
-                </div>
-                <div className="pending-pickup-list" aria-label="Offene Self Pickup Bestellungen">
-                  {pendingPickupOrders.length ? (
-                    pendingPickupOrders.map((order) => (
-                      <label className="pending-pickup-row" key={order.order_reference}>
-                        <input
-                          type="checkbox"
-                          checked={selectedPickupReferences.includes(order.order_reference)}
-                          onChange={() => togglePickupSelection(order.order_reference)}
-                          disabled={anyBotRunning}
-                        />
-                        <span>
-                          <strong>{order.order_reference}</strong>
-                          <small>{order.patient_name || "Name fehlt"}</small>
-                          <small>{formatPickupDate(order.billing_date)}</small>
-                        </span>
-                      </label>
-                    ))
-                  ) : (
-                    <p className="empty-pickup-list">Keine offene Self-Pickup Bestellung geladen.</p>
-                  )}
-                </div>
-                <button
-                  className="trigger-button pickup-mark-button"
-                  type="button"
-                  onClick={triggerPickupMarkOrders}
-                  disabled={anyBotRunning || selectedPickupReferences.length === 0}
-                >
-                  {isPickupMarkRunning ? <Loader2 size={21} className="spin" /> : <PackageCheck size={21} />}
-                  <span>
-                    {isPickupMarkRunning
-                      ? "Wird geprüft"
-                      : selectedPickupReferences.length
-                        ? `${selectedPickupReferences.length} als abgeholt markieren`
-                        : "Bestellung auswählen"}
-                  </span>
-                  <ArrowRight size={20} />
-                </button>
+                </section>
+                {pickupStatusPanel}
               </section>
             </div>
 
@@ -777,135 +923,6 @@ export function SyncConsole() {
               Diese Schaltflächen lösen ausschließlich fest hinterlegte Aktionen aus.
             </p>
           </section>
-
-          <aside className="status-surface">
-            <div className="surface-heading compact">
-              <div>
-                <p className="section-kicker">Live-Ergebnis</p>
-                <h2>Laufübersicht</h2>
-              </div>
-              {status === "success" ? <CheckCircle2 size={25} /> : status === "error" ? <AlertTriangle size={25} /> : <Sparkles size={25} />}
-            </div>
-
-            <div className={`message message-${isRunning ? "running" : status}`}>
-              {isRunning ? <Loader2 size={18} className="spin" /> : status === "success" ? <CheckCircle2 size={18} /> : status === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
-              <p>{message}</p>
-            </div>
-
-            <div className="metric-grid">
-              {metrics.map((metric) => (
-                <div className="metric" key={metric.label}>
-                  <span>{metric.label}</span>
-                  <strong>{metric.value}</strong>
-                </div>
-              ))}
-            </div>
-
-            <div className="timeline">
-              <div>
-                <Clock3 size={15} />
-                <span>Gestartet</span>
-                <strong>{startedAt ? startedAt.toLocaleTimeString() : "noch nicht"}</strong>
-              </div>
-              <div>
-                <Clock3 size={15} />
-                <span>Beendet</span>
-                <strong>{finishedAt ? finishedAt.toLocaleTimeString() : "noch nicht"}</strong>
-              </div>
-            </div>
-
-            <div className="eod-result-panel">
-              <div className="surface-heading compact mini">
-                <div>
-                  <p className="section-kicker">End-of-Day</p>
-                  <h3>Bestellungen & Export</h3>
-                </div>
-                {isEndOfDayRunning ? <Loader2 size={20} className="spin" /> : endOfDayStatus === "success" ? <CheckCircle2 size={20} /> : endOfDayStatus === "error" ? <AlertTriangle size={20} /> : <CalendarCheck size={20} />}
-              </div>
-              <div className={`message message-${isEndOfDayRunning ? "running" : endOfDayStatus}`}>
-                {isEndOfDayRunning ? <Loader2 size={18} className="spin" /> : endOfDayStatus === "success" ? <CheckCircle2 size={18} /> : endOfDayStatus === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
-                <p>{endOfDayMessage}</p>
-              </div>
-              <dl className="eod-facts">
-                <div>
-                  <dt>Sitzung</dt>
-                  <dd>
-                    {endOfDayStatus === "error"
-                      ? "fehlgeschlagen"
-                      : endOfDayResult
-                        ? endOfDayResult.reused_session
-                          ? "wiederverwendet"
-                          : "neu"
-                        : "noch nicht"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Gespeichert</dt>
-                  <dd>{endOfDayResult ? botSavedCount(endOfDayResult) : "noch nicht"}</dd>
-                </div>
-                <div>
-                  <dt>Export</dt>
-                  <dd>{exportState(endOfDayResult)}</dd>
-                </div>
-                <div>
-                  <dt>Gestartet</dt>
-                  <dd>{endOfDayStartedAt ? endOfDayStartedAt.toLocaleTimeString() : "noch nicht"}</dd>
-                </div>
-                <div>
-                  <dt>Beendet</dt>
-                  <dd>{endOfDayFinishedAt ? endOfDayFinishedAt.toLocaleTimeString() : "noch nicht"}</dd>
-                </div>
-              </dl>
-              {endOfDayResult?.current_url ? <code className="eod-url">{endOfDayResult.current_url}</code> : null}
-            </div>
-
-            <div className="eod-result-panel">
-              <div className="surface-heading compact mini">
-                <div>
-                  <p className="section-kicker">Self Pickup</p>
-                  <h3>Abholstatus</h3>
-                </div>
-                {isPickupMarkRunning ? <Loader2 size={20} className="spin" /> : pickupMarkStatus === "success" ? <CheckCircle2 size={20} /> : pickupMarkStatus === "error" ? <AlertTriangle size={20} /> : <PackageCheck size={20} />}
-              </div>
-              <div className={`message message-${isPickupMarkRunning ? "running" : pickupMarkStatus}`}>
-                {isPickupMarkRunning ? <Loader2 size={18} className="spin" /> : pickupMarkStatus === "success" ? <CheckCircle2 size={18} /> : pickupMarkStatus === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
-                <p>{pickupMarkMessage}</p>
-              </div>
-              <dl className="eod-facts">
-                <div>
-                  <dt>Geprüft</dt>
-                  <dd>{pickupMarkResult ? numberValue(pickupMarkResult.checked) : "noch nicht"}</dd>
-                </div>
-                <div>
-                  <dt>Markiert</dt>
-                  <dd>{pickupMarkResult ? numberValue(pickupMarkResult.picked) : "noch nicht"}</dd>
-                </div>
-                <div>
-                  <dt>Bereits abgeholt</dt>
-                  <dd>{pickupMarkResult ? numberValue(pickupMarkResult.already_picked) : "noch nicht"}</dd>
-                </div>
-                <div>
-                  <dt>Fehler</dt>
-                  <dd>{pickupMarkResult ? numberValue(pickupMarkResult.errors) : "noch nicht"}</dd>
-                </div>
-              </dl>
-              {pickupMarkResult?.results?.length ? (
-                <div className="pickup-result-list">
-                  {pickupMarkResult.results.map((row) => (
-                    <article className={`pickup-result pickup-result-${row.status}`} key={row.order_reference}>
-                      <div>
-                        <strong>{row.order_reference}</strong>
-                        <span>{pickupMarkStatusLabel(row.status)}</span>
-                      </div>
-                      <p>{row.message}</p>
-                      {row.scraped_at ? <code>{new Date(row.scraped_at).toLocaleString("de-DE")}</code> : null}
-                      {row.order_type ? <small>{row.order_type}</small> : null}
-                    </article>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          </aside>
         </div>
 
         {(result?.new_products?.length || result?.changed_products?.length) ? (

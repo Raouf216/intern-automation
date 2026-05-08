@@ -849,8 +849,6 @@ export function SyncConsole() {
                       <CheckCircle2 size={17} />
                       <span>{selectedPickupReferences.length === pendingPickupOrders.length ? "Auswahl leeren" : "Alle auswählen"}</span>
                     </button>
-                  </div>
-                  <div className="pending-pickup-shell" aria-label="Offene Self Pickup Bestellungen">
                     <label className="pickup-search-field">
                       <Search size={17} />
                       <input
@@ -860,6 +858,8 @@ export function SyncConsole() {
                         aria-label="Bestell-ID suchen"
                       />
                     </label>
+                  </div>
+                  <div className="pending-pickup-shell" aria-label="Offene Self Pickup Bestellungen">
                     <div className="pending-pickup-list">
                       {visiblePendingPickupOrders.length ? (
                         visiblePendingPickupOrders.map((order) => (

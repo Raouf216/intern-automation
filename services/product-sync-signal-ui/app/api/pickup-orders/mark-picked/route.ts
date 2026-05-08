@@ -13,6 +13,12 @@ type SupabaseOrderRow = {
   picked: boolean | null;
 };
 
+type PendingPickupOrderRow = SupabaseOrderRow & {
+  patient_name: string | null;
+  billing_date: string | null;
+  products: string | null;
+};
+
 type MarkPickedResult = {
   order_reference: string;
   status: "picked" | "already_picked" | "not_found" | "wrong_order_type" | "error";
@@ -29,11 +35,17 @@ function requiredEnv(name: string) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
 
-  return value.trim();
+  return value.trim().replace(/^["']|["']$/g, "");
 }
 
 function supabaseUrl() {
-  return requiredEnv("SUPABASE_URL").replace(/\/$/, "");
+  const value = requiredEnv("SUPABASE_URL").replace(/\/+$/, "");
+
+  try {
+    return new URL(value).href.replace(/\/+$/, "");
+  } catch {
+    throw new Error("Invalid SUPABASE_URL. Use a full URL like http://supabase-kong:8000 or https://supabase.intern-automation.de");
+  }
 }
 
 function supabaseSchema() {
@@ -80,6 +92,21 @@ function tableUrl() {
   return `${supabaseUrl()}/rest/v1/${encodeURIComponent(supabaseTableName())}`;
 }
 
+function validateRequestPassword(request: Request) {
+  const expectedPassword = operatorPassword();
+  const receivedPassword = request.headers.get("x-operator-password") || "";
+
+  if (!expectedPassword) {
+    return "operator_password_not_configured";
+  }
+
+  if (receivedPassword !== expectedPassword) {
+    return "operator_password_invalid";
+  }
+
+  return "";
+}
+
 function normalizeOrderReferences(payload: Record<string, unknown>) {
   const raw =
     payload.order_references ??
@@ -118,6 +145,29 @@ async function fetchOrderRows(orderReference: string) {
   }
 
   return (await response.json()) as SupabaseOrderRow[];
+}
+
+async function fetchPendingPickupOrders() {
+  const url = new URL(tableUrl());
+  url.searchParams.set(
+    "select",
+    "id,order_reference,order_type,scraped_at,picked,patient_name,billing_date,products"
+  );
+  url.searchParams.set("order_type", `eq.${SELF_PICKUP_ORDER_TYPE}`);
+  url.searchParams.set("scraped_at", "is.null");
+  url.searchParams.set("or", "(picked.is.false,picked.is.null)");
+  url.searchParams.set("order", "billing_date.asc.nullslast");
+
+  const response = await fetch(url, {
+    headers: supabaseHeaders(),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase pending lookup failed (${response.status}): ${await response.text()}`);
+  }
+
+  return (await response.json()) as PendingPickupOrderRow[];
 }
 
 async function markRowPicked(row: SupabaseOrderRow, pickedAt: string) {
@@ -195,6 +245,39 @@ async function processOrderReference(orderReference: string, pickedAt: string): 
       status: "error",
       message: error instanceof Error ? error.message : "Unbekannter Fehler.",
     };
+  }
+}
+
+export async function GET(request: Request) {
+  const passwordError = validateRequestPassword(request);
+
+  if (passwordError) {
+    return NextResponse.json(
+      { ok: false, error: passwordError },
+      { status: passwordError.includes("not_configured") ? 500 : 401 }
+    );
+  }
+
+  try {
+    supabaseHeaders();
+    tableUrl();
+    const orders = await fetchPendingPickupOrders();
+
+    return NextResponse.json({
+      ok: true,
+      count: orders.length,
+      orders,
+      table: supabaseTableName(),
+      schema: supabaseSchema(),
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : "Supabase is not configured.",
+      },
+      { status: 500 }
+    );
   }
 }
 

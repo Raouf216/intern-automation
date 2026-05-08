@@ -106,6 +106,21 @@ type PickupMarkResponse = {
   results?: PickupMarkResult[];
 };
 
+type PendingPickupOrder = {
+  id: string;
+  order_reference: string;
+  patient_name?: string | null;
+  billing_date?: string | null;
+  products?: string | null;
+};
+
+type PendingPickupResponse = {
+  ok?: boolean;
+  error?: string;
+  count?: number;
+  orders?: PendingPickupOrder[];
+};
+
 type SyncNotification = {
   event: "doktorabc_sync_success" | "doktorabc_sync_failure";
   status: "success" | "failure";
@@ -138,14 +153,11 @@ const configuredEndpoint = process.env.NEXT_PUBLIC_PRODUCT_SYNC_ENDPOINT || "";
 const configuredEndOfDayEndpoint =
   process.env.NEXT_PUBLIC_EOD_ORDERS_ENDPOINT ||
   legacyEndOfDayOrdersEndpoint(process.env.NEXT_PUBLIC_EOD_LOGIN_ENDPOINT || "");
-const configuredPickupReadyEndpoint = process.env.NEXT_PUBLIC_PICKUP_READY_ENDPOINT || "";
 const expectedPassword = process.env.NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD || "";
 const fallbackEndpoint = "http://178.104.144.30:8020/jobs/product-prices";
 const fallbackEndOfDayEndpoint = "http://178.104.144.30:8021/jobs/end-of-day/orders/sync";
-const fallbackPickupReadyEndpoint = "http://178.104.144.30:8022/jobs/pickup-ready/orders/sync";
 const syncEndpoint = configuredEndpoint || fallbackEndpoint;
 const endOfDayEndpoint = configuredEndOfDayEndpoint || fallbackEndOfDayEndpoint;
-const pickupReadyEndpoint = configuredPickupReadyEndpoint || fallbackPickupReadyEndpoint;
 const staffSteps = [
   {
     before: "Alle Produkte, bei denen Informationen geändert werden, zuerst in DoktorABC auf ",
@@ -214,27 +226,27 @@ function exportState(payload: EndOfDayResponse | null) {
   return "noch nicht";
 }
 
-function parseOrderReferences(value: string) {
-  const seen = new Set<string>();
-
-  return value
-    .split(/[\s,;]+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .filter((item) => {
-      const key = item.toUpperCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-}
-
 function pickupMarkStatusLabel(status: PickupMarkResult["status"]) {
   if (status === "picked") return "markiert";
   if (status === "already_picked") return "bereits abgeholt";
   if (status === "not_found") return "nicht gefunden";
   if (status === "wrong_order_type") return "falscher Typ";
   return "Fehler";
+}
+
+function formatPickupDate(value?: string | null) {
+  if (!value) return "Datum fehlt";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+
+  return date.toLocaleString("de-DE", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 async function sendFinalSyncNotification(notification: SyncNotification) {
@@ -257,27 +269,23 @@ export function SyncConsole() {
   const [password, setPassword] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [isEndOfDayRunning, setIsEndOfDayRunning] = useState(false);
-  const [isPickupReadyRunning, setIsPickupReadyRunning] = useState(false);
   const [isPickupMarkRunning, setIsPickupMarkRunning] = useState(false);
+  const [isPickupPendingLoading, setIsPickupPendingLoading] = useState(false);
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
   const [endOfDayStatus, setEndOfDayStatus] = useState<"idle" | "success" | "error">("idle");
-  const [pickupReadyStatus, setPickupReadyStatus] = useState<"idle" | "success" | "error">("idle");
   const [pickupMarkStatus, setPickupMarkStatus] = useState<"idle" | "success" | "error">("idle");
   const [message, setMessage] = useState("Bereit für eine kontrollierte Produktsynchronisierung.");
   const [endOfDayMessage, setEndOfDayMessage] = useState("Bereit für End-of-Day Bestellungen und Excel-Export.");
-  const [pickupReadyMessage, setPickupReadyMessage] = useState("Bereit für Pickup Ready.");
-  const [pickupMarkMessage, setPickupMarkMessage] = useState("Bereit, Self-Pickup Bestellungen als abgeholt zu markieren.");
+  const [pickupMarkMessage, setPickupMarkMessage] = useState("Bereit, offene Self-Pickup Bestellungen zu laden.");
   const [result, setResult] = useState<SyncResponse | null>(null);
   const [endOfDayResult, setEndOfDayResult] = useState<EndOfDayResponse | null>(null);
-  const [pickupReadyResult, setPickupReadyResult] = useState<EndOfDayResponse | null>(null);
   const [pickupMarkResult, setPickupMarkResult] = useState<PickupMarkResponse | null>(null);
-  const [pickupMarkInput, setPickupMarkInput] = useState("");
+  const [pendingPickupOrders, setPendingPickupOrders] = useState<PendingPickupOrder[]>([]);
+  const [selectedPickupReferences, setSelectedPickupReferences] = useState<string[]>([]);
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [finishedAt, setFinishedAt] = useState<Date | null>(null);
   const [endOfDayStartedAt, setEndOfDayStartedAt] = useState<Date | null>(null);
   const [endOfDayFinishedAt, setEndOfDayFinishedAt] = useState<Date | null>(null);
-  const [pickupReadyStartedAt, setPickupReadyStartedAt] = useState<Date | null>(null);
-  const [pickupReadyFinishedAt, setPickupReadyFinishedAt] = useState<Date | null>(null);
   const [theme, setTheme] = useState<"light" | "night">("light");
 
   useEffect(() => {
@@ -492,70 +500,65 @@ export function SyncConsole() {
     }
   }
 
-  async function triggerPickupReadyOrders() {
-    if (!pickupReadyEndpoint.trim()) {
-      setPickupReadyStatus("error");
-      setPickupReadyMessage("Der feste Pickup Ready Bot-Endpunkt ist nicht konfiguriert.");
-      return;
-    }
-
+  async function refreshPendingPickupOrders(options: { preserveMessage?: boolean } = {}) {
     const passwordError = validateOperatorPassword();
     if (passwordError) {
-      setPickupReadyStatus("error");
-      setPickupReadyMessage(passwordError);
+      setPickupMarkStatus("error");
+      setPickupMarkMessage(passwordError);
       return;
     }
 
-    setIsPickupReadyRunning(true);
-    setPickupReadyStatus("idle");
-    setPickupReadyMessage("Pickup Ready läuft. Der Bot nutzt die bestehende Login-Logik und öffnet Ready for Customer.");
-    setPickupReadyResult(null);
-    const runStartedAt = new Date();
-    setPickupReadyStartedAt(runStartedAt);
-    setPickupReadyFinishedAt(null);
+    setIsPickupPendingLoading(true);
+    if (!options.preserveMessage) {
+      setPickupMarkStatus("idle");
+      setPickupMarkMessage("Offene Self-Pickup Bestellungen werden geladen.");
+    }
 
     try {
-      const response = await fetch(pickupReadyEndpoint.trim(), {
-        method: "POST",
+      const response = await fetch("/api/pickup-orders/mark-picked", {
+        method: "GET",
         headers: {
-          "Content-Type": "application/json",
+          "x-operator-password": password,
         },
-        body: "{}",
+        cache: "no-store",
       });
       const contentType = response.headers.get("content-type") || "";
       const payload = contentType.includes("application/json")
-        ? ((await response.json()) as EndOfDayResponse)
-        : ({ ok: false, error: await response.text() } satisfies EndOfDayResponse);
-
-      setPickupReadyResult(payload);
+        ? ((await response.json()) as PendingPickupResponse)
+        : ({ ok: false, error: await response.text() } satisfies PendingPickupResponse);
 
       if (!response.ok || !payload.ok) {
-        throw new Error(
-          payload.error
-            ? `Bot-Fehler: ${payload.error}`
-            : `HTTP-Fehler ${response.status}: ${response.statusText || "keine Details"}`
-        );
+        throw new Error(payload.error || `HTTP-Fehler ${response.status}: ${response.statusText || "keine Details"}`);
       }
 
-      setPickupReadyStatus("success");
-      setPickupReadyMessage(`Pickup Ready abgeschlossen: ${botSavedCount(payload)} Bestellung(en) gespeichert.`);
-      setPickupReadyFinishedAt(new Date());
-    } catch (error) {
-      setPickupReadyStatus("error");
-      const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
-      const isFetchFailure =
-        errorMessage.toLowerCase().includes("failed to fetch") ||
-        errorMessage.toLowerCase().includes("networkerror");
-
-      setPickupReadyMessage(
-        isFetchFailure
-          ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den Pickup Ready Bot unter ${pickupReadyEndpoint} nicht erreichen oder die Antwort nicht lesen.`
-          : `Pickup Ready Anfrage fehlgeschlagen: ${errorMessage}`
+      const orders = payload.orders || [];
+      setPendingPickupOrders(orders);
+      setSelectedPickupReferences((selected) =>
+        selected.filter((orderReference) => orders.some((order) => order.order_reference === orderReference))
       );
-      setPickupReadyFinishedAt(new Date());
+      if (!options.preserveMessage) {
+        setPickupMarkMessage(`${orders.length} offene Self-Pickup Bestellung(en) geladen.`);
+      }
+    } catch (error) {
+      setPickupMarkStatus("error");
+      setPickupMarkMessage(error instanceof Error ? error.message : "Offene Self-Pickup Bestellungen konnten nicht geladen werden.");
     } finally {
-      setIsPickupReadyRunning(false);
+      setIsPickupPendingLoading(false);
     }
+  }
+
+  function togglePickupSelection(orderReference: string) {
+    setSelectedPickupReferences((selected) =>
+      selected.includes(orderReference)
+        ? selected.filter((value) => value !== orderReference)
+        : [...selected, orderReference]
+    );
+  }
+
+  function toggleAllPickupSelections() {
+    setSelectedPickupReferences((selected) =>
+      selected.length === pendingPickupOrders.length ? [] : pendingPickupOrders.map((order) => order.order_reference)
+    );
   }
 
   async function triggerPickupMarkOrders() {
@@ -566,10 +569,10 @@ export function SyncConsole() {
       return;
     }
 
-    const orderReferences = parseOrderReferences(pickupMarkInput);
+    const orderReferences = selectedPickupReferences;
     if (!orderReferences.length) {
       setPickupMarkStatus("error");
-      setPickupMarkMessage("Bitte mindestens eine Order-ID eintragen.");
+      setPickupMarkMessage("Bitte mindestens eine offene Self-Pickup Bestellung auswählen.");
       return;
     }
 
@@ -606,6 +609,8 @@ export function SyncConsole() {
           ? `Prüfung abgeschlossen: ${picked} markiert, ${alreadyPicked} bereits abgeholt, ${errors} Fehler.`
           : `Erfolgreich abgeschlossen: ${picked} markiert, ${alreadyPicked} bereits abgeholt.`
       );
+      setSelectedPickupReferences([]);
+      await refreshPendingPickupOrders({ preserveMessage: true });
     } catch (error) {
       setPickupMarkStatus("error");
       setPickupMarkMessage(error instanceof Error ? error.message : "Self-Pickup Markierung fehlgeschlagen.");
@@ -614,11 +619,11 @@ export function SyncConsole() {
     }
   }
 
-  const anyBotRunning = isRunning || isEndOfDayRunning || isPickupReadyRunning || isPickupMarkRunning;
+  const anyBotRunning = isRunning || isEndOfDayRunning || isPickupMarkRunning || isPickupPendingLoading;
   const anyBotError =
-    status === "error" || endOfDayStatus === "error" || pickupReadyStatus === "error" || pickupMarkStatus === "error";
+    status === "error" || endOfDayStatus === "error" || pickupMarkStatus === "error";
   const anyBotSuccess =
-    status === "success" || endOfDayStatus === "success" || pickupReadyStatus === "success" || pickupMarkStatus === "success";
+    status === "success" || endOfDayStatus === "success" || pickupMarkStatus === "success";
 
   return (
     <main className="page">
@@ -704,41 +709,64 @@ export function SyncConsole() {
                 </button>
               </section>
 
-              <section className="secondary-bot-card" aria-label="Pickup Ready Bot">
-                <div>
-                  <PackageCheck size={22} />
-                  <span>
-                    <b>Pickup Ready</b>
-                    <small>Ready for Customer</small>
-                  </span>
-                </div>
-                <button className="trigger-button pickup-button" type="button" onClick={triggerPickupReadyOrders} disabled={anyBotRunning}>
-                  {isPickupReadyRunning ? <Loader2 size={21} className="spin" /> : <PackageCheck size={21} />}
-                  <span>{isPickupReadyRunning ? "Pickup Ready läuft" : "Pickup Ready starten"}</span>
-                  <ArrowRight size={20} />
-                </button>
-              </section>
-
               <section className="secondary-bot-card manual-pickup-card" aria-label="Self Pickup Abholung">
                 <div>
                   <PackageCheck size={22} />
                   <span>
                     <b>Self Pickup abgeholt</b>
-                    <small>Order-IDs aus Supabase</small>
+                    <small>Offene Abholungen aus Supabase</small>
                   </span>
                 </div>
-                <label className="field pickup-order-field">
-                  <span>Order-IDs</span>
-                  <textarea
-                    value={pickupMarkInput}
-                    onChange={(event) => setPickupMarkInput(event.target.value)}
-                    placeholder={"JE07NYRRB-1\nJE07NTRBH-1"}
-                    spellCheck={false}
-                  />
-                </label>
-                <button className="trigger-button pickup-mark-button" type="button" onClick={triggerPickupMarkOrders} disabled={anyBotRunning}>
+                <div className="pickup-list-actions">
+                  <button className="inline-action-button" type="button" onClick={() => refreshPendingPickupOrders()} disabled={anyBotRunning}>
+                    {isPickupPendingLoading ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}
+                    <span>{isPickupPendingLoading ? "Lade Liste" : "Liste aktualisieren"}</span>
+                  </button>
+                  <button
+                    className="inline-action-button"
+                    type="button"
+                    onClick={toggleAllPickupSelections}
+                    disabled={anyBotRunning || pendingPickupOrders.length === 0}
+                  >
+                    <CheckCircle2 size={17} />
+                    <span>{selectedPickupReferences.length === pendingPickupOrders.length ? "Auswahl leeren" : "Alle auswählen"}</span>
+                  </button>
+                </div>
+                <div className="pending-pickup-list" aria-label="Offene Self Pickup Bestellungen">
+                  {pendingPickupOrders.length ? (
+                    pendingPickupOrders.map((order) => (
+                      <label className="pending-pickup-row" key={order.order_reference}>
+                        <input
+                          type="checkbox"
+                          checked={selectedPickupReferences.includes(order.order_reference)}
+                          onChange={() => togglePickupSelection(order.order_reference)}
+                          disabled={anyBotRunning}
+                        />
+                        <span>
+                          <strong>{order.order_reference}</strong>
+                          <small>{order.patient_name || "Name fehlt"}</small>
+                          <small>{formatPickupDate(order.billing_date)}</small>
+                        </span>
+                      </label>
+                    ))
+                  ) : (
+                    <p className="empty-pickup-list">Keine offene Self-Pickup Bestellung geladen.</p>
+                  )}
+                </div>
+                <button
+                  className="trigger-button pickup-mark-button"
+                  type="button"
+                  onClick={triggerPickupMarkOrders}
+                  disabled={anyBotRunning || selectedPickupReferences.length === 0}
+                >
                   {isPickupMarkRunning ? <Loader2 size={21} className="spin" /> : <PackageCheck size={21} />}
-                  <span>{isPickupMarkRunning ? "Wird geprüft" : "Als abgeholt markieren"}</span>
+                  <span>
+                    {isPickupMarkRunning
+                      ? "Wird geprüft"
+                      : selectedPickupReferences.length
+                        ? `${selectedPickupReferences.length} als abgeholt markieren`
+                        : "Bestellung auswählen"}
+                  </span>
                   <ArrowRight size={20} />
                 </button>
               </section>
@@ -746,7 +774,7 @@ export function SyncConsole() {
 
             <p className="security-note">
               <LockKeyhole size={15} />
-              Diese Schaltflächen lösen ausschließlich die fest hinterlegten DoktorABC Bots aus.
+              Diese Schaltflächen lösen ausschließlich fest hinterlegte Aktionen aus.
             </p>
           </section>
 
@@ -829,51 +857,6 @@ export function SyncConsole() {
                 </div>
               </dl>
               {endOfDayResult?.current_url ? <code className="eod-url">{endOfDayResult.current_url}</code> : null}
-            </div>
-
-            <div className="eod-result-panel">
-              <div className="surface-heading compact mini">
-                <div>
-                  <p className="section-kicker">Pickup Ready</p>
-                  <h3>Ready for Customer</h3>
-                </div>
-                {isPickupReadyRunning ? <Loader2 size={20} className="spin" /> : pickupReadyStatus === "success" ? <CheckCircle2 size={20} /> : pickupReadyStatus === "error" ? <AlertTriangle size={20} /> : <PackageCheck size={20} />}
-              </div>
-              <div className={`message message-${isPickupReadyRunning ? "running" : pickupReadyStatus}`}>
-                {isPickupReadyRunning ? <Loader2 size={18} className="spin" /> : pickupReadyStatus === "success" ? <CheckCircle2 size={18} /> : pickupReadyStatus === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
-                <p>{pickupReadyMessage}</p>
-              </div>
-              <dl className="eod-facts">
-                <div>
-                  <dt>Sitzung</dt>
-                  <dd>
-                    {pickupReadyStatus === "error"
-                      ? "fehlgeschlagen"
-                      : pickupReadyResult
-                        ? pickupReadyResult.reused_session
-                          ? "wiederverwendet"
-                          : "neu"
-                        : "noch nicht"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Gespeichert</dt>
-                  <dd>{pickupReadyResult ? botSavedCount(pickupReadyResult) : "noch nicht"}</dd>
-                </div>
-                <div>
-                  <dt>Gefunden</dt>
-                  <dd>{pickupReadyResult ? numberValue(pickupReadyResult.scraped) : "noch nicht"}</dd>
-                </div>
-                <div>
-                  <dt>Gestartet</dt>
-                  <dd>{pickupReadyStartedAt ? pickupReadyStartedAt.toLocaleTimeString() : "noch nicht"}</dd>
-                </div>
-                <div>
-                  <dt>Beendet</dt>
-                  <dd>{pickupReadyFinishedAt ? pickupReadyFinishedAt.toLocaleTimeString() : "noch nicht"}</dd>
-                </div>
-              </dl>
-              {pickupReadyResult?.current_url ? <code className="eod-url">{pickupReadyResult.current_url}</code> : null}
             </div>
 
             <div className="eod-result-panel">

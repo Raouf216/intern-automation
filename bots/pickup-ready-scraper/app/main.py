@@ -1,6 +1,8 @@
 import mimetypes
 import os
 import re
+import random
+import threading
 import time
 import zipfile
 import json
@@ -21,6 +23,10 @@ ARTIFACTS_DIR = os.environ.get("ARTIFACTS_DIR", "/app/artifacts")
 SESSION_STATE_PATH = os.environ.get(
     "DOKTORABC_SESSION_STATE_PATH",
     os.path.join(ARTIFACTS_DIR, "doktorabc-storage-state.json"),
+)
+PERSISTENT_CONTEXT_DIR = os.environ.get(
+    "DOKTORABC_PERSISTENT_CONTEXT_DIR",
+    os.path.join(ARTIFACTS_DIR, "doktorabc-pickup-ready-profile"),
 )
 DEFAULT_DOKTORABC_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -93,6 +99,11 @@ EOD_NEXT_CHANGE_POLL_MS = 500
 EOD_AFTER_LOGIN_CLICK_WAIT_MS = 2_000
 EOD_PZN_POPUP_WAIT_MS = 350
 EOD_PZN_CLOSE_WAIT_MS = 100
+PICKUP_READY_AUTO_SYNC_MIN_MINUTES = int_env("PICKUP_READY_AUTO_SYNC_MIN_MINUTES", 27)
+PICKUP_READY_AUTO_SYNC_MAX_MINUTES = int_env("PICKUP_READY_AUTO_SYNC_MAX_MINUTES", 33)
+PICKUP_READY_AUTO_SYNC_INITIAL_DELAY_SECONDS = int_env("PICKUP_READY_AUTO_SYNC_INITIAL_DELAY_SECONDS", 15)
+PICKUP_READY_BEFORE_OPEN_DELAY_MIN_SECONDS = int_env("PICKUP_READY_BEFORE_OPEN_DELAY_MIN_SECONDS", 3)
+PICKUP_READY_BEFORE_OPEN_DELAY_MAX_SECONDS = int_env("PICKUP_READY_BEFORE_OPEN_DELAY_MAX_SECONDS", 18)
 SUPABASE_SCHEMA = os.environ.get("SUPABASE_SCHEMA", "private")
 SUPABASE_EOD_ORDERS_TABLE = os.environ.get("SUPABASE_EOD_ORDERS_TABLE", "doktorabc_eod_bot_orders")
 END_OF_DAY_EXPORT_N8N_WEBHOOK_URL = (os.environ.get("END_OF_DAY_EXPORT_N8N_WEBHOOK_URL") or "").strip()
@@ -123,6 +134,19 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+AUTO_SYNC_STOP_EVENT = threading.Event()
+AUTO_SYNC_THREAD = None
+AUTO_SYNC_STATE = {
+    "enabled": False,
+    "running": False,
+    "last_started_at": None,
+    "last_finished_at": None,
+    "last_result": None,
+    "last_error": None,
+    "next_run_at": None,
+    "skipped_reason": None,
+}
 
 
 def bool_env(name, default=True):
@@ -630,6 +654,17 @@ def browser_context_options():
     }
 
 
+def launch_doktorabc_persistent_context(playwright):
+    os.makedirs(PERSISTENT_CONTEXT_DIR, exist_ok=True)
+    log_event("persistent_context_launch", user_data_dir=PERSISTENT_CONTEXT_DIR)
+
+    return playwright.chromium.launch_persistent_context(
+        PERSISTENT_CONTEXT_DIR,
+        headless=bool_env("DOKTORABC_HEADLESS", True),
+        **browser_context_options(),
+    )
+
+
 def log_event(event, **details):
     payload = {
         "event": event,
@@ -637,6 +672,31 @@ def log_event(event, **details):
         **details,
     }
     print(json.dumps(payload, sort_keys=True, default=str), flush=True)
+
+
+def bounded_random_seconds(min_seconds, max_seconds):
+    low = min(min_seconds, max_seconds)
+    high = max(min_seconds, max_seconds)
+
+    if high <= 0:
+        return 0
+
+    return random.uniform(max(0, low), high)
+
+
+def wait_before_opening_page():
+    seconds = bounded_random_seconds(
+        PICKUP_READY_BEFORE_OPEN_DELAY_MIN_SECONDS,
+        PICKUP_READY_BEFORE_OPEN_DELAY_MAX_SECONDS,
+    )
+
+    if seconds <= 0:
+        return 0
+
+    log_event("pickup_ready_before_open_wait", seconds=round(seconds, 3))
+    time.sleep(seconds)
+
+    return seconds
 
 
 def failure_screenshot_path(label):
@@ -2108,6 +2168,19 @@ def open_authenticated_orders_page(browser, target_url, order_type, before_login
     return open_fresh_session(browser, target_url, order_type, before_login_path=before_login_path)
 
 
+def open_authenticated_persistent_orders_page(context, target_url, order_type, before_login_path=None):
+    print(f"trying persistent DoktorABC context for {order_type} ...", flush=True)
+
+    page = context.pages[0] if context.pages else context.new_page()
+
+    wait_before_opening_page()
+    goto_page(page, target_url)
+    logged_in = login_if_needed(page, context, target_url, before_login_path=before_login_path)
+    wait_result = wait_for_orders_page(page, target_url)
+
+    return context, page, not logged_in, wait_result
+
+
 def open_authenticated_end_of_day_page(browser, before_login_path=None):
     return open_authenticated_orders_page(browser, end_of_day_url(), EOD_ORDER_TYPE, before_login_path=before_login_path)
 
@@ -2203,7 +2276,7 @@ def sync_end_of_day_orders():
     print("trying to sync DoktorABC order lists ...", flush=True)
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
+        browser = None
         context = None
         page = None
         all_rows = []
@@ -2224,12 +2297,23 @@ def sync_end_of_day_orders():
                     "target_url": first_target["target_url"],
                 }
             )
-            context, page, reused_session, wait_result = open_authenticated_orders_page(
-                browser,
-                first_target["target_url"],
-                first_target["order_type"],
-                before_login_path=before_login_path,
-            )
+            if bool_env("DOKTORABC_PERSISTENT_CONTEXT_ENABLED", True):
+                context = launch_doktorabc_persistent_context(playwright)
+                context, page, reused_session, wait_result = open_authenticated_persistent_orders_page(
+                    context,
+                    first_target["target_url"],
+                    first_target["order_type"],
+                    before_login_path=before_login_path,
+                )
+            else:
+                browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
+                wait_before_opening_page()
+                context, page, reused_session, wait_result = open_authenticated_orders_page(
+                    browser,
+                    first_target["target_url"],
+                    first_target["order_type"],
+                    before_login_path=before_login_path,
+                )
             steps[-1] = {
                 "name": "open_authenticated_orders_page",
                 "ok": True,
@@ -2654,7 +2738,169 @@ def sync_end_of_day_orders():
         finally:
             if context:
                 context.close()
-            browser.close()
+            if browser:
+                browser.close()
+
+
+def parse_clock_minutes(value):
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return None
+
+    match = re.match(r"^(\d{1,2}):(\d{2})$", cleaned)
+    if not match:
+        raise RuntimeError(f"Invalid closed-hours time {value!r}. Use HH:MM.")
+
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour > 23 or minute > 59:
+        raise RuntimeError(f"Invalid closed-hours time {value!r}. Use HH:MM.")
+
+    return hour * 60 + minute
+
+
+def pickup_ready_auto_sync_closed_now():
+    closed_from = parse_clock_minutes(os.environ.get("PICKUP_READY_AUTO_SYNC_CLOSED_FROM"))
+    closed_to = parse_clock_minutes(os.environ.get("PICKUP_READY_AUTO_SYNC_CLOSED_TO"))
+
+    if closed_from is None or closed_to is None:
+        return False
+
+    now = datetime.now(local_timezone())
+    now_minutes = now.hour * 60 + now.minute
+
+    if closed_from <= closed_to:
+        return closed_from <= now_minutes < closed_to
+
+    return now_minutes >= closed_from or now_minutes < closed_to
+
+
+def pickup_ready_auto_sync_interval_seconds():
+    return bounded_random_seconds(
+        PICKUP_READY_AUTO_SYNC_MIN_MINUTES * 60,
+        PICKUP_READY_AUTO_SYNC_MAX_MINUTES * 60,
+    )
+
+
+def response_to_auto_sync_summary(response):
+    if isinstance(response, JSONResponse):
+        try:
+            content = json.loads(response.body.decode("utf-8"))
+        except Exception:
+            content = None
+
+        return {
+            "status_code": response.status_code,
+            "ok": bool(content.get("ok")) if isinstance(content, dict) else response.status_code < 400,
+            "content": content,
+        }
+
+    if isinstance(response, dict):
+        return {
+            "status_code": 200,
+            "ok": bool(response.get("ok", True)),
+            "scraped": response.get("scraped"),
+            "saved": response.get("saved"),
+            "sent_to_supabase": response.get("sent_to_supabase"),
+        }
+
+    return {"status_code": 200, "ok": True, "content_type": type(response).__name__}
+
+
+def run_pickup_ready_auto_sync_once():
+    started_at = datetime.now(timezone.utc)
+    AUTO_SYNC_STATE.update(
+        {
+            "running": True,
+            "last_started_at": started_at.isoformat(),
+            "last_finished_at": None,
+            "last_error": None,
+            "skipped_reason": None,
+        }
+    )
+    log_event("pickup_ready_auto_sync_started", started_at=started_at.isoformat())
+
+    try:
+        result = response_to_auto_sync_summary(sync_end_of_day_orders())
+        AUTO_SYNC_STATE["last_result"] = result
+        log_event("pickup_ready_auto_sync_finished", result=result)
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        AUTO_SYNC_STATE["last_error"] = error
+        log_event("pickup_ready_auto_sync_failed", error=error)
+    finally:
+        AUTO_SYNC_STATE["running"] = False
+        AUTO_SYNC_STATE["last_finished_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def pickup_ready_auto_sync_loop():
+    if PICKUP_READY_AUTO_SYNC_INITIAL_DELAY_SECONDS > 0:
+        AUTO_SYNC_STOP_EVENT.wait(PICKUP_READY_AUTO_SYNC_INITIAL_DELAY_SECONDS)
+
+    while not AUTO_SYNC_STOP_EVENT.is_set():
+        try:
+            if pickup_ready_auto_sync_closed_now():
+                AUTO_SYNC_STATE["skipped_reason"] = "store_closed_window"
+                log_event(
+                    "pickup_ready_auto_sync_skipped",
+                    reason="store_closed_window",
+                    closed_from=os.environ.get("PICKUP_READY_AUTO_SYNC_CLOSED_FROM"),
+                    closed_to=os.environ.get("PICKUP_READY_AUTO_SYNC_CLOSED_TO"),
+                )
+            else:
+                run_pickup_ready_auto_sync_once()
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            AUTO_SYNC_STATE["last_error"] = error
+            log_event("pickup_ready_auto_sync_loop_error", error=error)
+
+        interval_seconds = pickup_ready_auto_sync_interval_seconds()
+        next_run_at = datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)
+        AUTO_SYNC_STATE["next_run_at"] = next_run_at.isoformat()
+        log_event(
+            "pickup_ready_auto_sync_next_run_scheduled",
+            seconds=round(interval_seconds, 3),
+            next_run_at=next_run_at.isoformat(),
+        )
+        AUTO_SYNC_STOP_EVENT.wait(interval_seconds)
+
+
+@app.on_event("startup")
+def start_pickup_ready_auto_sync():
+    global AUTO_SYNC_THREAD
+
+    enabled = bool_env("PICKUP_READY_AUTO_SYNC_ENABLED", True)
+    AUTO_SYNC_STATE["enabled"] = enabled
+
+    if not enabled:
+        log_event("pickup_ready_auto_sync_disabled")
+        return
+
+    if AUTO_SYNC_THREAD and AUTO_SYNC_THREAD.is_alive():
+        return
+
+    AUTO_SYNC_STOP_EVENT.clear()
+    AUTO_SYNC_THREAD = threading.Thread(
+        target=pickup_ready_auto_sync_loop,
+        name="pickup-ready-auto-sync",
+        daemon=True,
+    )
+    AUTO_SYNC_THREAD.start()
+    log_event(
+        "pickup_ready_auto_sync_started_thread",
+        interval_min_minutes=PICKUP_READY_AUTO_SYNC_MIN_MINUTES,
+        interval_max_minutes=PICKUP_READY_AUTO_SYNC_MAX_MINUTES,
+        initial_delay_seconds=PICKUP_READY_AUTO_SYNC_INITIAL_DELAY_SECONDS,
+        closed_from=os.environ.get("PICKUP_READY_AUTO_SYNC_CLOSED_FROM"),
+        closed_to=os.environ.get("PICKUP_READY_AUTO_SYNC_CLOSED_TO"),
+    )
+
+
+@app.on_event("shutdown")
+def stop_pickup_ready_auto_sync():
+    AUTO_SYNC_STOP_EVENT.set()
+    if AUTO_SYNC_THREAD and AUTO_SYNC_THREAD.is_alive():
+        AUTO_SYNC_THREAD.join(timeout=5)
 
 
 @app.get("/health")
@@ -2668,6 +2914,9 @@ def health():
         "order_target_mode": configured_order_target_mode(),
         "session_state_path": SESSION_STATE_PATH,
         "session_state_exists": os.path.exists(SESSION_STATE_PATH),
+        "persistent_context_dir": PERSISTENT_CONTEXT_DIR,
+        "persistent_context_enabled": bool_env("DOKTORABC_PERSISTENT_CONTEXT_ENABLED", True),
+        "auto_sync": AUTO_SYNC_STATE,
     }
 
 

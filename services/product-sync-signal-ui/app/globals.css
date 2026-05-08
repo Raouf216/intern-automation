@@ -445,6 +445,89 @@ body[data-theme="night"] .state-error {
   box-shadow: 0 22px 42px rgba(4, 120, 87, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 
+.pickup-list-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.inline-action-button {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.inline-action-button:not(:disabled):hover {
+  border-color: var(--green);
+}
+
+.inline-action-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.pending-pickup-list {
+  display: grid;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.pending-pickup-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.pending-pickup-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--green);
+}
+
+.pending-pickup-row span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pending-pickup-row strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.pending-pickup-row small,
+.empty-pickup-list {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.empty-pickup-list {
+  margin: 0;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--surface);
+}
+
 .security-note {
   display: inline-flex;
   align-items: center;
@@ -895,6 +978,7 @@ body[data-theme="night"] code {
   .change-item div,
   .product-change-head,
   .change-diff,
+  .pickup-list-actions,
   .product-line,
   .timeline div {
     align-items: flex-start;

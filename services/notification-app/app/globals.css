@@ -566,6 +566,10 @@ h3 {
   grid-template-columns: minmax(0, 1.2fr) minmax(90px, 0.6fr) minmax(110px, 0.7fr);
 }
 
+.detail-grid.bot-check-grid {
+  grid-template-columns: repeat(4, minmax(90px, 1fr));
+}
+
 .detail-grid div {
   min-width: 0;
   padding: 7px 9px;
@@ -676,6 +680,16 @@ dd {
 .order-bot-list {
   display: grid;
   gap: 8px;
+}
+
+.bot-check-list,
+.bot-check-snapshots {
+  display: grid;
+  gap: 8px;
+}
+
+.bot-check-snapshots {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .sync-product-card,
@@ -815,6 +829,31 @@ dd {
   color: var(--brand-strong);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.bot-check-message {
+  margin: 0 !important;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.bot-check-snapshot {
+  display: grid;
+  gap: 7px;
+  padding-top: 2px;
+}
+
+.bot-check-snapshot > strong {
+  color: var(--brand-strong);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.bot-check-issue-row {
+  grid-template-columns: minmax(120px, 0.75fr) minmax(120px, 1fr) 18px minmax(120px, 1fr);
 }
 
 .order-export-meta {
@@ -962,7 +1001,7 @@ dd {
   }
 
   .section-nav nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .nav-item {
@@ -1019,6 +1058,8 @@ dd {
   }
 
   .detail-grid.order-grid,
+  .detail-grid.bot-check-grid,
+  .bot-check-snapshots,
   .order-export-meta {
     grid-template-columns: 1fr;
   }

@@ -1,4 +1,4 @@
-export type NotificationSection = "upload" | "doktorabc_sync" | "abrechnung_verification";
+export type NotificationSection = "upload" | "doktorabc_sync" | "check_bot" | "abrechnung_verification";
 export type NotificationStatus = "triggered" | "success" | "failure" | "info" | "warning";
 
 export type StoredNotification = {
@@ -23,6 +23,7 @@ export type UploadWebhookPayload = {
   event?: string;
   status?: string;
   section?: string;
+  source?: string;
   upload_type?: string;
   sync_type?: string;
   order_type?: string;
@@ -66,6 +67,13 @@ export type UploadWebhookPayload = {
   finished_at?: string;
   duration_ms?: number | null;
   endpoint?: string;
+  scraped_at?: string;
+  checked_orders?: number;
+  db_rows_checked?: number;
+  excel_rows_checked?: number;
+  total_problems?: number;
+  ordered_problem_sections?: Array<Record<string, unknown>>;
+  payload?: Record<string, unknown>;
   summary?: {
     orders?: number;
     eod_orders?: number;
@@ -125,11 +133,37 @@ export function notificationConfigStatus() {
 }
 
 export function normalizeUploadNotification(payload: UploadWebhookPayload): Omit<StoredNotification, "id"> {
-  const status = normalizeStatus(payload.status);
+  payload = normalizeNestedNotificationPayload(payload);
+
+  const status = normalizeStatus(payload.status, payload.event);
   const filename = String(payload.filename || "unknown-file");
   const uploadType = String(payload.upload_type || "upload");
   const event = String(payload.event || `upload_${status}`);
-  const source = String(payload.service || "n8n");
+  const source = String(payload.service || payload.source || "n8n");
+
+  if (isCheckBotNotification(payload)) {
+    return {
+      section: "check_bot",
+      event: event.startsWith("check_") ? event : `check_${status}`,
+      status,
+      title: checkBotTitle(status),
+      message: checkBotMessage(status, payload),
+      filename: null,
+      upload_type: "eod_reconciliation",
+      bucket: null,
+      path: null,
+      size_bytes: null,
+      error: payload.error ? String(payload.error) : null,
+      source,
+      payload: {
+        ...payload,
+        section: "check_bot",
+        event: event.startsWith("check_") ? event : `check_${status}`,
+        status,
+      } as Record<string, unknown>,
+      created_at: timestampOrNow(payload.timestamp || payload.finished_at),
+    };
+  }
 
   if (isEodBotNotification(payload)) {
     const isExcel = isEodExcelExport(payload);
@@ -237,12 +271,54 @@ export async function listNotifications(limit = 100) {
   return (await response.json()) as StoredNotification[];
 }
 
-function normalizeStatus(status: string | undefined): NotificationStatus {
+function normalizeStatus(status: string | undefined, event = ""): NotificationStatus {
   if (status === "triggered" || status === "success" || status === "failure") {
     return status;
   }
 
+  const normalizedEvent = event.toLowerCase();
+
+  if (normalizedEvent.includes("success")) {
+    return "success";
+  }
+
+  if (normalizedEvent.includes("failure") || normalizedEvent.includes("failed")) {
+    return "failure";
+  }
+
+  if (normalizedEvent.includes("triggered") || normalizedEvent.includes("started")) {
+    return "triggered";
+  }
+
   return "info";
+}
+
+function normalizeNestedNotificationPayload(payload: UploadWebhookPayload): UploadWebhookPayload {
+  const nestedPayload = recordValue(payload.payload);
+
+  if (!isCheckBotSection(payload.section)) {
+    return payload;
+  }
+
+  if (!nestedPayload) {
+    return {
+      ...payload,
+      section: "check_bot",
+    };
+  }
+
+  const status = stringValue(payload.status) || stringValue(nestedPayload.status);
+  const event = stringValue(payload.event) || stringValue(nestedPayload.event) || (status ? `check_${status}` : "check_result");
+
+  return {
+    ...(nestedPayload as UploadWebhookPayload),
+    section: "check_bot",
+    event,
+    status,
+    service: payload.service || stringValue(nestedPayload.service),
+    source: payload.source || stringValue(nestedPayload.source),
+    timestamp: payload.timestamp || stringValue(nestedPayload.timestamp),
+  };
 }
 
 function timestampOrNow(value: string | undefined) {
@@ -390,6 +466,20 @@ function uploadTypeFromPayload(payload: UploadWebhookPayload) {
   return String(payload.upload_type || "upload");
 }
 
+function isCheckBotSection(section: string | undefined) {
+  return section === "check_bot" || section === "bot_check";
+}
+
+function isCheckBotNotification(payload: UploadWebhookPayload) {
+  const event = payload.event || "";
+  return (
+    isCheckBotSection(payload.section) ||
+    event === "check_success" ||
+    event === "check_failure" ||
+    Boolean(payload.ordered_problem_sections)
+  );
+}
+
 function isProductSync(payload: UploadWebhookPayload) {
   const event = payload.event || "";
   return (
@@ -457,6 +547,32 @@ function productSyncMessage(status: NotificationStatus, payload: UploadWebhookPa
   }
 
   return "DoktorABC Sync-Meldung";
+}
+
+function checkBotTitle(status: NotificationStatus) {
+  if (status === "success") {
+    return "Bot Check erfolgreich";
+  }
+
+  if (status === "failure") {
+    return "Bot Check fehlgeschlagen";
+  }
+
+  return "Bot Check";
+}
+
+function checkBotMessage(status: NotificationStatus, payload: UploadWebhookPayload) {
+  const checkedOrders = numberOrZero(payload.checked_orders);
+
+  if (status === "success") {
+    return `${checkedOrders} Orders geprüft - keine Abweichungen gefunden.`;
+  }
+
+  if (status === "failure") {
+    return `${numberOrZero(payload.total_problems)} Probleme bei ${checkedOrders} geprüften Orders gefunden.`;
+  }
+
+  return "Bot Check Ergebnis empfangen.";
 }
 
 function eodBotTitle(status: NotificationStatus, payload: UploadWebhookPayload) {
@@ -558,4 +674,20 @@ function numberOrZero(value: unknown) {
 
 function excelDataRowCount(value: unknown) {
   return Math.max(numberOrZero(value) - 1, 0);
+}
+
+function recordValue(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function stringValue(value: unknown) {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return "";
 }

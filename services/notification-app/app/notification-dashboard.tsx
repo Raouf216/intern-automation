@@ -24,7 +24,7 @@ type ConfigStatus = {
   schema: string;
 };
 
-type SectionKey = "upload" | "doktorabc_sync" | "abrechnung_verification";
+type SectionKey = "upload" | "doktorabc_sync" | "check_bot" | "abrechnung_verification";
 
 type Props = {
   initialNotifications: StoredNotification[];
@@ -104,6 +104,23 @@ type OrderBotDetails = {
   screenshotPath: string;
 };
 
+type BotCheckProblemSection = {
+  type: string;
+  label: string;
+  count: number;
+  problems: Array<Record<string, unknown>>;
+};
+
+type BotCheckDetails = {
+  status: string;
+  scrapedAt: string;
+  checkedOrders: number;
+  dbRowsChecked: number;
+  excelRowsChecked: number;
+  totalProblems: number;
+  sections: BotCheckProblemSection[];
+};
+
 const sections: Array<{ label: string; value: SectionKey; description: string; caption: string; active: boolean }> = [
   {
     label: "Upload",
@@ -117,6 +134,13 @@ const sections: Array<{ label: string; value: SectionKey; description: string; c
     value: "doktorabc_sync",
     description: "Produktsynchronisierung",
     caption: "Button-Auslöser für DoktorABC",
+    active: true,
+  },
+  {
+    label: "Bot Check",
+    value: "check_bot",
+    description: "EOD Abgleich",
+    caption: "Excel gegen Supabase",
     active: true,
   },
   {
@@ -230,7 +254,7 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
           counts[section.value] = displayNotifications.filter((notification) => notification.section === section.value).length;
           return counts;
         },
-        { upload: 0, doktorabc_sync: 0, abrechnung_verification: 0 } as Record<SectionKey, number>
+        { upload: 0, doktorabc_sync: 0, check_bot: 0, abrechnung_verification: 0 } as Record<SectionKey, number>
       );
     },
     [notifications]
@@ -351,7 +375,7 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
             <span>Arbeitsbereiche</span>
           </div>
           <p className="panel-copy">
-            Uploads, DoktorABC Sync und Abrechnung-Verifikation bleiben getrennt. Der gewählte Bereich bleibt nach dem Aktualisieren geöffnet.
+            Uploads, DoktorABC Sync, Bot Check und Abrechnung-Verifikation bleiben getrennt. Der gewählte Bereich bleibt nach dem Aktualisieren geöffnet.
           </p>
         </aside>
       </div>
@@ -360,11 +384,12 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
 }
 
 function isSectionKey(value: string | null): value is SectionKey {
-  return value === "upload" || value === "doktorabc_sync" || value === "abrechnung_verification";
+  return value === "upload" || value === "doktorabc_sync" || value === "check_bot" || value === "abrechnung_verification";
 }
 
 function NotificationRow({ notification }: { notification: StoredNotification }) {
   const rowsInserted = rowsInsertedFromPayload(notification.payload);
+  const botCheckDetails = botCheckDetailsFromPayload(notification.payload);
   const syncDetails = syncDetailsFromPayload(notification.payload);
   const orderBotDetails = orderBotDetailsFromPayload(notification.payload);
   const showUploadDetails = shouldShowUploadDetails(notification);
@@ -399,7 +424,26 @@ function NotificationRow({ notification }: { notification: StoredNotification })
             </time>
           </div>
         </div>
-        {orderBotDetails ? (
+        {botCheckDetails ? (
+          <dl className="detail-grid bot-check-grid">
+            <div>
+              <dt>Geprüfte Orders</dt>
+              <dd>{botCheckDetails.checkedOrders}</dd>
+            </div>
+            <div>
+              <dt>Excel-Zeilen</dt>
+              <dd>{botCheckDetails.excelRowsChecked}</dd>
+            </div>
+            <div>
+              <dt>DB-Zeilen</dt>
+              <dd>{botCheckDetails.dbRowsChecked}</dd>
+            </div>
+            <div>
+              <dt>{notification.status === "success" ? "Ergebnis" : "Probleme"}</dt>
+              <dd>{notification.status === "success" ? "Keine Abweichung" : botCheckDetails.totalProblems}</dd>
+            </div>
+          </dl>
+        ) : orderBotDetails ? (
           <dl className="detail-grid order-grid">
             <div>
               <dt>Bereich</dt>
@@ -463,7 +507,9 @@ function NotificationRow({ notification }: { notification: StoredNotification })
             )}
           </dl>
         ) : null}
-        {orderBotDetails ? (
+        {botCheckDetails ? (
+          <BotCheckLogDetails details={botCheckDetails} status={notification.status} />
+        ) : orderBotDetails ? (
           orderBotDetails.kind === "orders" && notification.status !== "failure" ? (
             <div className="order-toggle-stack">
               {orderBotDetails.lists.map((list) => (
@@ -499,6 +545,147 @@ function NotificationRow({ notification }: { notification: StoredNotification })
         {notification.error && !syncDetails ? <p className="error-line">{notification.error}</p> : null}
       </div>
     </article>
+  );
+}
+
+function BotCheckLogDetails({
+  details,
+  status,
+}: {
+  details: BotCheckDetails;
+  status: StoredNotification["status"];
+}) {
+  if (status === "success" || details.totalProblems === 0) {
+    return null;
+  }
+
+  return (
+    <div className="order-toggle-stack bot-check-toggle-stack">
+      {details.sections.map((section) => (
+        <details className={`sync-log-panel ${section.count > 0 ? "danger" : "success"}`} key={section.type}>
+          <summary>
+            <ChevronDown size={15} />
+            <span>
+              {section.label}: {section.count} {section.count === 1 ? "Fall" : "Fälle"} anzeigen
+            </span>
+          </summary>
+          <BotCheckProblemList section={section} />
+        </details>
+      ))}
+    </div>
+  );
+}
+
+function BotCheckProblemList({ section }: { section: BotCheckProblemSection }) {
+  if (!section.problems.length) {
+    return (
+      <div className="sync-log-content">
+        <p className="sync-empty-log">Keine Fälle in dieser Gruppe.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="sync-log-content">
+      <section className="sync-product-section" aria-label={section.label}>
+        <h4>
+          {section.label}: {section.count} {section.count === 1 ? "Fall" : "Fälle"}
+        </h4>
+        <div className="bot-check-list">
+          {section.problems.map((problem, index) => (
+            <BotCheckProblemCard problem={problem} sectionType={section.type} key={`${section.type}-${stringValue(problem.order_reference)}-${index}`} />
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function BotCheckProblemCard({
+  problem,
+  sectionType,
+}: {
+  problem: Record<string, unknown>;
+  sectionType: string;
+}) {
+  const orderReference = stringValue(problem.order_reference);
+  const message = stringValue(problem.message) || botCheckDefaultProblemMessage(sectionType);
+  const excelData = recordValue(problem.excel_data);
+  const dbData = recordValue(problem.db_data);
+  const issues = arrayRecordValue(problem.issues);
+  const issueCount = nullableNumberValue(problem.issue_count) ?? issues.length;
+
+  return (
+    <article className="sync-product-card bot-check-card">
+      <div className="sync-product-head">
+        <strong>{orderReference || "Order ID fehlt"}</strong>
+        <span>{botCheckSectionLabel(sectionType)}</span>
+      </div>
+      <p className="bot-check-message">{message}</p>
+      <div className="sync-product-meta compact bot-check-meta">
+        <span>
+          <b>Order</b>
+          <strong>{orderReference || "nicht angegeben"}</strong>
+        </span>
+        <span>
+          <b>Typ</b>
+          <strong>{botCheckSectionLabel(sectionType)}</strong>
+        </span>
+        <span>
+          <b>Issues</b>
+          <strong>{issueCount}</strong>
+        </span>
+      </div>
+      <div className="bot-check-snapshots">
+        <BotCheckDataSnapshot label="Excel" row={excelData} />
+        <BotCheckDataSnapshot label="Supabase" row={dbData} />
+      </div>
+      {issues.length ? (
+        <section className="sync-product-section" aria-label="Abweichungen">
+          <h4>Abweichungen</h4>
+          <div className="sync-change-list">
+            {issues.map((issue, index) => {
+              const formatted = formatBotCheckIssue(issue);
+
+              return (
+                <div className="sync-change-row bot-check-issue-row" key={`${formatted.label}-${index}`}>
+                  <span>{formatted.label}</span>
+                  <code>{formatted.excelValue}</code>
+                  <ArrowRight size={14} />
+                  <code>{formatted.dbValue}</code>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+    </article>
+  );
+}
+
+function BotCheckDataSnapshot({ label, row }: { label: string; row: Record<string, unknown> | null }) {
+  if (!row) {
+    return null;
+  }
+
+  const values = botCheckDataValues(row);
+
+  if (!values.length) {
+    return null;
+  }
+
+  return (
+    <div className="bot-check-snapshot">
+      <strong>{label}</strong>
+      <div className="sync-product-meta compact">
+        {values.map((value) => (
+          <span key={`${label}-${value.label}`}>
+            <b>{value.label}</b>
+            <strong>{value.value}</strong>
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -726,6 +913,10 @@ function emptyCopy(section: SectionKey) {
     return "Sobald Produktsync oder EOD/Self-Pickup Botmeldungen eintreffen, werden sie hier angezeigt.";
   }
 
+  if (section === "check_bot") {
+    return "Sobald der EOD Abgleich läuft, werden Erfolgsmeldungen und Abweichungen hier angezeigt.";
+  }
+
   if (section === "abrechnung_verification") {
     return "Sobald die Abrechnung-Verifikation aktiv ist, werden Ergebnisse und Fehler hier dokumentiert.";
   }
@@ -829,6 +1020,229 @@ function isNoisyUploadPlaceholder(notification: StoredNotification) {
     (uploadType === "upload" || !uploadType) &&
     (!filename || filename === "unknown-file")
   );
+}
+
+const botCheckSectionMeta = [
+  {
+    type: "missing_in_db",
+    label: "Fehlt in Supabase",
+  },
+  {
+    type: "missing_in_excel",
+    label: "Fehlt in Excel",
+  },
+  {
+    type: "data_mismatch",
+    label: "Datenabweichung",
+  },
+];
+
+function botCheckDetailsFromPayload(payload: Record<string, unknown>): BotCheckDetails | null {
+  const source = botCheckPayloadFromPayload(payload);
+  const event = stringValue(source.event);
+  const isBotCheck =
+    source.section === "check_bot" ||
+    source.section === "bot_check" ||
+    event === "check_success" ||
+    event === "check_failure" ||
+    Array.isArray(source.ordered_problem_sections);
+
+  if (!isBotCheck) {
+    return null;
+  }
+
+  const rawSections = arrayRecordValue(source.ordered_problem_sections);
+  const sections = botCheckSectionsFromPayload(rawSections);
+  const sectionProblemCount = sections.reduce((sum, section) => sum + section.count, 0);
+
+  return {
+    status: stringValue(source.status),
+    scrapedAt: stringValue(source.scraped_at),
+    checkedOrders: numberValue(source.checked_orders),
+    dbRowsChecked: numberValue(source.db_rows_checked),
+    excelRowsChecked: numberValue(source.excel_rows_checked),
+    totalProblems: nullableNumberValue(source.total_problems) ?? sectionProblemCount,
+    sections,
+  };
+}
+
+function botCheckPayloadFromPayload(payload: Record<string, unknown>) {
+  const nestedPayload = recordValue(payload.payload);
+
+  if (!nestedPayload) {
+    return payload;
+  }
+
+  const hasBotCheckWrapper =
+    payload.section === "check_bot" ||
+    payload.section === "bot_check" ||
+    Array.isArray(nestedPayload.ordered_problem_sections) ||
+    stringValue(payload.event).startsWith("check_");
+
+  if (!hasBotCheckWrapper) {
+    return payload;
+  }
+
+  return {
+    ...nestedPayload,
+    section: stringValue(payload.section) || stringValue(nestedPayload.section),
+    event: stringValue(payload.event) || stringValue(nestedPayload.event),
+    status: stringValue(payload.status) || stringValue(nestedPayload.status),
+  };
+}
+
+function botCheckSectionsFromPayload(rawSections: Record<string, unknown>[]): BotCheckProblemSection[] {
+  const mainSections = botCheckSectionMeta.map((meta) => {
+    const rawSection = rawSections.find((section) => stringValue(section.type) === meta.type);
+    const problems = arrayRecordValue(rawSection?.problems);
+
+    return {
+      ...meta,
+      count: nullableNumberValue(rawSection?.count) ?? problems.length,
+      problems,
+    };
+  });
+  const mainTypes = new Set(botCheckSectionMeta.map((section) => section.type));
+  const extraSections = rawSections
+    .filter((section) => {
+      const type = stringValue(section.type);
+      return type && !mainTypes.has(type);
+    })
+    .map((section) => {
+      const type = stringValue(section.type);
+      const problems = arrayRecordValue(section.problems);
+
+      return {
+        type,
+        label: botCheckSectionLabel(type),
+        count: nullableNumberValue(section.count) ?? problems.length,
+        problems,
+      };
+    })
+    .filter((section) => section.count > 0 || section.problems.length > 0);
+
+  return [...mainSections, ...extraSections];
+}
+
+function botCheckSectionLabel(type: string) {
+  if (type === "missing_in_db") {
+    return "Fehlt in Supabase";
+  }
+
+  if (type === "missing_in_excel") {
+    return "Fehlt in Excel";
+  }
+
+  if (type === "data_mismatch") {
+    return "Datenabweichung";
+  }
+
+  if (type === "invalid_excel_row") {
+    return "Ungültige Excel-Zeile";
+  }
+
+  return type || "Problem";
+}
+
+function botCheckDefaultProblemMessage(type: string) {
+  if (type === "missing_in_db") {
+    return "Order existiert in Excel, aber nicht in Supabase.";
+  }
+
+  if (type === "missing_in_excel") {
+    return "Order existiert in Supabase, aber nicht in Excel.";
+  }
+
+  if (type === "data_mismatch") {
+    return "Order existiert in beiden Systemen, aber einzelne Werte unterscheiden sich.";
+  }
+
+  return "Problem im Bot Check.";
+}
+
+function botCheckDataValues(row: Record<string, unknown>) {
+  return [
+    ["Order", row.order_reference],
+    ["Produkte", row.products],
+    ["PZNs", row.pzns],
+    ["Mengen", row.quantities],
+    ["Scraped at", row.scraped_at],
+  ]
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .map(([label, value]) => ({
+      label: String(label),
+      value: formatLogValue(value),
+    }));
+}
+
+function formatBotCheckIssue(issue: Record<string, unknown>) {
+  const problem = stringValue(issue.problem);
+  const field = stringValue(issue.field);
+  const position = nullableNumberValue(issue.position);
+  const label = [botCheckIssueLabel(problem || field), position ? `Pos. ${position}` : ""].filter(Boolean).join(" - ");
+
+  if (problem.endsWith("_count_mismatch")) {
+    return {
+      label,
+      excelValue: formatCountMismatchSide(issue.excel_count, issue.excel_values),
+      dbValue: formatCountMismatchSide(issue.db_count, issue.db_values),
+    };
+  }
+
+  if (problem === "product_pzn_pair_mismatch") {
+    return {
+      label,
+      excelValue: formatProductPznPair(issue.excel_pair),
+      dbValue: formatProductPznPair(issue.db_pair),
+    };
+  }
+
+  return {
+    label,
+    excelValue: formatLogValue(issue.excel_value ?? issue.excel_values ?? issue.excel_pair),
+    dbValue: formatLogValue(issue.db_value ?? issue.db_values ?? issue.db_pair),
+  };
+}
+
+function botCheckIssueLabel(problem: string) {
+  if (problem === "products_count_mismatch") {
+    return "Produktanzahl";
+  }
+
+  if (problem === "products_value_mismatch") {
+    return "Produktwert";
+  }
+
+  if (problem === "pzns_count_mismatch") {
+    return "PZN-Anzahl";
+  }
+
+  if (problem === "pzns_value_mismatch") {
+    return "PZN-Wert";
+  }
+
+  if (problem === "product_pzn_pair_mismatch") {
+    return "Produkt/PZN Paar";
+  }
+
+  return problem || "Abweichung";
+}
+
+function formatCountMismatchSide(count: unknown, values: unknown) {
+  const countText = typeof count === "number" && Number.isFinite(count) ? String(count) : "nicht angegeben";
+  const valueText = Array.isArray(values) ? values.map(formatLogValue).join(" | ") : "";
+
+  return valueText ? `${countText}: ${valueText}` : countText;
+}
+
+function formatProductPznPair(value: unknown) {
+  const pair = recordValue(value);
+
+  if (!pair) {
+    return formatLogValue(value);
+  }
+
+  return `${stringValue(pair.product) || "Produkt fehlt"} -> ${stringValue(pair.pzn) || "PZN fehlt"}`;
 }
 
 function syncDetailsFromPayload(payload: Record<string, unknown>) {

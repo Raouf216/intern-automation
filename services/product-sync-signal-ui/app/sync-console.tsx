@@ -86,6 +86,26 @@ type EndOfDayResponse = {
   };
 };
 
+type PickupMarkResult = {
+  order_reference: string;
+  status: "picked" | "already_picked" | "not_found" | "wrong_order_type" | "error";
+  message: string;
+  order_type?: string | null;
+  scraped_at?: string | null;
+  picked?: boolean | null;
+};
+
+type PickupMarkResponse = {
+  ok?: boolean;
+  error?: string;
+  checked?: number;
+  picked?: number;
+  already_picked?: number;
+  errors?: number;
+  picked_at?: string;
+  results?: PickupMarkResult[];
+};
+
 type SyncNotification = {
   event: "doktorabc_sync_success" | "doktorabc_sync_failure";
   status: "success" | "failure";
@@ -194,6 +214,29 @@ function exportState(payload: EndOfDayResponse | null) {
   return "noch nicht";
 }
 
+function parseOrderReferences(value: string) {
+  const seen = new Set<string>();
+
+  return value
+    .split(/[\s,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item) => {
+      const key = item.toUpperCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function pickupMarkStatusLabel(status: PickupMarkResult["status"]) {
+  if (status === "picked") return "markiert";
+  if (status === "already_picked") return "bereits abgeholt";
+  if (status === "not_found") return "nicht gefunden";
+  if (status === "wrong_order_type") return "falscher Typ";
+  return "Fehler";
+}
+
 async function sendFinalSyncNotification(notification: SyncNotification) {
   try {
     const response = await fetch("/api/sync-notification", {
@@ -215,15 +258,20 @@ export function SyncConsole() {
   const [isRunning, setIsRunning] = useState(false);
   const [isEndOfDayRunning, setIsEndOfDayRunning] = useState(false);
   const [isPickupReadyRunning, setIsPickupReadyRunning] = useState(false);
+  const [isPickupMarkRunning, setIsPickupMarkRunning] = useState(false);
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
   const [endOfDayStatus, setEndOfDayStatus] = useState<"idle" | "success" | "error">("idle");
   const [pickupReadyStatus, setPickupReadyStatus] = useState<"idle" | "success" | "error">("idle");
+  const [pickupMarkStatus, setPickupMarkStatus] = useState<"idle" | "success" | "error">("idle");
   const [message, setMessage] = useState("Bereit für eine kontrollierte Produktsynchronisierung.");
   const [endOfDayMessage, setEndOfDayMessage] = useState("Bereit für End-of-Day Bestellungen und Excel-Export.");
   const [pickupReadyMessage, setPickupReadyMessage] = useState("Bereit für Pickup Ready.");
+  const [pickupMarkMessage, setPickupMarkMessage] = useState("Bereit, Self-Pickup Bestellungen als abgeholt zu markieren.");
   const [result, setResult] = useState<SyncResponse | null>(null);
   const [endOfDayResult, setEndOfDayResult] = useState<EndOfDayResponse | null>(null);
   const [pickupReadyResult, setPickupReadyResult] = useState<EndOfDayResponse | null>(null);
+  const [pickupMarkResult, setPickupMarkResult] = useState<PickupMarkResponse | null>(null);
+  const [pickupMarkInput, setPickupMarkInput] = useState("");
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [finishedAt, setFinishedAt] = useState<Date | null>(null);
   const [endOfDayStartedAt, setEndOfDayStartedAt] = useState<Date | null>(null);
@@ -510,9 +558,67 @@ export function SyncConsole() {
     }
   }
 
-  const anyBotRunning = isRunning || isEndOfDayRunning || isPickupReadyRunning;
-  const anyBotError = status === "error" || endOfDayStatus === "error" || pickupReadyStatus === "error";
-  const anyBotSuccess = status === "success" || endOfDayStatus === "success" || pickupReadyStatus === "success";
+  async function triggerPickupMarkOrders() {
+    const passwordError = validateOperatorPassword();
+    if (passwordError) {
+      setPickupMarkStatus("error");
+      setPickupMarkMessage(passwordError);
+      return;
+    }
+
+    const orderReferences = parseOrderReferences(pickupMarkInput);
+    if (!orderReferences.length) {
+      setPickupMarkStatus("error");
+      setPickupMarkMessage("Bitte mindestens eine Order-ID eintragen.");
+      return;
+    }
+
+    setIsPickupMarkRunning(true);
+    setPickupMarkStatus("idle");
+    setPickupMarkMessage("Self-Pickup Bestellungen werden geprüft.");
+    setPickupMarkResult(null);
+
+    try {
+      const response = await fetch("/api/pickup-orders/mark-picked", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ order_references: orderReferences, operator_password: password }),
+      });
+      const contentType = response.headers.get("content-type") || "";
+      const payload = contentType.includes("application/json")
+        ? ((await response.json()) as PickupMarkResponse)
+        : ({ ok: false, error: await response.text() } satisfies PickupMarkResponse);
+
+      setPickupMarkResult(payload);
+
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || `HTTP-Fehler ${response.status}: ${response.statusText || "keine Details"}`);
+      }
+
+      const errors = numberValue(payload.errors);
+      const picked = numberValue(payload.picked);
+      const alreadyPicked = numberValue(payload.already_picked);
+      setPickupMarkStatus(errors ? "error" : "success");
+      setPickupMarkMessage(
+        errors
+          ? `Prüfung abgeschlossen: ${picked} markiert, ${alreadyPicked} bereits abgeholt, ${errors} Fehler.`
+          : `Erfolgreich abgeschlossen: ${picked} markiert, ${alreadyPicked} bereits abgeholt.`
+      );
+    } catch (error) {
+      setPickupMarkStatus("error");
+      setPickupMarkMessage(error instanceof Error ? error.message : "Self-Pickup Markierung fehlgeschlagen.");
+    } finally {
+      setIsPickupMarkRunning(false);
+    }
+  }
+
+  const anyBotRunning = isRunning || isEndOfDayRunning || isPickupReadyRunning || isPickupMarkRunning;
+  const anyBotError =
+    status === "error" || endOfDayStatus === "error" || pickupReadyStatus === "error" || pickupMarkStatus === "error";
+  const anyBotSuccess =
+    status === "success" || endOfDayStatus === "success" || pickupReadyStatus === "success" || pickupMarkStatus === "success";
 
   return (
     <main className="page">
@@ -609,6 +715,30 @@ export function SyncConsole() {
                 <button className="trigger-button pickup-button" type="button" onClick={triggerPickupReadyOrders} disabled={anyBotRunning}>
                   {isPickupReadyRunning ? <Loader2 size={21} className="spin" /> : <PackageCheck size={21} />}
                   <span>{isPickupReadyRunning ? "Pickup Ready läuft" : "Pickup Ready starten"}</span>
+                  <ArrowRight size={20} />
+                </button>
+              </section>
+
+              <section className="secondary-bot-card manual-pickup-card" aria-label="Self Pickup Abholung">
+                <div>
+                  <PackageCheck size={22} />
+                  <span>
+                    <b>Self Pickup abgeholt</b>
+                    <small>Order-IDs aus Supabase</small>
+                  </span>
+                </div>
+                <label className="field pickup-order-field">
+                  <span>Order-IDs</span>
+                  <textarea
+                    value={pickupMarkInput}
+                    onChange={(event) => setPickupMarkInput(event.target.value)}
+                    placeholder={"JE07NYRRB-1\nJE07NTRBH-1"}
+                    spellCheck={false}
+                  />
+                </label>
+                <button className="trigger-button pickup-mark-button" type="button" onClick={triggerPickupMarkOrders} disabled={anyBotRunning}>
+                  {isPickupMarkRunning ? <Loader2 size={21} className="spin" /> : <PackageCheck size={21} />}
+                  <span>{isPickupMarkRunning ? "Wird geprüft" : "Als abgeholt markieren"}</span>
                   <ArrowRight size={20} />
                 </button>
               </section>
@@ -744,6 +874,53 @@ export function SyncConsole() {
                 </div>
               </dl>
               {pickupReadyResult?.current_url ? <code className="eod-url">{pickupReadyResult.current_url}</code> : null}
+            </div>
+
+            <div className="eod-result-panel">
+              <div className="surface-heading compact mini">
+                <div>
+                  <p className="section-kicker">Self Pickup</p>
+                  <h3>Abholstatus</h3>
+                </div>
+                {isPickupMarkRunning ? <Loader2 size={20} className="spin" /> : pickupMarkStatus === "success" ? <CheckCircle2 size={20} /> : pickupMarkStatus === "error" ? <AlertTriangle size={20} /> : <PackageCheck size={20} />}
+              </div>
+              <div className={`message message-${isPickupMarkRunning ? "running" : pickupMarkStatus}`}>
+                {isPickupMarkRunning ? <Loader2 size={18} className="spin" /> : pickupMarkStatus === "success" ? <CheckCircle2 size={18} /> : pickupMarkStatus === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
+                <p>{pickupMarkMessage}</p>
+              </div>
+              <dl className="eod-facts">
+                <div>
+                  <dt>Geprüft</dt>
+                  <dd>{pickupMarkResult ? numberValue(pickupMarkResult.checked) : "noch nicht"}</dd>
+                </div>
+                <div>
+                  <dt>Markiert</dt>
+                  <dd>{pickupMarkResult ? numberValue(pickupMarkResult.picked) : "noch nicht"}</dd>
+                </div>
+                <div>
+                  <dt>Bereits abgeholt</dt>
+                  <dd>{pickupMarkResult ? numberValue(pickupMarkResult.already_picked) : "noch nicht"}</dd>
+                </div>
+                <div>
+                  <dt>Fehler</dt>
+                  <dd>{pickupMarkResult ? numberValue(pickupMarkResult.errors) : "noch nicht"}</dd>
+                </div>
+              </dl>
+              {pickupMarkResult?.results?.length ? (
+                <div className="pickup-result-list">
+                  {pickupMarkResult.results.map((row) => (
+                    <article className={`pickup-result pickup-result-${row.status}`} key={row.order_reference}>
+                      <div>
+                        <strong>{row.order_reference}</strong>
+                        <span>{pickupMarkStatusLabel(row.status)}</span>
+                      </div>
+                      <p>{row.message}</p>
+                      {row.scraped_at ? <code>{new Date(row.scraped_at).toLocaleString("de-DE")}</code> : null}
+                      {row.order_type ? <small>{row.order_type}</small> : null}
+                    </article>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </aside>
         </div>

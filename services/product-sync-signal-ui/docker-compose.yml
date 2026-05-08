@@ -14,11 +14,20 @@ services:
     init: true
     ports:
       - "${PRODUCT_SYNC_SIGNAL_UI_PORT:-8040}:8000"
+    networks:
+      - dokploy-network
+      - supabase_network
     environment:
       - PORT=8000
       - HOSTNAME=0.0.0.0
       - TZ=${TZ:-Europe/Berlin}
       - PRODUCT_SYNC_N8N_WEBHOOK_URL=${PRODUCT_SYNC_N8N_WEBHOOK_URL:-}
+      - NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD=${NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD:-}
+      - PRODUCT_SYNC_OPERATOR_PASSWORD=${PRODUCT_SYNC_OPERATOR_PASSWORD:-}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - SUPABASE_EOD_ORDERS_SCHEMA=${SUPABASE_EOD_ORDERS_SCHEMA:-private}
+      - SUPABASE_EOD_ORDERS_TABLE=${SUPABASE_EOD_ORDERS_TABLE:-doktorabc_eod_bot_orders}
     healthcheck:
       test:
         [
@@ -31,3 +40,10 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+networks:
+  dokploy-network:
+    external: true
+  supabase_network:
+    external: true
+    name: analyticsengine-supabase-b2lvjw_default

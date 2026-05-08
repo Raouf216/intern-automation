@@ -630,13 +630,13 @@ export function SyncConsole() {
       setPickupMarkMessage(
         payload.dry_run
           ? errors
-            ? `Trockenlauf abgeschlossen: ${clickable} klickbar, ${errors} Fehler.`
-            : `Trockenlauf erfolgreich: ${clickable} Self-Pickup Button(s) sind klickbar.`
+            ? `Trockenlauf abgeschlossen: ${clickable} klickbar, ${picked} markiert, ${errors} Fehler.`
+            : `Trockenlauf erfolgreich: ${clickable} klickbar, ${picked} markiert.`
           : errors
           ? `Prüfung abgeschlossen: ${picked} markiert, ${alreadyPicked} bereits abgeholt, ${errors} Fehler.`
           : `Erfolgreich abgeschlossen: ${picked} markiert, ${alreadyPicked} bereits abgeholt.`
       );
-      if (!payload.dry_run) {
+      if (!payload.dry_run || picked || alreadyPicked) {
         setSelectedPickupReferences([]);
         await refreshPendingPickupOrders({ preserveMessage: true });
       }

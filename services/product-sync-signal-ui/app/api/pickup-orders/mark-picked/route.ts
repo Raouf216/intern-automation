@@ -358,6 +358,10 @@ function botResultToMarkResult(result: PickupDoneBotResult): MarkPickedResult {
   };
 }
 
+function isSuccessfulBotResult(result: PickupDoneBotResult) {
+  return ["clickable", "clicked", "clicked_still_visible"].includes(result.status || "");
+}
+
 export async function GET(request: Request) {
   const passwordError = validateRequestPassword(request);
 
@@ -452,35 +456,15 @@ export async function POST(request: Request) {
     );
   }
 
-  if (botPayload?.dry_run) {
-    const results = (botPayload.results || []).map(botResultToMarkResult);
-    const clickable = results.filter((result) => result.status === "clickable").length;
-    const errors = results.filter((result) => result.status !== "clickable").length;
-
-    return NextResponse.json({
-      ok: true,
-      dry_run: true,
-      checked: results.length,
-      clickable,
-      picked: 0,
-      already_picked: 0,
-      errors,
-      table: supabaseTableName(),
-      schema: supabaseSchema(),
-      bot: botPayload,
-      results,
-    });
-  }
-
   const referencesToMark = botPayload
     ? (botPayload.results || [])
-        .filter((result) => result.status === "clicked")
+        .filter(isSuccessfulBotResult)
         .map((result) => String(result.order_reference || "").trim())
         .filter(Boolean)
     : orderReferences;
   const botFailures = botPayload
     ? (botPayload.results || [])
-        .filter((result) => result.status !== "clicked")
+        .filter((result) => !isSuccessfulBotResult(result))
         .map(botResultToMarkResult)
     : [];
 
@@ -489,14 +473,18 @@ export async function POST(request: Request) {
     referencesToMark.map((orderReference) => processOrderReference(orderReference, pickedAt))
   );
   const combinedResults = [...results, ...botFailures];
+  const clickable = botPayload
+    ? (botPayload.results || []).filter((result) => result.status === "clickable").length
+    : 0;
   const picked = combinedResults.filter((result) => result.status === "picked").length;
   const alreadyPicked = combinedResults.filter((result) => result.status === "already_picked").length;
   const errors = combinedResults.filter((result) => ["not_found", "wrong_order_type", "error"].includes(result.status)).length;
 
   return NextResponse.json({
     ok: true,
-    dry_run: false,
+    dry_run: Boolean(botPayload?.dry_run),
     checked: combinedResults.length,
+    clickable,
     picked,
     already_picked: alreadyPicked,
     errors,

@@ -811,47 +811,6 @@ export function SyncConsole() {
 
             <div className="bot-action-list">
               <section className="bot-action-row">
-                <div className="primary-bot-card">
-                  <section className="staff-note" aria-label="Hinweis für Mitarbeitende">
-                    <h3>Hinweis für Mitarbeitende</h3>
-                    <ol>
-                      {staffSteps.map((step, index) => (
-                        <li key={`${index}-${step.before || step.emphasis}`}>
-                          {step.before}
-                          {step.emphasis ? <strong className="attention-word">{step.emphasis}</strong> : null}
-                          {step.after}
-                        </li>
-                      ))}
-                    </ol>
-                  </section>
-                  <button className="trigger-button" type="button" onClick={triggerSync} disabled={anyBotRunning}>
-                    {isRunning ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
-                    <span>{isRunning ? "Synchronisierung läuft" : "Produkte synchronisieren (DoktorABC)"}</span>
-                    <ArrowRight size={20} />
-                  </button>
-                </div>
-                {productStatusPanel}
-              </section>
-
-              <section className="bot-action-row">
-                <section className="secondary-bot-card" aria-label="End-of-Day Bot">
-                  <div>
-                    <CalendarCheck size={22} />
-                    <span>
-                      <b>End-of-Day</b>
-                      <small>Bestellungen und Excel-Export</small>
-                    </span>
-                  </div>
-                  <button className="trigger-button eod-button" type="button" onClick={triggerEndOfDayOrders} disabled={anyBotRunning}>
-                    {isEndOfDayRunning ? <Loader2 size={21} className="spin" /> : <CalendarCheck size={21} />}
-                    <span>{isEndOfDayRunning ? "End-of-Day läuft" : "End-of-Day starten"}</span>
-                    <ArrowRight size={20} />
-                  </button>
-                </section>
-                {endOfDayStatusPanel}
-              </section>
-
-              <section className="bot-action-row">
                 <section className="secondary-bot-card manual-pickup-card" aria-label="Self Pickup Abholung">
                   <div>
                     <PackageCheck size={22} />
@@ -914,6 +873,47 @@ export function SyncConsole() {
                   </button>
                 </section>
                 {pickupStatusPanel}
+              </section>
+
+              <section className="bot-action-row">
+                <section className="secondary-bot-card" aria-label="End-of-Day Bot">
+                  <div>
+                    <CalendarCheck size={22} />
+                    <span>
+                      <b>End-of-Day</b>
+                      <small>Bestellungen und Excel-Export</small>
+                    </span>
+                  </div>
+                  <button className="trigger-button eod-button" type="button" onClick={triggerEndOfDayOrders} disabled={anyBotRunning}>
+                    {isEndOfDayRunning ? <Loader2 size={21} className="spin" /> : <CalendarCheck size={21} />}
+                    <span>{isEndOfDayRunning ? "End-of-Day läuft" : "End-of-Day starten"}</span>
+                    <ArrowRight size={20} />
+                  </button>
+                </section>
+                {endOfDayStatusPanel}
+              </section>
+
+              <section className="bot-action-row">
+                <div className="primary-bot-card">
+                  <section className="staff-note" aria-label="Hinweis für Mitarbeitende">
+                    <h3>Hinweis für Mitarbeitende</h3>
+                    <ol>
+                      {staffSteps.map((step, index) => (
+                        <li key={`${index}-${step.before || step.emphasis}`}>
+                          {step.before}
+                          {step.emphasis ? <strong className="attention-word">{step.emphasis}</strong> : null}
+                          {step.after}
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                  <button className="trigger-button" type="button" onClick={triggerSync} disabled={anyBotRunning}>
+                    {isRunning ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
+                    <span>{isRunning ? "Synchronisierung läuft" : "Produkte synchronisieren (DoktorABC)"}</span>
+                    <ArrowRight size={20} />
+                  </button>
+                </div>
+                {productStatusPanel}
               </section>
             </div>
 

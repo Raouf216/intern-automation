@@ -382,18 +382,23 @@ function NotifyBrandMark() {
   return (
     <div className="brand-mark pharmacy-logo" role="img" aria-label="Medizinische Cannabis-Apotheke">
       <svg className="notify-brand-svg" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
-        <circle className="notify-glass-disc" cx="30.5" cy="30.5" r="22.5" />
-        <path className="notify-pharmacy-a" d="M18.2 47.3 31.5 16.8 45.1 47.3M24.6 34.4h13.9" />
-        <g className="notify-leaf-cluster">
-          <path className="notify-leaf leaf-left" d="M28.2 22.3c-8.2 4.6-12.5 12.2-11.5 21.8 8.9-2.4 13.9-9.7 11.5-21.8Z" />
-          <path className="notify-leaf leaf-center" d="M35 14.5c-6.9 7.2-8.6 16.7-4.4 27.4 7-6.2 8.7-15.9 4.4-27.4Z" />
-          <path className="notify-leaf leaf-right" d="M39.6 22.7c7.6 4.9 11.1 12.6 9.3 21.4-7.7-2.5-11.5-9.7-9.3-21.4Z" />
+        <g className="notify-molecule" aria-hidden="true">
+          <path d="M15.6 22.4 23.7 17.7l8.1 4.7v9.3l-8.1 4.7-8.1-4.7zM31.8 22.4l8.2-4.7 8.1 4.7v9.3L40 36.4l-8.2-4.7" />
+          <circle cx="15.6" cy="22.4" r="2.2" />
+          <circle cx="23.7" cy="17.7" r="2.2" />
+          <circle cx="40" cy="17.7" r="2.2" />
+          <circle cx="48.1" cy="31.7" r="2.2" />
         </g>
-        <path className="notify-veins" d="M23.4 39.4c2.9-5 5.7-9.5 8.5-13.7M33 38.6c.6-6.1 1.3-11.5 2-16.1M43.2 39.6c-2.4-4.6-4.9-8.9-7.4-12.8" />
-        <path className="notify-signal" d="M45.8 12.7c5.3 1.5 8.2 4.8 8.8 9.9" />
-        <path className="notify-signal inner" d="M45.2 18.5c2.6.9 4 2.5 4.3 4.9" />
-        <rect className="notify-cross-badge" x="38.5" y="38" width="20.5" height="20.5" rx="5.8" />
-        <path className="notify-cross" d="M48.8 43.4v9.6M44 48.2h9.6" />
+        <g className="notify-tincture">
+          <path className="notify-dropper" d="M27 8.8h12.2v7.4H27zM30.8 16.2h4.6v8.1" />
+          <rect className="notify-bottle" x="18.6" y="21.2" width="28" height="34.4" rx="7.5" />
+          <path className="notify-bottle-shine" d="M25 24.8h5.2c-3 5.2-3.8 14.1-2.5 26.7h-2.3c-2.2 0-4-1.9-4-4.4V29c0-2.3 1.6-4.2 3.6-4.2Z" />
+          <path className="notify-oil-drop" d="M32.7 23.8c2.8 2.9 4.2 5.3 4.2 7.3a4.2 4.2 0 0 1-8.4 0c0-2 1.4-4.4 4.2-7.3Z" />
+          <rect className="notify-cbd-label" x="20.6" y="30" width="24" height="16.2" rx="4.4" />
+          <text className="notify-cbd-text" x="32.6" y="41" textAnchor="middle">CBD</text>
+        </g>
+        <rect className="notify-alert-badge" x="39" y="38.5" width="20" height="20" rx="6" />
+        <path className="notify-alert-cross" d="M49 43.9v9.2M44.4 48.5h9.2" />
       </svg>
     </div>
   );

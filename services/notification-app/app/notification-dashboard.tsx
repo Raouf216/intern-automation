@@ -272,12 +272,7 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
     <main className="page-shell">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark pharmacy-logo" aria-label="Medizinische Cannabis-Apotheke">
-            <img className="cannabis-art" src="/cannabis.png" alt="" aria-hidden="true" />
-            <span className="pharmacy-badge" aria-hidden="true">
-              <img className="apotheke-badge-art" src="/apotheke_logo_badge.png" alt="" />
-            </span>
-          </div>
+          <NotifyBrandMark />
           <div>
             <p className="eyebrow">Apothekenbetrieb</p>
             <h1>Benachrichtigungen</h1>
@@ -380,6 +375,29 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
         </aside>
       </div>
     </main>
+  );
+}
+
+function NotifyBrandMark() {
+  return (
+    <div className="brand-mark pharmacy-logo" role="img" aria-label="Medizinische Cannabis-Apotheke">
+      <svg className="notify-brand-svg" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+        <circle className="notify-mark-halo" cx="32" cy="32" r="25" />
+        <g className="notify-leaf-cluster">
+          <path d="M32 10.5c-5.5 8.8-5.8 20.1 0 29 5.8-8.9 5.5-20.2 0-29Z" />
+          <path d="M25.8 18.2c-8.5 5.6-12.6 14.3-10.9 24.3 8.9-3.7 13.9-11.5 10.9-24.3Z" />
+          <path d="M38.2 18.2c8.5 5.6 12.6 14.3 10.9 24.3-8.9-3.7-13.9-11.5-10.9-24.3Z" />
+          <path d="M19.5 27.4c-7.1 3.3-10.6 9.5-9.1 17 7-1.8 11.1-6.9 9.1-17Z" />
+          <path d="M44.5 27.4c7.1 3.3 10.6 9.5 9.1 17-7-1.8-11.1-6.9-9.1-17Z" />
+          <path d="M32 34.8c-2.4 3.3-4.2 7.2-4.9 11.8 2.9-1 4.9-2.5 4.9-2.5s2 1.5 4.9 2.5c-.7-4.6-2.5-8.5-4.9-11.8Z" />
+        </g>
+        <path className="notify-leaf-stem" d="M32 34.5v16" />
+        <path className="notify-signal" d="M45.8 13.5a9.7 9.7 0 0 1 8.7 8.7" />
+        <path className="notify-signal inner" d="M45.8 19a4.2 4.2 0 0 1 3.2 3.2" />
+        <rect className="notify-cross-badge" x="37" y="37" width="20" height="20" rx="6" />
+        <path className="notify-cross" d="M47 42.3v9.4M42.3 47h9.4" />
+      </svg>
+    </div>
   );
 }
 

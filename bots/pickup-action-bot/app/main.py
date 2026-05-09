@@ -213,7 +213,7 @@ def upsert_supabase_eod_orders(orders):
         }
 
     response = httpx.post(
-        f"{supabase_table_url()}?on_conflict=order_type,order_reference",
+        f"{supabase_table_url()}?on_conflict=order_reference,scraped_at",
         headers={
             **supabase_headers(),
             "Prefer": "resolution=merge-duplicates,return=minimal",

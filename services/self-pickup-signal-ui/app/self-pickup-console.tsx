@@ -86,6 +86,13 @@ function formatPickupDate(value?: string | null) {
   });
 }
 
+function normalizeSearchValue(value?: string | null) {
+  return (value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
 export function SelfPickupConsole() {
   const [password, setPassword] = useState("");
   const [isPickupMarkRunning, setIsPickupMarkRunning] = useState(false);
@@ -112,12 +119,14 @@ export function SelfPickupConsole() {
     window.localStorage.setItem("self-pickup-signal-theme", nextTheme);
   }
 
-  const normalizedPickupSearchTerm = pickupSearchTerm.trim().toLowerCase();
+  const normalizedPickupSearchTerm = normalizeSearchValue(pickupSearchTerm.trim());
   const visiblePendingPickupOrders = useMemo(
     () =>
       normalizedPickupSearchTerm
         ? pendingPickupOrders.filter((order) =>
-            order.order_reference.toLowerCase().includes(normalizedPickupSearchTerm)
+            [order.order_reference, order.patient_name].some((value) =>
+              normalizeSearchValue(value).includes(normalizedPickupSearchTerm)
+            )
           )
         : pendingPickupOrders,
     [normalizedPickupSearchTerm, pendingPickupOrders]
@@ -403,8 +412,8 @@ export function SelfPickupConsole() {
                       <input
                         value={pickupSearchTerm}
                         onChange={(event) => setPickupSearchTerm(event.target.value)}
-                        placeholder="Bestell-ID suchen"
-                        aria-label="Bestell-ID suchen"
+                        placeholder="Bestell-ID oder Name suchen"
+                        aria-label="Bestell-ID oder Name suchen"
                       />
                     </label>
                   </div>
@@ -421,13 +430,13 @@ export function SelfPickupConsole() {
                             />
                             <span>
                               <strong>{order.order_reference}</strong>
-                              <small>{order.patient_name || "Name fehlt"}</small>
+                              <small className="pickup-patient-name">{order.patient_name || "Name fehlt"}</small>
                               <small>{formatPickupDate(order.billing_date)}</small>
                             </span>
                           </label>
                         ))
                       ) : hasPickupSearchMiss ? (
-                        <p className="empty-pickup-list">Diese Bestell-ID existiert nicht in der geladenen Liste.</p>
+                        <p className="empty-pickup-list">Diese Bestell-ID oder dieser Name existiert nicht in der geladenen Liste.</p>
                       ) : (
                         <p className="empty-pickup-list">Keine offene Self-Pickup Bestellung geladen.</p>
                       )}

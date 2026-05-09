@@ -473,8 +473,13 @@ body[data-theme="night"] .state-error {
 
 .pickup-list-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(180px, 1.25fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
+}
+
+.manual-pickup-card > .pickup-list-actions {
+  display: grid;
+  align-items: stretch;
 }
 
 .inline-action-button {
@@ -513,9 +518,17 @@ body[data-theme="night"] .state-error {
     linear-gradient(180deg, color-mix(in srgb, var(--surface) 94%, var(--green) 6%), var(--surface));
 }
 
+.manual-pickup-card > .pending-pickup-shell {
+  display: grid;
+  align-items: stretch;
+}
+
 .pickup-search-field {
+  width: 100%;
+  min-width: 0;
   min-height: 44px;
   display: grid;
+  grid-column: 1 / -1;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 10px;
@@ -525,6 +538,11 @@ body[data-theme="night"] .state-error {
   color: var(--green);
   background: var(--surface);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 10px 22px rgba(4, 120, 87, 0.08);
+}
+
+.pickup-list-actions .pickup-search-field svg {
+  flex: 0 0 auto;
+  color: var(--green);
 }
 
 .pickup-search-field input {
@@ -593,6 +611,24 @@ body[data-theme="night"] .state-error {
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
+}
+
+.pending-pickup-row .pickup-patient-name {
+  color: var(--red);
+  font-size: 14px;
+  font-weight: 950;
+  background: linear-gradient(110deg, var(--red-dark), var(--red) 42%, #ef7483 54%, var(--red));
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.28), 0 0 16px color-mix(in srgb, var(--red) 28%, transparent);
+}
+
+body[data-theme="night"] .pending-pickup-row .pickup-patient-name {
+  background: linear-gradient(110deg, #ffb3bc, var(--red) 46%, #ffd7dc 56%, #ff8796);
+  background-clip: text;
+  -webkit-background-clip: text;
+  text-shadow: 0 0 18px color-mix(in srgb, var(--red) 36%, transparent);
 }
 
 .empty-pickup-list {

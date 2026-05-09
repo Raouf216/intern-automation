@@ -40,7 +40,68 @@ export type StoredVerificationRun = {
   raw: Record<string, unknown>;
 };
 
+type NotificationStatus = "success" | "failure" | "warning";
+
+type SupabaseNotificationRow = {
+  id: string;
+  section: string;
+  event: string;
+  status: NotificationStatus | string;
+  title: string;
+  message: string;
+  filename: string | null;
+  upload_type: string | null;
+  bucket: string | null;
+  path: string | null;
+  size_bytes: number | null;
+  error: string | null;
+  source: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
 const maxStoredRuns = 500;
+const notificationSection = "abrechnung_verification";
+const notificationUploadType = "doktorabc_abrechnung_verification";
+
+function supabaseConfigured() {
+  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+}
+
+function requiredEnv(name: string) {
+  const value = process.env[name];
+
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+
+  return value;
+}
+
+function supabaseUrl() {
+  return requiredEnv("SUPABASE_URL").replace(/\/$/, "");
+}
+
+function supabaseHeaders() {
+  const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
+  const schema = process.env.SUPABASE_NOTIFICATIONS_SCHEMA || process.env.SUPABASE_SCHEMA || "public";
+
+  return {
+    apikey: serviceRoleKey,
+    Authorization: `Bearer ${serviceRoleKey}`,
+    "Accept-Profile": schema,
+    "Content-Profile": schema,
+    "Content-Type": "application/json",
+  };
+}
+
+function tableName() {
+  return encodeURIComponent(process.env.SUPABASE_NOTIFICATIONS_TABLE || "notifications");
+}
+
+function tableUrl() {
+  return `${supabaseUrl()}/rest/v1/${tableName()}`;
+}
 
 function storePath() {
   return path.join(process.cwd(), "data", "verification-runs.json");
@@ -69,6 +130,10 @@ async function writeStore(runs: StoredVerificationRun[]) {
 }
 
 export async function listVerificationRuns(limit = 160) {
+  if (supabaseConfigured()) {
+    return listVerificationRunsFromSupabase(limit);
+  }
+
   const runs = await readStore();
   const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(limit, maxStoredRuns)) : 160;
 
@@ -78,15 +143,151 @@ export async function listVerificationRuns(limit = 160) {
 }
 
 export async function storeVerificationRun(payload: unknown) {
-  const storedRun = normalizeRun(payload);
+  const normalizedRun = normalizeRun(payload);
+
+  if (supabaseConfigured()) {
+    return storeVerificationRunInSupabase(normalizedRun);
+  }
+
+  const storedRun = withDocumentIdentity(normalizedRun, `local-${Date.now()}-${randomUUID().slice(0, 8)}`);
   const runs = await readStore();
-  const dedupedRuns = runs.filter((run) => run.id !== storedRun.id);
-  const nextRuns = [storedRun, ...dedupedRuns]
+  const nextRuns = [storedRun, ...runs]
     .sort((left, right) => Date.parse(right.received_at) - Date.parse(left.received_at))
     .slice(0, maxStoredRuns);
 
   await writeStore(nextRuns);
   return storedRun;
+}
+
+async function listVerificationRunsFromSupabase(limit: number) {
+  const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(limit, maxStoredRuns)) : 160;
+  const url = new URL(tableUrl());
+  url.searchParams.set("select", "*");
+  url.searchParams.set("section", `eq.${notificationSection}`);
+  url.searchParams.set("order", "created_at.desc");
+  url.searchParams.set("limit", String(normalizedLimit));
+
+  const response = await fetch(url, {
+    headers: supabaseHeaders(),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase read failed (${response.status}): ${await response.text()}`);
+  }
+
+  const rows = (await response.json()) as SupabaseNotificationRow[];
+  return rows.map(notificationRowToRun).filter(Boolean) as StoredVerificationRun[];
+}
+
+async function storeVerificationRunInSupabase(run: StoredVerificationRun) {
+  const notification = verificationRunToNotification(run);
+  const response = await fetch(tableUrl(), {
+    method: "POST",
+    headers: {
+      ...supabaseHeaders(),
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify(notification),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase insert failed (${response.status}): ${await response.text()}`);
+  }
+
+  const rows = (await response.json()) as SupabaseNotificationRow[];
+  return notificationRowToRun(rows[0]) || run;
+}
+
+function verificationRunToNotification(run: StoredVerificationRun) {
+  return {
+    section: notificationSection,
+    event: `abrechnung_verification_${run.status}`,
+    status: run.status,
+    title: verificationTitle(run),
+    message: verificationMessage(run),
+    filename: run.invoice_file,
+    upload_type: notificationUploadType,
+    bucket: null,
+    path: null,
+    size_bytes: null,
+    error: run.status === "failure" ? verificationMessage(run) : null,
+    source: run.source,
+    payload: {
+      ...run.raw,
+      document_kind: "abrechnung_verification_run",
+      original_run_id: run.id,
+      verification_run: run,
+    },
+    created_at: run.received_at,
+  };
+}
+
+function notificationRowToRun(row: SupabaseNotificationRow | undefined): StoredVerificationRun | null {
+  if (!row) {
+    return null;
+  }
+
+  try {
+    const payload = recordValue(row.payload) || {};
+    const storedRun = recordValue(payload.verification_run);
+    const run = storedRun && isStoredRun(storedRun) ? storedRun : normalizeRun(payload);
+
+    return withDocumentIdentity(
+      {
+        ...run,
+        status: normalizeStatus(row.status, run.problem_count),
+        source: stringValue(row.source) || run.source,
+        invoice_file: stringValue(row.filename) || run.invoice_file,
+        received_at: validDateString(row.created_at) || run.received_at,
+        raw: {
+          ...run.raw,
+          notification_id: row.id,
+          notification_event: row.event,
+          notification_created_at: row.created_at,
+          original_run_id: stringValue(payload.original_run_id) || run.id,
+        },
+      },
+      row.id
+    );
+  } catch {
+    return null;
+  }
+}
+
+function withDocumentIdentity(run: StoredVerificationRun, documentId: string): StoredVerificationRun {
+  return {
+    ...run,
+    id: documentId,
+    raw: {
+      ...run.raw,
+      original_run_id: stringValue(run.raw.original_run_id) || run.id,
+      document_id: documentId,
+    },
+  };
+}
+
+function verificationTitle(run: StoredVerificationRun) {
+  if (run.status === "success") {
+    return "Abrechnung Verification erfolgreich";
+  }
+
+  if (run.status === "warning") {
+    return "Abrechnung Verification pruefen";
+  }
+
+  return "Abrechnung Verification fehlgeschlagen";
+}
+
+function verificationMessage(run: StoredVerificationRun) {
+  const file = run.invoice_file ? ` fuer ${run.invoice_file}` : "";
+
+  if (run.status === "success") {
+    return `${run.success_count} Orders${file} erfolgreich geprueft.`;
+  }
+
+  return `${run.problem_count} Problem(e) bei ${run.success_count + run.problem_count} geprueften Orders${file}.`;
 }
 
 function normalizeRun(rawPayload: unknown): StoredVerificationRun {

@@ -100,7 +100,8 @@ button:disabled {
 .problem-title,
 .copy-button,
 .icon-button,
-.state-badge {
+.state-badge,
+.document-toggle-button {
   display: flex;
   align-items: center;
 }
@@ -196,7 +197,8 @@ h3 {
 
 .icon-button,
 .state-badge,
-.copy-button {
+.copy-button,
+.document-toggle-button {
   min-height: 40px;
   gap: 8px;
   border: 1px solid var(--line);
@@ -207,6 +209,12 @@ h3 {
   font-size: 14px;
   font-weight: 900;
   white-space: nowrap;
+}
+
+.document-toggle-button {
+  justify-content: center;
+  color: var(--blue);
+  background: var(--blue-soft);
 }
 
 .state-success,

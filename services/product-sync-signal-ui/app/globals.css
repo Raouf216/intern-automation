@@ -308,6 +308,55 @@ body[data-theme="night"] .state-error {
   font-weight: 800;
 }
 
+.product-staff-note {
+  gap: 14px;
+  padding: 18px 20px;
+}
+
+.product-staff-note h3 {
+  font-size: 18px;
+}
+
+.product-staff-note li {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.eod-staff-note {
+  margin-top: 18px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--cyan) 6%);
+}
+
+.confirm-pickup-preview {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin: 3px 4px;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 7px;
+  color: #ffffff;
+  background: #0f9f8d;
+  box-shadow: 0 12px 24px rgba(15, 159, 141, 0.2);
+  font-size: 14px;
+  font-weight: 950;
+  line-height: 1.15;
+  vertical-align: middle;
+}
+
+.confirm-pickup-preview svg {
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+body[data-theme="night"] .confirm-pickup-preview {
+  color: #ffffff;
+  background: #0f9f8d;
+  box-shadow: 0 12px 24px rgba(15, 159, 141, 0.16);
+}
+
 .attention-word {
   color: var(--red);
   font-weight: 950;
@@ -410,7 +459,7 @@ body[data-theme="night"] .state-error {
   flex: 0 0 auto;
 }
 
-.secondary-bot-card span {
+.secondary-bot-card > div > span {
   display: grid;
   gap: 3px;
   min-width: 0;

@@ -142,6 +142,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
   const [selectedType, setSelectedType] = useState("all");
   const [query, setQuery] = useState("");
   const [expandedRunId, setExpandedRunId] = useState(initialRuns[0]?.id || demoRuns[0].id);
+  const [showDocumentList, setShowDocumentList] = useState(false);
   const [origin, setOrigin] = useState("");
   const [copiedEndpoint, setCopiedEndpoint] = useState(false);
 
@@ -235,21 +236,23 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
   const isPreview = runs.length === 0;
   const latestRun = displayRuns[0];
   const endpoint = `${origin || "http://localhost:8060"}/api/verification-runs`;
+  const selectedRun = displayRuns.find((run) => run.id === expandedRunId) || latestRun;
+  const focusedRuns = [selectedRun];
 
   const allProblems = useMemo(
     () =>
-      displayRuns.flatMap((run) =>
+      focusedRuns.flatMap((run) =>
         run.problems.map((problem) => ({
           problem,
           run,
         }))
       ),
-    [displayRuns]
+    [focusedRuns]
   );
 
   const summary = useMemo(() => {
-    const successCount = displayRuns.reduce((sum, run) => sum + run.success_count, 0);
-    const problemCount = displayRuns.reduce((sum, run) => sum + run.problem_count, 0);
+    const successCount = selectedRun.success_count;
+    const problemCount = selectedRun.problem_count;
     const criticalCount = allProblems.filter((item) => item.problem.severity === "critical").length;
     const affectedOrders = new Set(allProblems.map((item) => item.problem.order_reference)).size;
     const totalChecked = successCount + problemCount;
@@ -263,7 +266,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
       successCount,
       totalChecked,
     };
-  }, [allProblems, displayRuns]);
+  }, [allProblems, selectedRun]);
 
   const problemTypeCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -298,7 +301,6 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
     });
   }, [allProblems, query, selectedType]);
 
-  const selectedRun = displayRuns.find((run) => run.id === expandedRunId) || latestRun;
   const maxTypeCount = Math.max(1, ...problemTypeCounts.map((item) => item.count));
 
   return (
@@ -369,7 +371,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
         <section className="problem-workspace" aria-label="Problemuebersicht">
           <div className="section-heading">
             <div>
-              <p className="section-kicker">Problems</p>
+              <p className="section-kicker">Problems im ausgewählten Dokument</p>
               <h2>Abweichungen in der Abrechnung</h2>
             </div>
             <div className="refresh-note">
@@ -441,24 +443,32 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
           <section className="analysis-panel">
             <div className="panel-heading">
               <CalendarRange size={18} />
-              <span>Runs</span>
+              <span>Dokumente</span>
             </div>
-            <div className="run-list">
-              {displayRuns.map((run) => (
-                <button
-                  className={selectedRun.id === run.id ? `run-row active status-${run.status}` : `run-row status-${run.status}`}
-                  type="button"
-                  onClick={() => setExpandedRunId(run.id)}
-                  key={run.id}
-                >
-                  <span>
-                    <b>{run.invoice_file || run.id}</b>
-                    <small>{formatDateTime(run.finished_at || run.received_at)}</small>
-                  </span>
-                  <strong>{run.problem_count}</strong>
-                </button>
-              ))}
-            </div>
+            <button className="document-toggle-button" type="button" onClick={() => setShowDocumentList((visible) => !visible)}>
+              <Clipboard size={16} />
+              <span>{showDocumentList ? "Dokumente verbergen" : `Alle Dokumente (${displayRuns.length})`}</span>
+            </button>
+            {showDocumentList ? (
+              <div className="run-list">
+                {displayRuns.map((run) => (
+                  <button
+                    className={selectedRun.id === run.id ? `run-row active status-${run.status}` : `run-row status-${run.status}`}
+                    type="button"
+                    onClick={() => setExpandedRunId(run.id)}
+                    key={run.id}
+                  >
+                    <span>
+                      <b>{run.invoice_file || run.id}</b>
+                      <small>{formatDateTime(run.finished_at || run.received_at)}</small>
+                    </span>
+                    <strong>{run.problem_count}</strong>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="quiet-line">Der neueste empfangene JSON-Request ist ausgewählt. Öffnen, um ältere Dokumente zu sehen.</div>
+            )}
           </section>
 
           <section className="analysis-panel run-detail">

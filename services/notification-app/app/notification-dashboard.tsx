@@ -148,7 +148,7 @@ const sections: Array<{ label: string; value: SectionKey; description: string; c
     value: "abrechnung_verification",
     description: "Abrechnung-Verifikation",
     caption: "Prüfung und Ergebnisprotokoll",
-    active: false,
+    active: true,
   },
 ];
 
@@ -424,7 +424,7 @@ function NotificationRow({ notification }: { notification: StoredNotification })
       <div className="status-icon" aria-hidden="true">
         {notification.status === "success" ? (
           <CheckCircle2 size={18} />
-        ) : notification.status === "failure" ? (
+        ) : notification.status === "failure" || notification.status === "warning" ? (
           <AlertTriangle size={18} />
         ) : (
           <UploadCloud size={18} />
@@ -952,6 +952,10 @@ function formatStatus(value: string) {
 
   if (value === "failure") {
     return "Fehler";
+  }
+
+  if (value === "warning") {
+    return "Prüfen";
   }
 
   if (value === "triggered") {

@@ -530,6 +530,10 @@ h3 {
   border-left-color: var(--red);
 }
 
+.notification-row.status-warning {
+  border-left-color: var(--amber);
+}
+
 .status-icon {
   width: 32px;
   height: 32px;
@@ -548,6 +552,11 @@ h3 {
 .status-failure .status-icon {
   background: var(--red-soft);
   color: var(--red);
+}
+
+.status-warning .status-icon {
+  background: var(--amber-soft);
+  color: var(--amber);
 }
 
 .notification-main {
@@ -610,6 +619,11 @@ h3 {
 .chip-failure {
   color: var(--red);
   background: var(--red-soft);
+}
+
+.chip-warning {
+  color: var(--amber);
+  background: var(--amber-soft);
 }
 
 .chip-triggered {

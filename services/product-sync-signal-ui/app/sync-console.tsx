@@ -152,6 +152,10 @@ const staffSteps = [
     before: "Fertig.",
   },
 ];
+const endOfDaySteps = [
+  "Starten Sie zuerst den End-of-Day-Lauf hier im Dashboard.",
+  "Warten Sie auf die Antwort des Bots. Richtwert: ca. 1 Minute je 100 Orders.",
+];
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -585,7 +589,23 @@ export function SyncConsole() {
                       <small>Bestellungen und Excel-Export</small>
                     </span>
                   </div>
-                  <button className="trigger-button eod-button" type="button" onClick={triggerEndOfDayOrders} disabled={anyBotRunning}>
+                  <section className="staff-note eod-staff-note" aria-label="Hinweis für End-of-Day">
+                    <h3>Hinweis für End-of-Day</h3>
+                    <ol>
+                      {endOfDaySteps.map((step) => (
+                        <li key={step}>{step}</li>
+                      ))}
+                      <li>
+                        Erst wenn der Lauf abgeschlossen ist, in DoktorABC unter End-of-Day Orders auf{" "}
+                        <span className="confirm-pickup-preview">
+                          <CheckCircle2 size={17} />
+                          Confirm pickup for all
+                        </span>{" "}
+                        klicken.
+                      </li>
+                    </ol>
+                  </section>
+                  <button className="trigger-button eod-button" type="button" onClick={triggerEndOfDayOrders} disabled={isEndOfDayRunning}>
                     {isEndOfDayRunning ? <Loader2 size={21} className="spin" /> : <CalendarCheck size={21} />}
                     <span>{isEndOfDayRunning ? "End-of-Day läuft" : "End-of-Day starten"}</span>
                     <ArrowRight size={20} />
@@ -596,7 +616,7 @@ export function SyncConsole() {
 
               <section className="bot-action-row">
                 <div className="primary-bot-card">
-                  <section className="staff-note" aria-label="Hinweis für Mitarbeitende">
+                  <section className="staff-note product-staff-note" aria-label="Hinweis für Mitarbeitende">
                     <h3>Hinweis für Mitarbeitende</h3>
                     <ol>
                       {staffSteps.map((step, index) => (
@@ -608,7 +628,7 @@ export function SyncConsole() {
                       ))}
                     </ol>
                   </section>
-                  <button className="trigger-button" type="button" onClick={triggerSync} disabled={anyBotRunning}>
+                  <button className="trigger-button" type="button" onClick={triggerSync} disabled={isRunning}>
                     {isRunning ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
                     <span>{isRunning ? "Synchronisierung läuft" : "Produkte synchronisieren (DoktorABC)"}</span>
                     <ArrowRight size={20} />

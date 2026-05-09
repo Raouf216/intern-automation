@@ -44,7 +44,7 @@ const demoRuns: StoredVerificationRun[] = [
     invoice_file: "doktorabc-abrechnung-2026-05-09.xlsx",
     success_count: 3,
     success_ids: ["TEST-PASS-001", "TEST-PASS-002", "TEST-PASS-RETURN-001"],
-    problem_count: 5,
+    problem_count: 3,
     problems: [
       {
         id: "TEST-FAIL-QTY-001-quantity_mismatch-0",

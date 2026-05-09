@@ -251,9 +251,9 @@ async function processOrderReference(orderReference: string, pickedAt: string): 
       };
     }
 
-    const selfPickupRow = rows.find((row) => row.order_type === SELF_PICKUP_ORDER_TYPE);
+    const selfPickupRows = rows.filter((row) => row.order_type === SELF_PICKUP_ORDER_TYPE);
 
-    if (!selfPickupRow) {
+    if (!selfPickupRows.length) {
       return {
         order_reference: orderReference,
         status: "wrong_order_type",
@@ -262,18 +262,22 @@ async function processOrderReference(orderReference: string, pickedAt: string): 
       };
     }
 
-    if (selfPickupRow.scraped_at) {
+    const pendingSelfPickupRow = selfPickupRows.find((row) => !row.scraped_at && row.picked !== true);
+
+    if (!pendingSelfPickupRow) {
+      const pickedRow = selfPickupRows.find((row) => row.scraped_at) || selfPickupRows[0];
+
       return {
         order_reference: orderReference,
         status: "already_picked",
-        order_type: selfPickupRow.order_type,
-        scraped_at: selfPickupRow.scraped_at,
-        picked: selfPickupRow.picked,
+        order_type: pickedRow.order_type,
+        scraped_at: pickedRow.scraped_at,
+        picked: pickedRow.picked,
         message: "Bereits abgeholt. Es wurde nichts geaendert.",
       };
     }
 
-    const updatedRow = await markRowPicked(selfPickupRow, pickedAt);
+    const updatedRow = await markRowPicked(pendingSelfPickupRow, pickedAt);
 
     return {
       order_reference: orderReference,

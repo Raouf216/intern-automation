@@ -106,6 +106,12 @@ body[data-theme="night"] .masthead {
   min-width: 0;
 }
 
+.brand-copy {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
 .mark {
   width: 62px;
   height: 62px;
@@ -138,6 +144,90 @@ h3 {
 h1 {
   font-size: clamp(30px, 4vw, 46px);
   line-height: 1;
+}
+
+.doktorabc-logo-card {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 8px;
+  padding: 12px 16px 11px 13px;
+  color: #05070a;
+  background: #ffffff;
+  box-shadow: 0 14px 30px rgba(17, 24, 39, 0.1);
+}
+
+body[data-theme="night"] .doktorabc-logo-card {
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #f7fafc;
+  background: #111820;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.24);
+}
+
+.doktorabc-symbol {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+}
+
+.doktorabc-symbol span {
+  position: absolute;
+  width: 18px;
+  height: 12px;
+  border: 3px solid #21e0aa;
+  background: transparent;
+}
+
+.doktorabc-symbol span:first-child {
+  left: 0;
+  top: 10px;
+}
+
+.doktorabc-symbol span:last-child {
+  right: 0;
+  top: 3px;
+}
+
+.doktorabc-wordmark {
+  display: grid;
+  gap: 2px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.doktorabc-wordmark strong {
+  font-size: 22px;
+  font-weight: 950;
+}
+
+.doktorabc-wordmark small {
+  color: color-mix(in srgb, currentColor 72%, transparent);
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.doktorabc-ready-link {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  border: 1px solid rgba(14, 116, 144, 0.26);
+  border-radius: 999px;
+  padding: 0 13px;
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--surface) 90%, var(--cyan) 10%);
+  font-size: 13px;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.doktorabc-ready-link:hover {
+  border-color: var(--cyan);
+  text-decoration: underline;
 }
 
 h2 {

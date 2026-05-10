@@ -57,6 +57,8 @@ type PendingPickupResponse = {
 };
 
 const expectedPassword = process.env.NEXT_PUBLIC_SELF_PICKUP_PASSWORD || "";
+const passwordStorageKey = "self-pickup-signal-operator-password";
+const doktorabcReadyUrl = "https://pharmacies.doktorabc.com/self-pickup?tab=ready-for-customer&page=1";
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -93,6 +95,22 @@ function normalizeSearchValue(value?: string | null) {
     .toLowerCase();
 }
 
+function saveOperatorPassword(value: string) {
+  try {
+    window.localStorage.setItem(passwordStorageKey, value);
+  } catch {
+    // Browser storage can be unavailable in locked-down sessions.
+  }
+}
+
+function forgetOperatorPassword() {
+  try {
+    window.localStorage.removeItem(passwordStorageKey);
+  } catch {
+    // Browser storage can be unavailable in locked-down sessions.
+  }
+}
+
 export function SelfPickupConsole() {
   const [password, setPassword] = useState("");
   const [isPickupMarkRunning, setIsPickupMarkRunning] = useState(false);
@@ -110,6 +128,11 @@ export function SelfPickupConsole() {
     const nextTheme = storedTheme === "night" ? "night" : "light";
     setTheme(nextTheme);
     document.body.dataset.theme = nextTheme;
+
+    const storedPassword = window.localStorage.getItem(passwordStorageKey);
+    if (storedPassword) {
+      setPassword(storedPassword);
+    }
   }, []);
 
   function toggleTheme() {
@@ -137,6 +160,7 @@ export function SelfPickupConsole() {
 
   function validateOperatorPassword() {
     if (!password.trim()) {
+      forgetOperatorPassword();
       return "Bitte das Bedienerpasswort eingeben.";
     }
 
@@ -145,9 +169,11 @@ export function SelfPickupConsole() {
     }
 
     if (expectedPassword && password !== expectedPassword) {
+      forgetOperatorPassword();
       return "Passwort ist falsch.";
     }
 
+    saveOperatorPassword(password);
     return "";
   }
 
@@ -280,6 +306,7 @@ export function SelfPickupConsole() {
   const anyBotRunning = isPickupMarkRunning || isPickupPendingLoading;
   const anyBotError = pickupMarkStatus === "error";
   const anyBotSuccess = pickupMarkStatus === "success";
+  const isOperatorPasswordValid = Boolean(expectedPassword && password === expectedPassword);
 
   const pickupStatusPanel = (
     <aside className="status-surface action-status-panel" aria-label="Self Pickup Ergebnis">
@@ -342,9 +369,23 @@ export function SelfPickupConsole() {
             <div className="mark" aria-hidden="true">
               <PackageCheck size={30} />
             </div>
-            <div>
+            <div className="brand-copy">
               <p className="eyebrow">Rats-Apotheke Betrieb</p>
-              <h1>Self Pickup</h1>
+              <h1 className="doktorabc-logo-card" aria-label="DoktorABC Pharmacies">
+                <span className="doktorabc-symbol" aria-hidden="true">
+                  <span />
+                  <span />
+                </span>
+                <span className="doktorabc-wordmark">
+                  <strong>DOKTORABC</strong>
+                  <small>Pharmacies</small>
+                </span>
+              </h1>
+              {isOperatorPasswordValid ? (
+                <a className="doktorabc-ready-link" href={doktorabcReadyUrl}>
+                  DoktorABC self-pickup Ready for customer
+                </a>
+              ) : null}
             </div>
           </div>
           <div className="masthead-actions">
@@ -375,7 +416,13 @@ export function SelfPickupConsole() {
                 <KeyRound size={18} />
                 <input
                   value={password}
-                  onChange={(event) => setPassword(event.target.value)}
+                  onChange={(event) => {
+                    const nextPassword = event.target.value;
+                    setPassword(nextPassword);
+                    if (!nextPassword) {
+                      forgetOperatorPassword();
+                    }
+                  }}
                   type="password"
                   placeholder="Passwort eingeben"
                   autoComplete="current-password"

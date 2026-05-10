@@ -103,17 +103,9 @@ function authErrorMessage(value?: string) {
 
 function DoktorabcLogo() {
   return (
-    <h1 className="doktorabc-logo-card" aria-label="DoktorABC Pharmacies">
-      <svg className="doktorabc-symbol" viewBox="0 0 35 35" aria-hidden="true" focusable="false">
-        <path d="M2 17.5H17.5V33H2V17.5Z" />
-        <path d="M17.5 2H33V17.5H17.5V2Z" />
-        <path d="M9.8 17.5L17.5 9.8H25.2L17.5 17.5H9.8Z" />
-        <path d="M17.5 17.5L25.2 9.8V17.5L17.5 25.2V17.5Z" />
-      </svg>
-      <span className="doktorabc-wordmark">
-        <strong>DOKTORABC</strong>
-        <small>Pharmacies</small>
-      </span>
+    <h1 className="doktorabc-logo-card">
+      <img className="doktorabc-logo-image doktorabc-logo-light" src="/pharmacies-logo-light.png" alt="DOKTORABC Pharmacies" width={198} height={66} />
+      <img className="doktorabc-logo-image doktorabc-logo-night" src="/pharmacies-logo-night.png" alt="" aria-hidden="true" width={198} height={66} />
     </h1>
   );
 }

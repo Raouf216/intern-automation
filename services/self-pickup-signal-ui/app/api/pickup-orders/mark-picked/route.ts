@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
+import { createHmac, timingSafeEqual } from "crypto";
 
 export const dynamic = "force-dynamic";
 
 const SELF_PICKUP_ORDER_TYPE = "self pickup";
 const MAX_ORDER_REFERENCES = 200;
+const SESSION_COOKIE_NAME = "self_pickup_operator_session";
+const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 type SupabaseOrderRow = {
   id: string;
@@ -88,6 +91,57 @@ function operatorPassword() {
   return (process.env.NEXT_PUBLIC_SELF_PICKUP_PASSWORD || "").trim();
 }
 
+function sessionSignature(issuedAt: string) {
+  return createHmac("sha256", operatorPassword())
+    .update(`self-pickup-operator:${issuedAt}`)
+    .digest("base64url");
+}
+
+function createSessionToken() {
+  const issuedAt = String(Date.now());
+  return `${issuedAt}.${sessionSignature(issuedAt)}`;
+}
+
+function cookieValue(request: Request, name: string) {
+  const cookies = request.headers.get("cookie") || "";
+
+  return cookies
+    .split(";")
+    .map((cookie) => cookie.trim())
+    .map((cookie) => {
+      const separatorIndex = cookie.indexOf("=");
+      return separatorIndex === -1
+        ? [cookie, ""]
+        : [cookie.slice(0, separatorIndex), decodeURIComponent(cookie.slice(separatorIndex + 1))];
+    })
+    .find(([cookieName]) => cookieName === name)?.[1] || "";
+}
+
+function isValidSessionToken(value: string) {
+  if (!value || !operatorPassword()) return false;
+
+  const [issuedAt, receivedSignature] = value.split(".");
+  const issuedAtMs = Number(issuedAt);
+
+  if (!issuedAt || !receivedSignature || !Number.isFinite(issuedAtMs)) return false;
+  if (Date.now() - issuedAtMs > SESSION_MAX_AGE_MS) return false;
+
+  const expectedSignature = sessionSignature(issuedAt);
+  const received = Buffer.from(receivedSignature);
+  const expected = Buffer.from(expectedSignature);
+
+  return received.length === expected.length && timingSafeEqual(received, expected);
+}
+
+function setSessionCookie(response: NextResponse, request: Request) {
+  response.cookies.set(SESSION_COOKIE_NAME, createSessionToken(), {
+    httpOnly: true,
+    path: "/",
+    sameSite: "lax",
+    secure: new URL(request.url).protocol === "https:",
+  });
+}
+
 function pickupDoneBotEndpoint() {
   return (process.env.PICKUP_DONE_BOT_ENDPOINT || process.env.PICKUP_MARK_BOT_ENDPOINT || "").trim();
 }
@@ -104,19 +158,28 @@ function pickupDoneDryRunDefault() {
   return booleanValue(process.env.PICKUP_DONE_DRY_RUN ?? process.env.PICKUP_MARK_DRY_RUN, true);
 }
 
-function validateOperatorPassword(payload: Record<string, unknown>) {
+function validateRequestAuth(request: Request, payload?: Record<string, unknown>) {
   const expectedPassword = operatorPassword();
-  const receivedPassword = String(payload.operator_password || payload.operatorPassword || "");
+  const receivedPassword = String(
+    payload?.operator_password ||
+      payload?.operatorPassword ||
+      request.headers.get("x-operator-password") ||
+      ""
+  );
 
   if (!expectedPassword) {
-    return "operator_password_not_configured";
+    return { ok: false as const, error: "operator_password_not_configured" };
   }
 
-  if (receivedPassword !== expectedPassword) {
-    return "operator_password_invalid";
+  if (receivedPassword) {
+    return receivedPassword === expectedPassword
+      ? { ok: true as const, issueSession: true }
+      : { ok: false as const, error: "operator_password_invalid" };
   }
 
-  return "";
+  return isValidSessionToken(cookieValue(request, SESSION_COOKIE_NAME))
+    ? { ok: true as const, issueSession: false }
+    : { ok: false as const, error: "operator_session_invalid" };
 }
 
 function supabaseHeaders() {
@@ -134,21 +197,6 @@ function supabaseHeaders() {
 
 function tableUrl() {
   return `${supabaseUrl()}/rest/v1/${encodeURIComponent(supabaseTableName())}`;
-}
-
-function validateRequestPassword(request: Request) {
-  const expectedPassword = operatorPassword();
-  const receivedPassword = request.headers.get("x-operator-password") || "";
-
-  if (!expectedPassword) {
-    return "operator_password_not_configured";
-  }
-
-  if (receivedPassword !== expectedPassword) {
-    return "operator_password_invalid";
-  }
-
-  return "";
 }
 
 function normalizeOrderReferences(payload: Record<string, unknown>) {
@@ -367,12 +415,12 @@ function isSuccessfulBotResult(result: PickupDoneBotResult) {
 }
 
 export async function GET(request: Request) {
-  const passwordError = validateRequestPassword(request);
+  const auth = validateRequestAuth(request);
 
-  if (passwordError) {
+  if (!auth.ok) {
     return NextResponse.json(
-      { ok: false, error: passwordError },
-      { status: passwordError.includes("not_configured") ? 500 : 401 }
+      { ok: false, error: auth.error },
+      { status: auth.error.includes("not_configured") ? 500 : 401 }
     );
   }
 
@@ -381,13 +429,19 @@ export async function GET(request: Request) {
     tableUrl();
     const orders = await fetchPendingPickupOrders();
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       ok: true,
       count: orders.length,
       orders,
       table: supabaseTableName(),
       schema: supabaseSchema(),
     });
+
+    if (auth.issueSession) {
+      setSessionCookie(response, request);
+    }
+
+    return response;
   } catch (error) {
     return NextResponse.json(
       {
@@ -409,12 +463,12 @@ export async function POST(request: Request) {
   }
 
   const orderReferences = normalizeOrderReferences(payload);
-  const passwordError = validateOperatorPassword(payload);
+  const auth = validateRequestAuth(request, payload);
 
-  if (passwordError) {
+  if (!auth.ok) {
     return NextResponse.json(
-      { ok: false, error: passwordError },
-      { status: passwordError.includes("not_configured") ? 500 : 401 }
+      { ok: false, error: auth.error },
+      { status: auth.error.includes("not_configured") ? 500 : 401 }
     );
   }
 
@@ -484,7 +538,7 @@ export async function POST(request: Request) {
   const alreadyPicked = combinedResults.filter((result) => result.status === "already_picked").length;
   const errors = combinedResults.filter((result) => ["not_found", "wrong_order_type", "error"].includes(result.status)).length;
 
-  return NextResponse.json({
+  const response = NextResponse.json({
     ok: true,
     dry_run: Boolean(botPayload?.dry_run),
     checked: combinedResults.length,
@@ -498,4 +552,10 @@ export async function POST(request: Request) {
     bot: botPayload,
     results: combinedResults,
   });
+
+  if (auth.issueSession) {
+    setSessionCookie(response, request);
+  }
+
+  return response;
 }

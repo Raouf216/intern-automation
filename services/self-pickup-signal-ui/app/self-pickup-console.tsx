@@ -14,7 +14,7 @@ import {
   ShieldCheck,
   Sun,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 type PickupMarkResult = {
   order_reference: string;
@@ -56,8 +56,6 @@ type PendingPickupResponse = {
   orders?: PendingPickupOrder[];
 };
 
-const expectedPassword = process.env.NEXT_PUBLIC_SELF_PICKUP_PASSWORD || "";
-const passwordStorageKey = "self-pickup-signal-operator-password";
 const doktorabcReadyUrl = "https://pharmacies.doktorabc.com/self-pickup?tab=ready-for-customer&page=1";
 
 function numberValue(value: unknown) {
@@ -95,24 +93,20 @@ function normalizeSearchValue(value?: string | null) {
     .toLowerCase();
 }
 
-function saveOperatorPassword(value: string) {
-  try {
-    window.localStorage.setItem(passwordStorageKey, value);
-  } catch {
-    // Browser storage can be unavailable in locked-down sessions.
-  }
-}
+function authErrorMessage(value?: string) {
+  if (value === "operator_password_invalid") return "Passwort ist falsch.";
+  if (value === "operator_password_not_configured") return "Das Bedienerpasswort ist nicht konfiguriert.";
+  if (value === "operator_session_invalid") return "Die Sitzung ist abgelaufen. Bitte erneut freischalten.";
 
-function forgetOperatorPassword() {
-  try {
-    window.localStorage.removeItem(passwordStorageKey);
-  } catch {
-    // Browser storage can be unavailable in locked-down sessions.
-  }
+  return value || "Zugang konnte nicht geprüft werden.";
 }
 
 export function SelfPickupConsole() {
-  const [password, setPassword] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [isUnlocking, setIsUnlocking] = useState(false);
+  const [unlockStatus, setUnlockStatus] = useState<"idle" | "success" | "error">("idle");
+  const [unlockMessage, setUnlockMessage] = useState("Bedienerpasswort eingeben, um die Konsole freizuschalten.");
   const [isPickupMarkRunning, setIsPickupMarkRunning] = useState(false);
   const [isPickupPendingLoading, setIsPickupPendingLoading] = useState(false);
   const [pickupMarkStatus, setPickupMarkStatus] = useState<"idle" | "success" | "error">("idle");
@@ -128,11 +122,7 @@ export function SelfPickupConsole() {
     const nextTheme = storedTheme === "night" ? "night" : "light";
     setTheme(nextTheme);
     document.body.dataset.theme = nextTheme;
-
-    const storedPassword = window.localStorage.getItem(passwordStorageKey);
-    if (storedPassword) {
-      setPassword(storedPassword);
-    }
+    void restoreSession();
   }, []);
 
   function toggleTheme() {
@@ -158,30 +148,81 @@ export function SelfPickupConsole() {
     normalizedPickupSearchTerm && pendingPickupOrders.length && visiblePendingPickupOrders.length === 0
   );
 
-  function validateOperatorPassword() {
-    if (!password.trim()) {
-      forgetOperatorPassword();
-      return "Bitte das Bedienerpasswort eingeben.";
+  async function requestPendingPickupOrders(passwordForUnlock?: string) {
+    const headers = passwordForUnlock ? { "x-operator-password": passwordForUnlock } : undefined;
+    const response = await fetch("/api/pickup-orders/mark-picked", {
+      method: "GET",
+      headers,
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json")
+      ? ((await response.json()) as PendingPickupResponse)
+      : ({ ok: false, error: await response.text() } satisfies PendingPickupResponse);
+
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || `HTTP-Fehler ${response.status}: ${response.statusText || "keine Details"}`);
     }
 
-    if (!expectedPassword) {
-      return "Das Bedienerpasswort ist nicht konfiguriert.";
+    return payload.orders || [];
+  }
+
+  function applyPendingPickupOrders(orders: PendingPickupOrder[]) {
+    setPendingPickupOrders(orders);
+    setSelectedPickupReferences((selected) =>
+      selected.filter((orderReference) => orders.some((order) => order.order_reference === orderReference))
+    );
+  }
+
+  async function restoreSession() {
+    try {
+      const orders = await requestPendingPickupOrders();
+      applyPendingPickupOrders(orders);
+      setIsUnlocked(true);
+      setPickupMarkStatus("idle");
+      setPickupMarkMessage(`${orders.length} offene Self-Pickup Bestellung(en) geladen.`);
+    } catch {
+      // No valid browser session yet; keep the password gate visible.
+    }
+  }
+
+  async function unlockConsole(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    const nextPassword = passwordInput.trim();
+
+    if (!nextPassword) {
+      setUnlockStatus("error");
+      setUnlockMessage("Bitte das Bedienerpasswort eingeben.");
+      return;
     }
 
-    if (expectedPassword && password !== expectedPassword) {
-      forgetOperatorPassword();
-      return "Passwort ist falsch.";
-    }
+    setIsUnlocking(true);
+    setUnlockStatus("idle");
+    setUnlockMessage("Zugang wird geprüft.");
 
-    saveOperatorPassword(password);
-    return "";
+    try {
+      const orders = await requestPendingPickupOrders(nextPassword);
+      applyPendingPickupOrders(orders);
+      setPasswordInput("");
+      setIsUnlocked(true);
+      setUnlockStatus("success");
+      setUnlockMessage("Zugang freigeschaltet.");
+      setPickupMarkStatus("idle");
+      setPickupMarkMessage(`${orders.length} offene Self-Pickup Bestellung(en) geladen.`);
+    } catch (error) {
+      setIsUnlocked(false);
+      setUnlockStatus("error");
+      setUnlockMessage(authErrorMessage(error instanceof Error ? error.message : ""));
+    } finally {
+      setIsUnlocking(false);
+    }
   }
 
   async function refreshPendingPickupOrders(options: { preserveMessage?: boolean } = {}) {
-    const passwordError = validateOperatorPassword();
-    if (passwordError) {
-      setPickupMarkStatus("error");
-      setPickupMarkMessage(passwordError);
+    if (!isUnlocked) {
+      setUnlockStatus("error");
+      setUnlockMessage("Bitte zuerst den Zugang freischalten.");
       return;
     }
 
@@ -192,33 +233,20 @@ export function SelfPickupConsole() {
     }
 
     try {
-      const response = await fetch("/api/pickup-orders/mark-picked", {
-        method: "GET",
-        headers: {
-          "x-operator-password": password,
-        },
-        cache: "no-store",
-      });
-      const contentType = response.headers.get("content-type") || "";
-      const payload = contentType.includes("application/json")
-        ? ((await response.json()) as PendingPickupResponse)
-        : ({ ok: false, error: await response.text() } satisfies PendingPickupResponse);
-
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.error || `HTTP-Fehler ${response.status}: ${response.statusText || "keine Details"}`);
-      }
-
-      const orders = payload.orders || [];
-      setPendingPickupOrders(orders);
-      setSelectedPickupReferences((selected) =>
-        selected.filter((orderReference) => orders.some((order) => order.order_reference === orderReference))
-      );
+      const orders = await requestPendingPickupOrders();
+      applyPendingPickupOrders(orders);
       if (!options.preserveMessage) {
         setPickupMarkMessage(`${orders.length} offene Self-Pickup Bestellung(en) geladen.`);
       }
     } catch (error) {
+      const message = error instanceof Error ? authErrorMessage(error.message) : "Offene Self-Pickup Bestellungen konnten nicht geladen werden.";
+      if (error instanceof Error && error.message === "operator_session_invalid") {
+        setIsUnlocked(false);
+        setUnlockStatus("error");
+        setUnlockMessage(message);
+      }
       setPickupMarkStatus("error");
-      setPickupMarkMessage(error instanceof Error ? error.message : "Offene Self-Pickup Bestellungen konnten nicht geladen werden.");
+      setPickupMarkMessage(message);
     } finally {
       setIsPickupPendingLoading(false);
     }
@@ -239,10 +267,9 @@ export function SelfPickupConsole() {
   }
 
   async function triggerPickupMarkOrders() {
-    const passwordError = validateOperatorPassword();
-    if (passwordError) {
-      setPickupMarkStatus("error");
-      setPickupMarkMessage(passwordError);
+    if (!isUnlocked) {
+      setUnlockStatus("error");
+      setUnlockMessage("Bitte zuerst den Zugang freischalten.");
       return;
     }
 
@@ -264,7 +291,8 @@ export function SelfPickupConsole() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ order_references: orderReferences, operator_password: password }),
+        body: JSON.stringify({ order_references: orderReferences }),
+        credentials: "same-origin",
       });
       const contentType = response.headers.get("content-type") || "";
       const payload = contentType.includes("application/json")
@@ -296,8 +324,13 @@ export function SelfPickupConsole() {
         await refreshPendingPickupOrders({ preserveMessage: true });
       }
     } catch (error) {
+      if (error instanceof Error && error.message === "operator_session_invalid") {
+        setIsUnlocked(false);
+        setUnlockStatus("error");
+        setUnlockMessage(authErrorMessage(error.message));
+      }
       setPickupMarkStatus("error");
-      setPickupMarkMessage(error instanceof Error ? error.message : "Self-Pickup Markierung fehlgeschlagen.");
+      setPickupMarkMessage(error instanceof Error ? authErrorMessage(error.message) : "Self-Pickup Markierung fehlgeschlagen.");
     } finally {
       setIsPickupMarkRunning(false);
     }
@@ -306,7 +339,59 @@ export function SelfPickupConsole() {
   const anyBotRunning = isPickupMarkRunning || isPickupPendingLoading;
   const anyBotError = pickupMarkStatus === "error";
   const anyBotSuccess = pickupMarkStatus === "success";
-  const isOperatorPasswordValid = Boolean(expectedPassword && password === expectedPassword);
+
+  if (!isUnlocked) {
+    return (
+      <main className="page auth-page">
+        <section className="auth-gate" aria-label="Self Pickup Zugang">
+          <div className="auth-card">
+            <h1 className="doktorabc-logo-card" aria-label="DoktorABC Pharmacies">
+              <span className="doktorabc-symbol" aria-hidden="true">
+                <span />
+                <span />
+              </span>
+              <span className="doktorabc-wordmark">
+                <strong>DOKTORABC</strong>
+                <small>Pharmacies</small>
+              </span>
+            </h1>
+            <div>
+              <p className="section-kicker">Self Pickup</p>
+              <h2>Zugang freischalten</h2>
+            </div>
+            <form className="auth-form" onSubmit={unlockConsole}>
+              <label className="field">
+                <span>Bedienerpasswort</span>
+                <div className="password-row">
+                  <KeyRound size={18} />
+                  <input
+                    value={passwordInput}
+                    onChange={(event) => setPasswordInput(event.target.value)}
+                    type="password"
+                    placeholder="Passwort eingeben"
+                    autoComplete="current-password"
+                    autoFocus
+                  />
+                </div>
+              </label>
+              <button className="unlock-button" type="submit" disabled={isUnlocking}>
+                {isUnlocking ? <Loader2 size={18} className="spin" /> : <ShieldCheck size={18} />}
+                <span>{isUnlocking ? "Prüfe Zugang" : "Zugang prüfen"}</span>
+              </button>
+            </form>
+            <div className={`auth-message auth-message-${unlockStatus}`}>
+              {unlockStatus === "success" ? <CheckCircle2 size={18} /> : unlockStatus === "error" ? <AlertTriangle size={18} /> : <LockKeyhole size={18} />}
+              <p>{unlockMessage}</p>
+            </div>
+            <button className="theme-button auth-theme-button" type="button" onClick={toggleTheme} aria-label="Darstellung wechseln">
+              {theme === "night" ? <Sun size={17} /> : <Moon size={17} />}
+              <span>{theme === "night" ? "Hell" : "Nacht"}</span>
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
 
   const pickupStatusPanel = (
     <aside className="status-surface action-status-panel" aria-label="Self Pickup Ergebnis">
@@ -381,7 +466,7 @@ export function SelfPickupConsole() {
                   <small>Pharmacies</small>
                 </span>
               </h1>
-              {isOperatorPasswordValid ? (
+              {isUnlocked ? (
                 <a className="doktorabc-ready-link" href={doktorabcReadyUrl}>
                   DoktorABC self-pickup Ready for customer
                 </a>
@@ -409,26 +494,6 @@ export function SelfPickupConsole() {
               </div>
               <PackageCheck size={26} />
             </div>
-
-            <label className="field">
-              <span>Bedienerpasswort</span>
-              <div className="password-row">
-                <KeyRound size={18} />
-                <input
-                  value={password}
-                  onChange={(event) => {
-                    const nextPassword = event.target.value;
-                    setPassword(nextPassword);
-                    if (!nextPassword) {
-                      forgetOperatorPassword();
-                    }
-                  }}
-                  type="password"
-                  placeholder="Passwort eingeben"
-                  autoComplete="current-password"
-                />
-              </div>
-            </label>
 
             <div className="bot-action-list">
               <section className="bot-action-row">

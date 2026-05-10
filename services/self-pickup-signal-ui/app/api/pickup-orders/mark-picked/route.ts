@@ -136,6 +136,7 @@ function isValidSessionToken(value: string) {
 function setSessionCookie(response: NextResponse, request: Request) {
   response.cookies.set(SESSION_COOKIE_NAME, createSessionToken(), {
     httpOnly: true,
+    maxAge: Math.floor(SESSION_MAX_AGE_MS / 1000),
     path: "/",
     sameSite: "lax",
     secure: new URL(request.url).protocol === "https:",

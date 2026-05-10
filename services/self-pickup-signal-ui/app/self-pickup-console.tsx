@@ -104,6 +104,7 @@ function authErrorMessage(value?: string) {
 export function SelfPickupConsole() {
   const [passwordInput, setPasswordInput] = useState("");
   const [isUnlocked, setIsUnlocked] = useState(false);
+  const [isSessionChecking, setIsSessionChecking] = useState(true);
   const [isUnlocking, setIsUnlocking] = useState(false);
   const [unlockStatus, setUnlockStatus] = useState<"idle" | "success" | "error">("idle");
   const [unlockMessage, setUnlockMessage] = useState("Bedienerpasswort eingeben, um die Konsole freizuschalten.");
@@ -184,6 +185,8 @@ export function SelfPickupConsole() {
       setPickupMarkMessage(`${orders.length} offene Self-Pickup Bestellung(en) geladen.`);
     } catch {
       // No valid browser session yet; keep the password gate visible.
+    } finally {
+      setIsSessionChecking(false);
     }
   }
 
@@ -339,6 +342,35 @@ export function SelfPickupConsole() {
   const anyBotRunning = isPickupMarkRunning || isPickupPendingLoading;
   const anyBotError = pickupMarkStatus === "error";
   const anyBotSuccess = pickupMarkStatus === "success";
+
+  if (isSessionChecking) {
+    return (
+      <main className="page auth-page">
+        <section className="auth-gate" aria-label="Self Pickup Sitzung">
+          <div className="auth-card">
+            <h1 className="doktorabc-logo-card" aria-label="DoktorABC Pharmacies">
+              <span className="doktorabc-symbol" aria-hidden="true">
+                <span />
+                <span />
+              </span>
+              <span className="doktorabc-wordmark">
+                <strong>DOKTORABC</strong>
+                <small>Pharmacies</small>
+              </span>
+            </h1>
+            <div>
+              <p className="section-kicker">Self Pickup</p>
+              <h2>Sitzung wird geprüft</h2>
+            </div>
+            <div className="auth-message">
+              <Loader2 size={18} className="spin" />
+              <p>Bestehender Zugang wird geladen.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    );
+  }
 
   if (!isUnlocked) {
     return (

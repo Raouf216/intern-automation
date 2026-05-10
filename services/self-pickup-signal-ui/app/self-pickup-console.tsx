@@ -101,6 +101,23 @@ function authErrorMessage(value?: string) {
   return value || "Zugang konnte nicht geprüft werden.";
 }
 
+function DoktorabcLogo() {
+  return (
+    <h1 className="doktorabc-logo-card" aria-label="DoktorABC Pharmacies">
+      <svg className="doktorabc-symbol" viewBox="0 0 35 35" aria-hidden="true" focusable="false">
+        <path d="M2 17.5H17.5V33H2V17.5Z" />
+        <path d="M17.5 2H33V17.5H17.5V2Z" />
+        <path d="M9.8 17.5L17.5 9.8H25.2L17.5 17.5H9.8Z" />
+        <path d="M17.5 17.5L25.2 9.8V17.5L17.5 25.2V17.5Z" />
+      </svg>
+      <span className="doktorabc-wordmark">
+        <strong>DOKTORABC</strong>
+        <small>Pharmacies</small>
+      </span>
+    </h1>
+  );
+}
+
 export function SelfPickupConsole() {
   const [passwordInput, setPasswordInput] = useState("");
   const [isUnlocked, setIsUnlocked] = useState(false);
@@ -348,16 +365,7 @@ export function SelfPickupConsole() {
       <main className="page auth-page">
         <section className="auth-gate" aria-label="Self Pickup Sitzung">
           <div className="auth-card">
-            <h1 className="doktorabc-logo-card" aria-label="DoktorABC Pharmacies">
-              <span className="doktorabc-symbol" aria-hidden="true">
-                <span />
-                <span />
-              </span>
-              <span className="doktorabc-wordmark">
-                <strong>DOKTORABC</strong>
-                <small>Pharmacies</small>
-              </span>
-            </h1>
+            <DoktorabcLogo />
             <div>
               <p className="section-kicker">Self Pickup</p>
               <h2>Sitzung wird geprüft</h2>
@@ -377,16 +385,7 @@ export function SelfPickupConsole() {
       <main className="page auth-page">
         <section className="auth-gate" aria-label="Self Pickup Zugang">
           <div className="auth-card">
-            <h1 className="doktorabc-logo-card" aria-label="DoktorABC Pharmacies">
-              <span className="doktorabc-symbol" aria-hidden="true">
-                <span />
-                <span />
-              </span>
-              <span className="doktorabc-wordmark">
-                <strong>DOKTORABC</strong>
-                <small>Pharmacies</small>
-              </span>
-            </h1>
+            <DoktorabcLogo />
             <div>
               <p className="section-kicker">Self Pickup</p>
               <h2>Zugang freischalten</h2>
@@ -488,16 +487,7 @@ export function SelfPickupConsole() {
             </div>
             <div className="brand-copy">
               <p className="eyebrow">Rats-Apotheke Betrieb</p>
-              <h1 className="doktorabc-logo-card" aria-label="DoktorABC Pharmacies">
-                <span className="doktorabc-symbol" aria-hidden="true">
-                  <span />
-                  <span />
-                </span>
-                <span className="doktorabc-wordmark">
-                  <strong>DOKTORABC</strong>
-                  <small>Pharmacies</small>
-                </span>
-              </h1>
+              <DoktorabcLogo />
               {isUnlocked ? (
                 <a className="doktorabc-ready-link" href={doktorabcReadyUrl}>
                   DoktorABC self-pickup Ready for customer

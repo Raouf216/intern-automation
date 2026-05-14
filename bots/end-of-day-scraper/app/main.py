@@ -1,4 +1,6 @@
 import mimetypes
+import glob
+import hmac
 import os
 import re
 import time
@@ -10,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import xml.etree.ElementTree as ElementTree
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -116,6 +118,7 @@ END_OF_DAY_EXPORT_STORAGE_PREFIX = (
 END_OF_DAY_EXPORT_N8N_WEBHOOK_URL = (os.environ.get("END_OF_DAY_EXPORT_N8N_WEBHOOK_URL") or "").strip()
 END_OF_DAY_NOTIFICATION_WEBHOOK_URL = (os.environ.get("END_OF_DAY_NOTIFICATION_WEBHOOK_URL") or "").strip()
 SERVICE_NAME = (os.environ.get("DOKTORABC_SCRAPER_SERVICE_NAME") or "end-of-day-scraper").strip() or "end-of-day-scraper"
+DOKTORABC_SESSION_ADMIN_TOKEN = (os.environ.get("DOKTORABC_SESSION_ADMIN_TOKEN") or "").strip()
 EOD_ORDERS_API_FRAGMENT = "end-of-day?"
 EOD_ORDERS_API_QUERY = "end-of-day?limit=100&offset=0&sort=false&productIDs=&search="
 SELF_PICKUP_ORDERS_API_FRAGMENT = "incoming-self-pickup"
@@ -1141,6 +1144,51 @@ def save_session_state(context):
             os.remove(temp_path)
 
     log_event("session_state_saved", path=SESSION_STATE_PATH)
+
+
+def session_admin_error(x_admin_token):
+    if not DOKTORABC_SESSION_ADMIN_TOKEN:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "error": "session_admin_token_not_configured",
+                "hint": "Set DOKTORABC_SESSION_ADMIN_TOKEN on the EOD bot.",
+            },
+        )
+
+    if not x_admin_token or not hmac.compare_digest(str(x_admin_token), DOKTORABC_SESSION_ADMIN_TOKEN):
+        return JSONResponse(status_code=403, content={"ok": False, "error": "forbidden"})
+
+    return None
+
+
+def clear_shared_session_state():
+    candidates = [SESSION_STATE_PATH, *glob.glob(f"{SESSION_STATE_PATH}.*.tmp")]
+    removed = []
+    missing = []
+    errors = []
+
+    for path in sorted(set(candidates)):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                removed.append(path)
+            else:
+                missing.append(path)
+        except Exception as exc:
+            errors.append({"path": path, "error": f"{type(exc).__name__}: {exc}"})
+
+    log_event("session_state_cleared", path=SESSION_STATE_PATH, removed=removed, errors=errors)
+
+    return {
+        "ok": not errors,
+        "session_state_path": SESSION_STATE_PATH,
+        "session_state_exists": os.path.exists(SESSION_STATE_PATH),
+        "removed": removed,
+        "missing": missing,
+        "errors": errors,
+    }
 
 
 LOGIN_AUTHENTICATED_JS = """
@@ -3419,7 +3467,17 @@ def health():
         "order_target_mode": configured_order_target_mode(),
         "session_state_path": SESSION_STATE_PATH,
         "session_state_exists": os.path.exists(SESSION_STATE_PATH),
+        "session_admin_enabled": bool(DOKTORABC_SESSION_ADMIN_TOKEN),
     }
+
+
+@app.post("/admin/doktorabc/session/clear")
+def clear_doktorabc_session(x_admin_token: str = Header(default="", alias="X-Admin-Token")):
+    error_response = session_admin_error(x_admin_token)
+    if error_response:
+        return error_response
+
+    return clear_shared_session_state()
 
 
 @app.post("/jobs/end-of-day/login")

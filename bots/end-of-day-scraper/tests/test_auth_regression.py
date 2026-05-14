@@ -35,7 +35,7 @@ class FakeJSONResponse(dict):
 
 def install_import_stubs():
     sys.modules.setdefault("httpx", types.SimpleNamespace())
-    sys.modules.setdefault("fastapi", types.SimpleNamespace(FastAPI=FakeFastAPI))
+    sys.modules.setdefault("fastapi", types.SimpleNamespace(FastAPI=FakeFastAPI, Header=lambda *args, **kwargs: None))
     sys.modules.setdefault("fastapi.middleware", types.SimpleNamespace())
     sys.modules.setdefault("fastapi.middleware.cors", types.SimpleNamespace(CORSMiddleware=object))
     sys.modules.setdefault("fastapi.responses", types.SimpleNamespace(JSONResponse=FakeJSONResponse))

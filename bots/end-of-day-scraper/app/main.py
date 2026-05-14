@@ -252,7 +252,7 @@ def chunks(values, size):
         yield values[index:index + size]
 
 
-def existing_order_references_since(order_references, start_iso):
+def existing_order_references_since(order_references, start_iso, order_type=EOD_ORDER_TYPE):
     references = sorted({reference for reference in order_references if reference})
     if not references:
         return set()
@@ -264,6 +264,7 @@ def existing_order_references_since(order_references, start_iso):
             headers=supabase_headers(),
             params={
                 "select": "order_reference",
+                "order_type": f"eq.{order_type}",
                 "order_reference": postgrest_in_values(reference_chunk),
                 "scraped_at": f"gte.{start_iso}",
             },
@@ -281,7 +282,36 @@ def existing_order_references_since(order_references, start_iso):
     return existing_references
 
 
-def filter_orders_already_scraped_today(orders, scraped_at):
+def delete_existing_order_references_since(order_references, start_iso, order_type=EOD_ORDER_TYPE):
+    references = sorted({reference for reference in order_references if reference})
+    if not references:
+        return 0
+
+    deleted_references = 0
+    for reference_chunk in chunks(references, 100):
+        response = httpx.delete(
+            supabase_table_url(),
+            headers={
+                **supabase_headers(),
+                "Prefer": "return=minimal",
+            },
+            params={
+                "order_type": f"eq.{order_type}",
+                "order_reference": postgrest_in_values(reference_chunk),
+                "scraped_at": f"gte.{start_iso}",
+            },
+            timeout=EOD_SUPABASE_TIMEOUT_SECONDS,
+        )
+
+        if response.status_code >= 400:
+            raise RuntimeError(f"Supabase same-day cleanup failed: {response_preview(response)}")
+
+        deleted_references += len(reference_chunk)
+
+    return deleted_references
+
+
+def replace_orders_already_scraped_today(orders, scraped_at):
     today_start_iso = eod_dedupe_day_start(scraped_at)
     rows_with_scraped_at = [
         row
@@ -294,24 +324,20 @@ def filter_orders_already_scraped_today(orders, scraped_at):
     )
 
     if not existing_references:
-        return orders, {
+        return {
             "dedupe_window_start": today_start_iso,
             "dedupe_existing_today": 0,
-            "skipped_existing_today": 0,
-            "skipped_existing_today_references": [],
+            "replaced_existing_today": 0,
+            "replaced_existing_today_references": [],
         }
 
-    filtered_orders = [
-        row
-        for row in orders
-        if not (row.get("scraped_at") and row.get("order_reference") in existing_references)
-    ]
+    replaced_count = delete_existing_order_references_since(existing_references, today_start_iso)
 
-    return filtered_orders, {
+    return {
         "dedupe_window_start": today_start_iso,
         "dedupe_existing_today": len(existing_references),
-        "skipped_existing_today": len(orders) - len(filtered_orders),
-        "skipped_existing_today_references": sorted(existing_references)[:20],
+        "replaced_existing_today": replaced_count,
+        "replaced_existing_today_references": sorted(existing_references)[:20],
     }
 
 
@@ -2734,12 +2760,12 @@ def sync_end_of_day_orders():
                     "message": "No EOD or self pickup orders were found. Supabase was not changed.",
                 }
 
-            steps.append({"name": "dedupe_existing_today", "ok": None, "rows": len(all_rows)})
-            rows_to_save, dedupe_result = filter_orders_already_scraped_today(all_rows, scraped_at)
-            steps[-1] = {"name": "dedupe_existing_today", "ok": True, **dedupe_result}
+            steps.append({"name": "replace_existing_today", "ok": None, "rows": len(all_rows)})
+            dedupe_result = replace_orders_already_scraped_today(all_rows, scraped_at)
+            steps[-1] = {"name": "replace_existing_today", "ok": True, **dedupe_result}
 
-            steps.append({"name": "upsert_supabase", "ok": None, "rows": len(rows_to_save)})
-            supabase_result = upsert_supabase_eod_orders(rows_to_save)
+            steps.append({"name": "upsert_supabase", "ok": None, "rows": len(all_rows)})
+            supabase_result = upsert_supabase_eod_orders(all_rows)
             steps[-1] = {"name": "upsert_supabase", "ok": True, **supabase_result, **dedupe_result}
 
             steps.append({"name": "send_order_notification", "ok": None, "order_list_type": COMBINED_ORDER_LIST_TYPE})
@@ -2776,9 +2802,9 @@ def sync_end_of_day_orders():
                 timestamp,
                 {
                     "scraped": len(all_rows),
-                    "saved": len(rows_to_save),
+                    "saved": len(all_rows),
                     "sent_to_supabase": supabase_result.get("sent_to_supabase"),
-                    "skipped_existing_today": dedupe_result.get("skipped_existing_today"),
+                    "replaced_existing_today": dedupe_result.get("replaced_existing_today"),
                     "targets_count": len(target_results),
                     "warnings_count": len(all_warnings),
                     "duplicate_order_references_count": len(all_duplicate_order_references),
@@ -2818,12 +2844,12 @@ def sync_end_of_day_orders():
                 "supabase_schema": SUPABASE_SCHEMA,
                 "supabase_table": SUPABASE_EOD_ORDERS_TABLE,
                 "scraped": len(all_rows),
-                "saved": len(rows_to_save),
+                "saved": len(all_rows),
                 "warnings_count": len(all_warnings),
                 "warnings": all_warnings[:20],
                 "duplicate_order_references": all_duplicate_order_references,
                 "targets": target_results,
-                "sample_orders": rows_to_save[:3],
+                "sample_orders": all_rows[:3],
                 "steps": steps,
                 "screenshot_paths": screenshot_paths,
                 "export": export_result,

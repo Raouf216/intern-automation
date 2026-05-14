@@ -324,6 +324,7 @@ def notification_order_snapshot(row):
     return {
         "order_id": row.get("order_reference"),
         "order_reference": row.get("order_reference"),
+        "patient_name": row.get("patient_name"),
         "created_date": row.get("prescription_date"),
         "billing_date": billing_date,
         "prescription_date": row.get("prescription_date"),

@@ -22,6 +22,13 @@ type PendingPickupOrderRow = SupabaseOrderRow & {
   products: string | null;
 };
 
+type NotificationRow = {
+  created_at?: string;
+  event?: string | null;
+  section?: string | null;
+  payload?: Record<string, unknown> | null;
+};
+
 type MarkPickedResult = {
   order_reference: string;
   status: "picked" | "already_picked" | "clickable" | "not_found" | "wrong_order_type" | "error";
@@ -183,9 +190,8 @@ function validateRequestAuth(request: Request, payload?: Record<string, unknown>
     : { ok: false as const, error: "operator_session_invalid" };
 }
 
-function supabaseHeaders() {
+function supabaseHeadersForSchema(schema: string) {
   const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
-  const schema = supabaseSchema();
 
   return {
     apikey: serviceRoleKey,
@@ -196,8 +202,52 @@ function supabaseHeaders() {
   };
 }
 
+function supabaseHeaders() {
+  return supabaseHeadersForSchema(supabaseSchema());
+}
+
 function tableUrl() {
   return `${supabaseUrl()}/rest/v1/${encodeURIComponent(supabaseTableName())}`;
+}
+
+function notificationsSchema() {
+  return (process.env.SUPABASE_NOTIFICATIONS_SCHEMA || "public").trim();
+}
+
+function notificationsTableName() {
+  return (process.env.SUPABASE_NOTIFICATIONS_TABLE || "notifications").trim();
+}
+
+function notificationsTableUrl() {
+  return `${supabaseUrl()}/rest/v1/${encodeURIComponent(notificationsTableName())}`;
+}
+
+function postgrestInValues(values: string[]) {
+  return `in.(${values.map((value) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(",")})`;
+}
+
+function uniqueOrderReferences(values: unknown[]) {
+  const seen = new Set<string>();
+  const references: string[] = [];
+
+  values.forEach((value) => {
+    const reference = String(value || "").trim();
+    const key = reference.toUpperCase();
+    if (!reference || seen.has(key)) return;
+
+    seen.add(key);
+    references.push(reference);
+  });
+
+  return references;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function arrayRecordValue(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map(recordValue).filter(Boolean) as Record<string, unknown>[] : [];
 }
 
 function normalizeOrderReferences(payload: Record<string, unknown>) {
@@ -240,7 +290,98 @@ async function fetchOrderRows(orderReference: string) {
   return (await response.json()) as SupabaseOrderRow[];
 }
 
-async function fetchPendingPickupOrders() {
+function orderReferencesFromNotificationPayload(payload: Record<string, unknown>) {
+  const orderLists = recordValue(payload.order_lists);
+  const pickupReadyList = recordValue(orderLists?.pickup_ready) || recordValue(orderLists?.["self pickup"]);
+  const directOrders = arrayRecordValue(payload.orders);
+  const listOrders = arrayRecordValue(pickupReadyList?.orders);
+  const orders = listOrders.length ? listOrders : directOrders;
+
+  return uniqueOrderReferences(
+    orders.map((order) => order.order_reference || order.order_id || order.orderReference || order.id)
+  );
+}
+
+function hasPickupReadySnapshot(payload: Record<string, unknown>) {
+  const event = String(payload.event || "");
+  const source = String(payload.service || payload.source || "").toLowerCase();
+
+  return Boolean(
+    payload.section === "realtime_bot" ||
+      source.includes("pickup-ready") ||
+      payload.order_list_type === "pickup_ready" ||
+      event === "doktorabc_pickup_ready_orders_success"
+  );
+}
+
+async function fetchPickupReadyNotificationRows(section?: string) {
+  const url = new URL(notificationsTableUrl());
+  url.searchParams.set("select", "created_at,event,section,payload");
+  url.searchParams.set("status", "eq.success");
+  url.searchParams.set("order", "created_at.desc");
+  url.searchParams.set("limit", "50");
+
+  if (section) {
+    url.searchParams.set("section", `eq.${section}`);
+  }
+
+  const response = await fetch(url, {
+    headers: supabaseHeadersForSchema(notificationsSchema()),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase notification lookup failed (${response.status}): ${await response.text()}`);
+  }
+
+  return (await response.json()) as NotificationRow[];
+}
+
+async function fetchLatestPickupReadyOrderReferences() {
+  const rowGroups = [
+    await fetchPickupReadyNotificationRows("realtime_bot"),
+    await fetchPickupReadyNotificationRows(),
+  ];
+
+  for (const rows of rowGroups) {
+    for (const row of rows) {
+      const payload = recordValue(row.payload);
+      if (!payload || !hasPickupReadySnapshot(payload)) continue;
+
+      return {
+        references: orderReferencesFromNotificationPayload(payload),
+        notification_created_at: row.created_at || null,
+      };
+    }
+  }
+
+  return null;
+}
+
+function dedupeAndSortPendingOrders(rows: PendingPickupOrderRow[], orderReferences?: string[] | null) {
+  const byReference = new Map<string, PendingPickupOrderRow>();
+
+  rows.forEach((row) => {
+    const key = row.order_reference.toUpperCase();
+    if (!byReference.has(key)) {
+      byReference.set(key, row);
+    }
+  });
+
+  if (!orderReferences) {
+    return [...byReference.values()];
+  }
+
+  return orderReferences
+    .map((reference) => byReference.get(reference.toUpperCase()))
+    .filter(Boolean) as PendingPickupOrderRow[];
+}
+
+async function fetchPendingPickupOrders(orderReferences?: string[] | null) {
+  if (orderReferences && orderReferences.length === 0) {
+    return [];
+  }
+
   const url = new URL(tableUrl());
   url.searchParams.set(
     "select",
@@ -251,6 +392,10 @@ async function fetchPendingPickupOrders() {
   url.searchParams.set("or", "(picked.is.false,picked.is.null)");
   url.searchParams.set("order", "billing_date.asc.nullslast");
 
+  if (orderReferences) {
+    url.searchParams.set("order_reference", postgrestInValues(orderReferences));
+  }
+
   const response = await fetch(url, {
     headers: supabaseHeaders(),
     cache: "no-store",
@@ -260,7 +405,7 @@ async function fetchPendingPickupOrders() {
     throw new Error(`Supabase pending lookup failed (${response.status}): ${await response.text()}`);
   }
 
-  return (await response.json()) as PendingPickupOrderRow[];
+  return dedupeAndSortPendingOrders((await response.json()) as PendingPickupOrderRow[], orderReferences);
 }
 
 async function markRowPicked(row: SupabaseOrderRow, pickedAt: string) {
@@ -428,12 +573,17 @@ export async function GET(request: Request) {
   try {
     supabaseHeaders();
     tableUrl();
-    const orders = await fetchPendingPickupOrders();
+    const latestReadySnapshot = await fetchLatestPickupReadyOrderReferences();
+    const orders = latestReadySnapshot
+      ? await fetchPendingPickupOrders(latestReadySnapshot.references)
+      : [];
 
     const response = NextResponse.json({
       ok: true,
       count: orders.length,
       orders,
+      source: latestReadySnapshot ? "latest_pickup_ready_run" : "no_pickup_ready_snapshot",
+      latest_ready_notification_at: latestReadySnapshot?.notification_created_at || null,
       table: supabaseTableName(),
       schema: supabaseSchema(),
     });

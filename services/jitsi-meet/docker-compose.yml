@@ -1,0 +1,164 @@
+services:
+  jitsi-web:
+    image: jitsi/web:${JITSI_IMAGE_VERSION:-stable-10888}
+    container_name: jitsi-web
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${JITSI_HTTP_PORT:-8088}:80"
+    volumes:
+      - ${CONFIG:-/var/lib/dokploy/jitsi-meet}/web:/config
+      - ${CONFIG:-/var/lib/dokploy/jitsi-meet}/web/crontabs:/var/spool/cron/crontabs
+      - ${CONFIG:-/var/lib/dokploy/jitsi-meet}/transcripts:/usr/share/jitsi-meet/transcripts
+      - ${CONFIG:-/var/lib/dokploy/jitsi-meet}/web/load-test:/usr/share/jitsi-meet/load-test
+    networks:
+      - jitsi-meet
+      - dokploy-network
+    environment:
+      - TZ=${TZ:-Europe/Berlin}
+      - PUBLIC_URL=${PUBLIC_URL:?Set PUBLIC_URL to your public Jitsi URL, for example https://meet.example.com}
+      - DISABLE_HTTPS=${DISABLE_HTTPS:-1}
+      - ENABLE_HTTP_REDIRECT=${ENABLE_HTTP_REDIRECT:-0}
+      - ENABLE_HSTS=${ENABLE_HSTS:-1}
+      - ENABLE_XMPP_WEBSOCKET=${ENABLE_XMPP_WEBSOCKET:-1}
+      - ENABLE_COLIBRI_WEBSOCKET=${ENABLE_COLIBRI_WEBSOCKET:-1}
+      - ENABLE_AUTH=${ENABLE_AUTH:-1}
+      - ENABLE_GUESTS=${ENABLE_GUESTS:-1}
+      - AUTH_TYPE=${AUTH_TYPE:-internal}
+      - ENABLE_AUTO_LOGIN=${ENABLE_AUTO_LOGIN:-1}
+      - ENABLE_PREJOIN_PAGE=${ENABLE_PREJOIN_PAGE:-1}
+      - ENABLE_WELCOME_PAGE=${ENABLE_WELCOME_PAGE:-1}
+      - ENABLE_LOBBY=${ENABLE_LOBBY:-1}
+      - ENABLE_BREAKOUT_ROOMS=${ENABLE_BREAKOUT_ROOMS:-1}
+      - ENABLE_AV_MODERATION=${ENABLE_AV_MODERATION:-1}
+      - XMPP_DOMAIN=${XMPP_DOMAIN:-meet.jitsi}
+      - XMPP_AUTH_DOMAIN=${XMPP_AUTH_DOMAIN:-auth.meet.jitsi}
+      - XMPP_GUEST_DOMAIN=${XMPP_GUEST_DOMAIN:-guest.meet.jitsi}
+      - XMPP_MUC_DOMAIN=${XMPP_MUC_DOMAIN:-muc.meet.jitsi}
+      - XMPP_INTERNAL_MUC_DOMAIN=${XMPP_INTERNAL_MUC_DOMAIN:-internal-muc.meet.jitsi}
+      - XMPP_HIDDEN_DOMAIN=${XMPP_HIDDEN_DOMAIN:-hidden.meet.jitsi}
+      - XMPP_RECORDER_DOMAIN=${XMPP_RECORDER_DOMAIN:-recorder.meet.jitsi}
+      - XMPP_SERVER=${XMPP_SERVER:-xmpp.meet.jitsi}
+      - XMPP_PORT=${XMPP_PORT:-5222}
+      - XMPP_BOSH_URL_BASE=${XMPP_BOSH_URL_BASE:-http://xmpp.meet.jitsi:5280}
+      - JVB_PORT=${JVB_PORT:-10000}
+      - JVB_WS_DOMAIN=${JVB_WS_DOMAIN:-}
+      - JVB_WS_SERVER_ID=${JVB_WS_SERVER_ID:-}
+      - JVB_WS_TLS=${JVB_WS_TLS:-1}
+    depends_on:
+      - jvb
+
+  prosody:
+    image: jitsi/prosody:${JITSI_IMAGE_VERSION:-stable-10888}
+    container_name: jitsi-prosody
+    restart: ${RESTART_POLICY:-unless-stopped}
+    expose:
+      - "${XMPP_PORT:-5222}"
+      - "${PROSODY_S2S_PORT:-5269}"
+      - "5347"
+      - "${PROSODY_HTTP_PORT:-5280}"
+    volumes:
+      - ${CONFIG:-/var/lib/dokploy/jitsi-meet}/prosody/config:/config
+      - ${CONFIG:-/var/lib/dokploy/jitsi-meet}/prosody/prosody-plugins-custom:/prosody-plugins-custom
+    networks:
+      jitsi-meet:
+        aliases:
+          - ${XMPP_SERVER:-xmpp.meet.jitsi}
+    environment:
+      - TZ=${TZ:-Europe/Berlin}
+      - PUBLIC_URL=${PUBLIC_URL:?Set PUBLIC_URL to your public Jitsi URL, for example https://meet.example.com}
+      - ENABLE_AUTH=${ENABLE_AUTH:-1}
+      - ENABLE_GUESTS=${ENABLE_GUESTS:-1}
+      - AUTH_TYPE=${AUTH_TYPE:-internal}
+      - PROSODY_AUTH_TYPE=${PROSODY_AUTH_TYPE:-${AUTH_TYPE:-internal}}
+      - ENABLE_LOBBY=${ENABLE_LOBBY:-1}
+      - ENABLE_BREAKOUT_ROOMS=${ENABLE_BREAKOUT_ROOMS:-1}
+      - ENABLE_AV_MODERATION=${ENABLE_AV_MODERATION:-1}
+      - ENABLE_XMPP_WEBSOCKET=${ENABLE_XMPP_WEBSOCKET:-1}
+      - JICOFO_AUTH_PASSWORD=${JICOFO_AUTH_PASSWORD:?Set a strong JICOFO_AUTH_PASSWORD}
+      - JVB_AUTH_USER=${JVB_AUTH_USER:-jvb}
+      - JVB_AUTH_PASSWORD=${JVB_AUTH_PASSWORD:?Set a strong JVB_AUTH_PASSWORD}
+      - XMPP_DOMAIN=${XMPP_DOMAIN:-meet.jitsi}
+      - XMPP_AUTH_DOMAIN=${XMPP_AUTH_DOMAIN:-auth.meet.jitsi}
+      - XMPP_GUEST_DOMAIN=${XMPP_GUEST_DOMAIN:-guest.meet.jitsi}
+      - XMPP_MUC_DOMAIN=${XMPP_MUC_DOMAIN:-muc.meet.jitsi}
+      - XMPP_INTERNAL_MUC_DOMAIN=${XMPP_INTERNAL_MUC_DOMAIN:-internal-muc.meet.jitsi}
+      - XMPP_HIDDEN_DOMAIN=${XMPP_HIDDEN_DOMAIN:-hidden.meet.jitsi}
+      - XMPP_RECORDER_DOMAIN=${XMPP_RECORDER_DOMAIN:-recorder.meet.jitsi}
+      - XMPP_PORT=${XMPP_PORT:-5222}
+
+  jicofo:
+    image: jitsi/jicofo:${JITSI_IMAGE_VERSION:-stable-10888}
+    container_name: jitsi-jicofo
+    restart: ${RESTART_POLICY:-unless-stopped}
+    volumes:
+      - ${CONFIG:-/var/lib/dokploy/jitsi-meet}/jicofo:/config
+    networks:
+      - jitsi-meet
+    environment:
+      - TZ=${TZ:-Europe/Berlin}
+      - ENABLE_AUTH=${ENABLE_AUTH:-1}
+      - AUTH_TYPE=${AUTH_TYPE:-internal}
+      - JICOFO_ENABLE_AUTH=${JICOFO_ENABLE_AUTH:-${ENABLE_AUTH:-1}}
+      - JICOFO_AUTH_TYPE=${JICOFO_AUTH_TYPE:-${AUTH_TYPE:-internal}}
+      - ENABLE_AUTO_OWNER=${ENABLE_AUTO_OWNER:-1}
+      - ENABLE_AUTO_LOGIN=${ENABLE_AUTO_LOGIN:-1}
+      - ENABLE_MODERATOR_CHECKS=${ENABLE_MODERATOR_CHECKS:-1}
+      - JICOFO_AUTH_USER=${JICOFO_AUTH_USER:-focus}
+      - JICOFO_AUTH_PASSWORD=${JICOFO_AUTH_PASSWORD:?Set a strong JICOFO_AUTH_PASSWORD}
+      - JVB_BREWERY_MUC=${JVB_BREWERY_MUC:-jvbbrewery}
+      - JVB_XMPP_AUTH_DOMAIN=${JVB_XMPP_AUTH_DOMAIN:-auth.meet.jitsi}
+      - JVB_XMPP_INTERNAL_MUC_DOMAIN=${JVB_XMPP_INTERNAL_MUC_DOMAIN:-internal-muc.meet.jitsi}
+      - JVB_XMPP_PORT=${XMPP_PORT:-5222}
+      - JVB_XMPP_SERVER=${XMPP_SERVER:-xmpp.meet.jitsi}
+      - XMPP_DOMAIN=${XMPP_DOMAIN:-meet.jitsi}
+      - XMPP_AUTH_DOMAIN=${XMPP_AUTH_DOMAIN:-auth.meet.jitsi}
+      - XMPP_MUC_DOMAIN=${XMPP_MUC_DOMAIN:-muc.meet.jitsi}
+      - XMPP_INTERNAL_MUC_DOMAIN=${XMPP_INTERNAL_MUC_DOMAIN:-internal-muc.meet.jitsi}
+      - XMPP_HIDDEN_DOMAIN=${XMPP_HIDDEN_DOMAIN:-hidden.meet.jitsi}
+      - XMPP_RECORDER_DOMAIN=${XMPP_RECORDER_DOMAIN:-recorder.meet.jitsi}
+      - XMPP_SERVER=${XMPP_SERVER:-xmpp.meet.jitsi}
+      - XMPP_PORT=${XMPP_PORT:-5222}
+    depends_on:
+      - prosody
+
+  jvb:
+    image: jitsi/jvb:${JITSI_IMAGE_VERSION:-stable-10888}
+    container_name: jitsi-jvb
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${JVB_PORT:-10000}:${JVB_PORT:-10000}/udp"
+    volumes:
+      - ${CONFIG:-/var/lib/dokploy/jitsi-meet}/jvb:/config
+    networks:
+      - jitsi-meet
+    environment:
+      - TZ=${TZ:-Europe/Berlin}
+      - PUBLIC_URL=${PUBLIC_URL:?Set PUBLIC_URL to your public Jitsi URL, for example https://meet.example.com}
+      - ENABLE_COLIBRI_WEBSOCKET=${ENABLE_COLIBRI_WEBSOCKET:-1}
+      - ENABLE_SCTP=${ENABLE_SCTP:-1}
+      - COLIBRI_REST_ENABLED=${COLIBRI_REST_ENABLED:-true}
+      - SHUTDOWN_REST_ENABLED=${SHUTDOWN_REST_ENABLED:-true}
+      - JVB_AUTH_USER=${JVB_AUTH_USER:-jvb}
+      - JVB_AUTH_PASSWORD=${JVB_AUTH_PASSWORD:?Set a strong JVB_AUTH_PASSWORD}
+      - JVB_BREWERY_MUC=${JVB_BREWERY_MUC:-jvbbrewery}
+      - JVB_PORT=${JVB_PORT:-10000}
+      - JVB_STUN_SERVERS=${JVB_STUN_SERVERS:-stun.l.google.com:19302,stun1.l.google.com:19302,stun2.l.google.com:19302}
+      - JVB_ADVERTISE_IPS=${JVB_ADVERTISE_IPS:-}
+      - JVB_WS_DOMAIN=${JVB_WS_DOMAIN:-}
+      - JVB_WS_SERVER_ID=${JVB_WS_SERVER_ID:-}
+      - JVB_WS_TLS=${JVB_WS_TLS:-1}
+      - JVB_XMPP_AUTH_DOMAIN=${JVB_XMPP_AUTH_DOMAIN:-auth.meet.jitsi}
+      - JVB_XMPP_INTERNAL_MUC_DOMAIN=${JVB_XMPP_INTERNAL_MUC_DOMAIN:-internal-muc.meet.jitsi}
+      - JVB_XMPP_PORT=${XMPP_PORT:-5222}
+      - JVB_XMPP_SERVER=${XMPP_SERVER:-xmpp.meet.jitsi}
+      - XMPP_AUTH_DOMAIN=${XMPP_AUTH_DOMAIN:-auth.meet.jitsi}
+      - XMPP_INTERNAL_MUC_DOMAIN=${XMPP_INTERNAL_MUC_DOMAIN:-internal-muc.meet.jitsi}
+      - XMPP_SERVER=${XMPP_SERVER:-xmpp.meet.jitsi}
+      - XMPP_PORT=${XMPP_PORT:-5222}
+    depends_on:
+      - prosody
+
+networks:
+  jitsi-meet:
+  dokploy-network:
+    external: true

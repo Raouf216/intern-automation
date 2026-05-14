@@ -3,6 +3,7 @@ import glob
 import hmac
 import os
 import re
+import threading
 import time
 import zipfile
 import json
@@ -102,6 +103,9 @@ EOD_NEXT_VISIBLE_TIMEOUT_MS = 10_000
 EOD_NEXT_CLICK_TIMEOUT_MS = 10_000
 EOD_NEXT_CHANGE_TIMEOUT_MS = 20_000
 EOD_NEXT_CHANGE_POLL_MS = 500
+EOD_EXPECTED_FULL_PAGE_ORDERS = int_env("EOD_EXPECTED_FULL_PAGE_ORDERS", 100)
+EOD_UNDERFILLED_PAGE_RETRIES = int_env("EOD_UNDERFILLED_PAGE_RETRIES", 3)
+EOD_UNDERFILLED_PAGE_RETRY_WAIT_MS = int_env("EOD_UNDERFILLED_PAGE_RETRY_WAIT_MS", 1_000)
 DOKTORABC_CLICK_BLOCKER_TIMEOUT_MS = int_env("DOKTORABC_CLICK_BLOCKER_TIMEOUT_MS", 5_000)
 DOKTORABC_CLICK_BLOCKER_POLL_MS = int_env("DOKTORABC_CLICK_BLOCKER_POLL_MS", 100)
 EOD_AFTER_LOGIN_CLICK_WAIT_MS = 2_000
@@ -131,6 +135,8 @@ SELF_PICKUP_ORDERS_API_QUERY = (
 
 
 app = FastAPI(title=SERVICE_NAME)
+EOD_SYNC_LOCK = threading.Lock()
+EOD_SYNC_STARTED_AT = None
 
 
 END_OF_DAY_SCRAPER_CORS_ORIGINS = [
@@ -2284,6 +2290,9 @@ def get_pagination_state(page):
           const pagination = document.querySelector("#pagination-container");
           const current = pagination?.querySelector('nav[aria-label="pagination"] a[aria-current="page"]');
           const next = pagination?.querySelector('nav[aria-label="pagination"] a[aria-label="Go to next page"]');
+          const pageNumbers = Array.from(pagination?.querySelectorAll('nav[aria-label="pagination"] a') || [])
+            .map((link) => Number(normalize(link.innerText)))
+            .filter((value) => Number.isFinite(value));
           const paginationText = normalize(pagination?.innerText || "");
           const totalMatch =
             paginationText.match(/(?:of|von)\\s+(\\d{1,6})\\b/i) ||
@@ -2323,6 +2332,8 @@ def get_pagination_state(page):
             last_order_reference: orderRefs[orderRefs.length - 1] || null,
             order_refs_signature: orderRefs.join("|"),
             order_count: orderRefs.length,
+            page_numbers: pageNumbers,
+            max_page: pageNumbers.length ? Math.max(...pageNumbers) : null,
             total_count: totalMatch ? Number(totalMatch[1]) : null,
             pagination_text: paginationText,
             has_next: hasEnabledNext,
@@ -2561,6 +2572,80 @@ SCRAPE_EOD_ORDERS_JS = (
 
 def scrape_orders_on_current_page(page):
     return page.evaluate(SCRAPE_EOD_ORDERS_JS)
+
+
+def is_underfilled_non_last_page(state, raw_orders):
+    current_page = state.get("current_page")
+    max_page = state.get("max_page")
+
+    return (
+        isinstance(current_page, int)
+        and isinstance(max_page, int)
+        and current_page < max_page
+        and len(raw_orders) < EOD_EXPECTED_FULL_PAGE_ORDERS
+    )
+
+
+def retry_underfilled_page_render(page, state_before, raw_orders, steps, billing_date_collector=None):
+    attempts = []
+
+    for attempt in range(1, EOD_UNDERFILLED_PAGE_RETRIES + 1):
+        if not is_underfilled_non_last_page(state_before, raw_orders):
+            break
+
+        attempt_start = {
+            "attempt": attempt,
+            "current_page": state_before.get("current_page"),
+            "max_page": state_before.get("max_page"),
+            "orders_found": len(raw_orders),
+            "expected_min_orders": EOD_EXPECTED_FULL_PAGE_ORDERS,
+            "url": state_before.get("url"),
+        }
+        page.wait_for_timeout(EOD_UNDERFILLED_PAGE_RETRY_WAIT_MS)
+        page.reload(wait_until="domcontentloaded", timeout=EOD_NAVIGATION_TIMEOUT_MS)
+        wait_for_order_list(page)
+
+        if billing_date_collector:
+            billing_date_collector.collect_from_performance(page)
+
+        state_before = get_pagination_state(page)
+        raw_orders = scrape_orders_on_current_page(page)
+        attempts.append(
+            {
+                **attempt_start,
+                "after_orders_found": len(raw_orders),
+                "after_url": state_before.get("url"),
+            }
+        )
+
+    if attempts:
+        steps.append(
+            {
+                "name": "retry_underfilled_page_render",
+                "ok": not is_underfilled_non_last_page(state_before, raw_orders),
+                "attempts": attempts,
+            }
+        )
+
+    if is_underfilled_non_last_page(state_before, raw_orders):
+        steps.append(
+            {
+                "name": "validate_page_full_render",
+                "ok": None,
+                "current_page": state_before.get("current_page"),
+                "max_page": state_before.get("max_page"),
+                "orders_found": len(raw_orders),
+                "expected_min_orders": EOD_EXPECTED_FULL_PAGE_ORDERS,
+                "pagination_state": state_before,
+            }
+        )
+        raise RuntimeError(
+            "DoktorABC page rendered fewer orders than expected on a non-last page. "
+            f"Page {state_before.get('current_page')} of {state_before.get('max_page')} "
+            f"showed {len(raw_orders)} orders; expected at least {EOD_EXPECTED_FULL_PAGE_ORDERS}."
+        )
+
+    return state_before, raw_orders
 
 
 def fetch_eod_api_orders(page):
@@ -2808,6 +2893,13 @@ def scrape_all_eod_orders(page, billing_date_collector=None):
             billing_date_collector.collect_from_performance(page)
 
         raw_orders = scrape_orders_on_current_page(page)
+        state_before, raw_orders = retry_underfilled_page_render(
+            page,
+            state_before,
+            raw_orders,
+            steps,
+            billing_date_collector=billing_date_collector,
+        )
         page_order_refs = [order.get("order_reference") for order in raw_orders if order.get("order_reference")]
 
         for order in raw_orders:
@@ -3576,6 +3668,28 @@ def sync_end_of_day_orders():
             browser.close()
 
 
+def sync_end_of_day_orders_locked():
+    global EOD_SYNC_STARTED_AT
+
+    if not EOD_SYNC_LOCK.acquire(blocking=False):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error": "eod_sync_already_running",
+                "message": "Another End-of-Day sync is already running. Wait for it to finish before starting a new one.",
+                "started_at": EOD_SYNC_STARTED_AT.isoformat() if EOD_SYNC_STARTED_AT else None,
+            },
+        )
+
+    EOD_SYNC_STARTED_AT = datetime.now(timezone.utc)
+    try:
+        return sync_end_of_day_orders()
+    finally:
+        EOD_SYNC_STARTED_AT = None
+        EOD_SYNC_LOCK.release()
+
+
 @app.get("/health")
 def health():
     return {
@@ -3588,6 +3702,8 @@ def health():
         "session_state_path": SESSION_STATE_PATH,
         "session_state_exists": os.path.exists(SESSION_STATE_PATH),
         "session_admin_enabled": bool(DOKTORABC_SESSION_ADMIN_TOKEN),
+        "eod_sync_running": EOD_SYNC_LOCK.locked(),
+        "eod_sync_started_at": EOD_SYNC_STARTED_AT.isoformat() if EOD_SYNC_STARTED_AT else None,
     }
 
 
@@ -3624,22 +3740,22 @@ def end_of_day_session_check():
 
 @app.post("/jobs/end-of-day/orders/sync")
 def end_of_day_orders_sync():
-    return sync_end_of_day_orders()
+    return sync_end_of_day_orders_locked()
 
 
 @app.post("/jobs/end-of-day/orders")
 def end_of_day_orders():
-    return sync_end_of_day_orders()
+    return sync_end_of_day_orders_locked()
 
 
 @app.post("/jobs/pickup-ready/orders/sync")
 def pickup_ready_orders_sync():
-    return sync_end_of_day_orders()
+    return sync_end_of_day_orders_locked()
 
 
 @app.post("/jobs/pickup-ready/orders")
 def pickup_ready_orders():
-    return sync_end_of_day_orders()
+    return sync_end_of_day_orders_locked()
 
 
 @app.api_route("/{path_name:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

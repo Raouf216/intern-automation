@@ -6,6 +6,7 @@ import zipfile
 import json
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import xml.etree.ElementTree as ElementTree
 
 import httpx
@@ -62,6 +63,7 @@ EOD_SUPABASE_TIMEOUT_SECONDS = 30
 EOD_STORAGE_UPLOAD_TIMEOUT_SECONDS = int_env("EOD_STORAGE_UPLOAD_TIMEOUT_SECONDS", 30)
 EOD_N8N_UPLOAD_TIMEOUT_SECONDS = 30
 EOD_NOTIFICATION_TIMEOUT_SECONDS = 30
+EOD_DEDUPE_TIMEZONE = (os.environ.get("EOD_DEDUPE_TIMEZONE") or "Europe/Berlin").strip() or "Europe/Berlin"
 EOD_EXPORT_DOWNLOAD_TIMEOUT_MS = 20_000
 EOD_EXPORT_BUTTON_VISIBLE_TIMEOUT_MS = 5_000
 EOD_EXPORT_BUTTON_CLICK_TIMEOUT_MS = 10_000
@@ -223,6 +225,94 @@ def to_check_excel_storage_filename(export_date):
 def storage_object_path(filename, prefix):
     clean_prefix = (prefix or "").strip("/")
     return f"{clean_prefix}/{filename}" if clean_prefix else filename
+
+
+def eod_dedupe_day_start(value):
+    try:
+        local_timezone = ZoneInfo(EOD_DEDUPE_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        local_timezone = timezone.utc
+
+    local_value = value.astimezone(local_timezone)
+    local_start = local_value.replace(hour=0, minute=0, second=0, microsecond=0)
+    return timestamptz_iso(local_start)
+
+
+def postgrest_in_values(values):
+    quoted_values = []
+    for value in values:
+        escaped_value = str(value).replace("\\", "\\\\").replace('"', '\\"')
+        quoted_values.append(f'"{escaped_value}"')
+
+    return f"in.({','.join(quoted_values)})"
+
+
+def chunks(values, size):
+    for index in range(0, len(values), size):
+        yield values[index:index + size]
+
+
+def existing_order_references_since(order_references, start_iso):
+    references = sorted({reference for reference in order_references if reference})
+    if not references:
+        return set()
+
+    existing_references = set()
+    for reference_chunk in chunks(references, 100):
+        response = httpx.get(
+            supabase_table_url(),
+            headers=supabase_headers(),
+            params={
+                "select": "order_reference",
+                "order_reference": postgrest_in_values(reference_chunk),
+                "scraped_at": f"gte.{start_iso}",
+            },
+            timeout=EOD_SUPABASE_TIMEOUT_SECONDS,
+        )
+
+        if response.status_code >= 400:
+            raise RuntimeError(f"Supabase duplicate check failed: {response_preview(response)}")
+
+        for row in response.json():
+            order_reference = row.get("order_reference") if isinstance(row, dict) else None
+            if order_reference:
+                existing_references.add(order_reference)
+
+    return existing_references
+
+
+def filter_orders_already_scraped_today(orders, scraped_at):
+    today_start_iso = eod_dedupe_day_start(scraped_at)
+    rows_with_scraped_at = [
+        row
+        for row in orders
+        if row.get("order_reference") and row.get("scraped_at")
+    ]
+    existing_references = existing_order_references_since(
+        [row.get("order_reference") for row in rows_with_scraped_at],
+        today_start_iso,
+    )
+
+    if not existing_references:
+        return orders, {
+            "dedupe_window_start": today_start_iso,
+            "dedupe_existing_today": 0,
+            "skipped_existing_today": 0,
+            "skipped_existing_today_references": [],
+        }
+
+    filtered_orders = [
+        row
+        for row in orders
+        if not (row.get("scraped_at") and row.get("order_reference") in existing_references)
+    ]
+
+    return filtered_orders, {
+        "dedupe_window_start": today_start_iso,
+        "dedupe_existing_today": len(existing_references),
+        "skipped_existing_today": len(orders) - len(filtered_orders),
+        "skipped_existing_today_references": sorted(existing_references)[:20],
+    }
 
 
 def upsert_supabase_eod_orders(orders):
@@ -2644,9 +2734,13 @@ def sync_end_of_day_orders():
                     "message": "No EOD or self pickup orders were found. Supabase was not changed.",
                 }
 
-            steps.append({"name": "upsert_supabase", "ok": None, "rows": len(all_rows)})
-            supabase_result = upsert_supabase_eod_orders(all_rows)
-            steps[-1] = {"name": "upsert_supabase", "ok": True, **supabase_result}
+            steps.append({"name": "dedupe_existing_today", "ok": None, "rows": len(all_rows)})
+            rows_to_save, dedupe_result = filter_orders_already_scraped_today(all_rows, scraped_at)
+            steps[-1] = {"name": "dedupe_existing_today", "ok": True, **dedupe_result}
+
+            steps.append({"name": "upsert_supabase", "ok": None, "rows": len(rows_to_save)})
+            supabase_result = upsert_supabase_eod_orders(rows_to_save)
+            steps[-1] = {"name": "upsert_supabase", "ok": True, **supabase_result, **dedupe_result}
 
             steps.append({"name": "send_order_notification", "ok": None, "order_list_type": COMBINED_ORDER_LIST_TYPE})
             notification_result = send_orders_sync_notification(
@@ -2682,8 +2776,9 @@ def sync_end_of_day_orders():
                 timestamp,
                 {
                     "scraped": len(all_rows),
-                    "saved": len(all_rows),
+                    "saved": len(rows_to_save),
                     "sent_to_supabase": supabase_result.get("sent_to_supabase"),
+                    "skipped_existing_today": dedupe_result.get("skipped_existing_today"),
                     "targets_count": len(target_results),
                     "warnings_count": len(all_warnings),
                     "duplicate_order_references_count": len(all_duplicate_order_references),
@@ -2723,16 +2818,17 @@ def sync_end_of_day_orders():
                 "supabase_schema": SUPABASE_SCHEMA,
                 "supabase_table": SUPABASE_EOD_ORDERS_TABLE,
                 "scraped": len(all_rows),
-                "saved": len(all_rows),
+                "saved": len(rows_to_save),
                 "warnings_count": len(all_warnings),
                 "warnings": all_warnings[:20],
                 "duplicate_order_references": all_duplicate_order_references,
                 "targets": target_results,
-                "sample_orders": all_rows[:3],
+                "sample_orders": rows_to_save[:3],
                 "steps": steps,
                 "screenshot_paths": screenshot_paths,
                 "export": export_result,
                 "notifications": notification_results,
+                **dedupe_result,
                 **supabase_result,
             }
         except Exception as exc:

@@ -163,7 +163,7 @@ function booleanValue(value: unknown, fallback: boolean) {
 }
 
 function pickupDoneDryRunDefault() {
-  return booleanValue(process.env.PICKUP_DONE_DRY_RUN ?? process.env.PICKUP_MARK_DRY_RUN, true);
+  return booleanValue(process.env.PICKUP_DONE_DRY_RUN ?? process.env.PICKUP_MARK_DRY_RUN, false);
 }
 
 function validateRequestAuth(request: Request, payload?: Record<string, unknown>) {
@@ -494,7 +494,7 @@ async function callPickupDoneBot(orderReferences: string[], dryRun: boolean) {
   const endpoint = pickupDoneBotEndpoint();
 
   if (!endpoint) {
-    return null;
+    throw new Error("PICKUP_DONE_BOT_ENDPOINT is required for the DoktorABC abgeholt click.");
   }
 
   const response = await fetch(endpoint, {
@@ -556,8 +556,8 @@ function botResultToMarkResult(result: PickupDoneBotResult): MarkPickedResult {
   };
 }
 
-function isSuccessfulBotResult(result: PickupDoneBotResult) {
-  return ["clickable", "clicked", "clicked_still_visible"].includes(result.status || "");
+function isClickedBotResult(result: PickupDoneBotResult) {
+  return ["clicked", "clicked_still_visible"].includes(result.status || "");
 }
 
 export async function GET(request: Request) {
@@ -665,16 +665,19 @@ export async function POST(request: Request) {
     );
   }
 
+  const botResults = botPayload?.results || [];
   const referencesToMark = botPayload
-    ? (botPayload.results || [])
-        .filter(isSuccessfulBotResult)
-        .map((result) => String(result.order_reference || "").trim())
-        .filter(Boolean)
+    ? botPayload.dry_run
+      ? []
+      : botResults
+          .filter(isClickedBotResult)
+          .map((result) => String(result.order_reference || "").trim())
+          .filter(Boolean)
     : orderReferences;
   const botFailures = botPayload
-    ? (botPayload.results || [])
-        .filter((result) => !isSuccessfulBotResult(result))
-        .map(botResultToMarkResult)
+    ? botPayload.dry_run
+      ? botResults.map(botResultToMarkResult)
+      : botResults.filter((result) => !isClickedBotResult(result)).map(botResultToMarkResult)
     : [];
 
   const pickedAt = new Date().toISOString();

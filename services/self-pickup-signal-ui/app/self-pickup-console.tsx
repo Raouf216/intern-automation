@@ -325,8 +325,8 @@ export function SelfPickupConsole() {
       setPickupMarkMessage(
         payload.dry_run
           ? errors
-            ? `Trockenlauf abgeschlossen: ${clickable} klickbar, ${picked} markiert, ${errors} Fehler.`
-            : `Trockenlauf erfolgreich: ${clickable} klickbar, ${picked} markiert.`
+            ? `Trockenlauf abgeschlossen: ${clickable} klickbar, nichts markiert, ${errors} Fehler.`
+            : `Trockenlauf erfolgreich: ${clickable} klickbar, nichts markiert.`
           : errors
           ? `Prüfung abgeschlossen: ${picked} markiert, ${alreadyPicked} bereits abgeholt, ${errors} Fehler.`
           : `Erfolgreich abgeschlossen: ${picked} markiert, ${alreadyPicked} bereits abgeholt.`

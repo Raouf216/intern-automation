@@ -17,7 +17,7 @@ import {
   Sparkles,
   Sun,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 type Product = {
   product_name?: string;
@@ -107,6 +107,11 @@ type SyncNotification = {
   error?: string;
 };
 
+type OperatorSessionResponse = {
+  ok?: boolean;
+  error?: string;
+};
+
 function legacyEndOfDayOrdersEndpoint(value: string) {
   return value
     .trim()
@@ -117,7 +122,6 @@ const configuredEndpoint = process.env.NEXT_PUBLIC_PRODUCT_SYNC_ENDPOINT || "";
 const configuredEndOfDayEndpoint =
   process.env.NEXT_PUBLIC_EOD_ORDERS_ENDPOINT ||
   legacyEndOfDayOrdersEndpoint(process.env.NEXT_PUBLIC_EOD_LOGIN_ENDPOINT || "");
-const expectedPassword = process.env.NEXT_PUBLIC_PRODUCT_SYNC_PASSWORD || "";
 const fallbackEndpoint = "http://178.104.144.30:8020/jobs/product-prices";
 const fallbackEndOfDayEndpoint = "http://178.104.144.30:8021/jobs/end-of-day/orders/sync";
 const syncEndpoint = configuredEndpoint || fallbackEndpoint;
@@ -186,12 +190,29 @@ function botSavedCount(payload: EndOfDayResponse | null) {
   return numberValue(payload?.sent_to_supabase ?? payload?.saved ?? payload?.scraped);
 }
 
+function authErrorMessage(value?: string) {
+  if (value === "operator_password_invalid") return "Passwort ist falsch.";
+  if (value === "operator_password_not_configured") return "Das Bedienerpasswort ist nicht konfiguriert.";
+  if (value === "operator_session_invalid") return "Die Sitzung ist abgelaufen. Bitte erneut freischalten.";
+
+  return value || "Zugang konnte nicht geprüft werden.";
+}
+
 function exportState(payload: EndOfDayResponse | null) {
   if (!payload?.export) return "noch nicht";
   if (payload.export.skipped) return "übersprungen";
   if (payload.export.sent_to_n8n) return "gesendet";
   if (payload.export.downloaded) return "geladen";
   return "noch nicht";
+}
+
+function DoktorabcLogo() {
+  return (
+    <h1 className="doktorabc-logo-card" aria-label="DoktorABC Pharmacies">
+      <img className="doktorabc-logo-image doktorabc-logo-light" src="/pharmacies-logo-light.png" alt="" aria-hidden="true" width={198} height={66} />
+      <img className="doktorabc-logo-image doktorabc-logo-night" src="/pharmacies-logo-night.png" alt="" aria-hidden="true" width={198} height={66} />
+    </h1>
+  );
 }
 
 async function sendFinalSyncNotification(notification: SyncNotification) {
@@ -210,8 +231,33 @@ async function sendFinalSyncNotification(notification: SyncNotification) {
   }
 }
 
+async function requestOperatorSession(passwordForUnlock?: string) {
+  const response = await fetch("/api/operator-session", {
+    method: passwordForUnlock ? "POST" : "GET",
+    headers: passwordForUnlock ? { "Content-Type": "application/json" } : undefined,
+    body: passwordForUnlock ? JSON.stringify({ operator_password: passwordForUnlock }) : undefined,
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json")
+    ? ((await response.json()) as OperatorSessionResponse)
+    : ({ ok: false, error: await response.text() } satisfies OperatorSessionResponse);
+
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || `HTTP-Fehler ${response.status}: ${response.statusText || "keine Details"}`);
+  }
+
+  return payload;
+}
+
 export function SyncConsole() {
-  const [password, setPassword] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [isSessionChecking, setIsSessionChecking] = useState(true);
+  const [isUnlocking, setIsUnlocking] = useState(false);
+  const [unlockStatus, setUnlockStatus] = useState<"idle" | "success" | "error">("idle");
+  const [unlockMessage, setUnlockMessage] = useState("Bedienerpasswort eingeben, um EOD und Produktsync freizuschalten.");
   const [isRunning, setIsRunning] = useState(false);
   const [isEndOfDayRunning, setIsEndOfDayRunning] = useState(false);
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
@@ -232,6 +278,7 @@ export function SyncConsole() {
     setTheme(nextTheme);
     document.body.dataset.theme = nextTheme;
 
+    void restoreSession();
   }, []);
 
   function toggleTheme() {
@@ -251,33 +298,75 @@ export function SyncConsole() {
     [result]
   );
 
-  function validateOperatorPassword() {
-    if (!password.trim()) {
-      return "Bitte das Bedienerpasswort eingeben.";
+  async function restoreSession() {
+    try {
+      await requestOperatorSession();
+      setIsUnlocked(true);
+      setUnlockStatus("success");
+      setUnlockMessage("Bestehender Zugang wurde geladen.");
+    } catch {
+      // No valid browser session yet; keep the password gate visible.
+    } finally {
+      setIsSessionChecking(false);
     }
-
-    if (!expectedPassword) {
-      return "Das Bedienerpasswort ist nicht konfiguriert.";
-    }
-
-    if (expectedPassword && password !== expectedPassword) {
-      return "Passwort ist falsch.";
-    }
-
-    return "";
   }
 
-  async function triggerSync() {
-    if (!syncEndpoint.trim()) {
+  function requireUnlocked(target: "products" | "eod") {
+    if (isUnlocked) return true;
+
+    const messageText = "Bitte zuerst den Zugang freischalten.";
+    setUnlockStatus("error");
+    setUnlockMessage(messageText);
+    if (target === "products") {
       setStatus("error");
-      setMessage("Der feste DoktorABC Sync-Endpunkt ist nicht konfiguriert.");
+      setMessage(messageText);
+    } else {
+      setEndOfDayStatus("error");
+      setEndOfDayMessage(messageText);
+    }
+
+    return false;
+  }
+
+  async function unlockConsole(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    const nextPassword = passwordInput.trim();
+
+    if (!nextPassword) {
+      setUnlockStatus("error");
+      setUnlockMessage("Bitte das Bedienerpasswort eingeben.");
       return;
     }
 
-    const passwordError = validateOperatorPassword();
-    if (passwordError) {
+    setIsUnlocking(true);
+    setUnlockStatus("idle");
+    setUnlockMessage("Zugang wird geprüft.");
+
+    try {
+      await requestOperatorSession(nextPassword);
+      setPasswordInput("");
+      setIsUnlocked(true);
+      setUnlockStatus("success");
+      setUnlockMessage("Zugang freigeschaltet.");
+      setStatus("idle");
+      setEndOfDayStatus("idle");
+      setMessage("Bereit für eine kontrollierte Produktsynchronisierung.");
+      setEndOfDayMessage("Bereit für End-of-Day Bestellungen und Excel-Export.");
+    } catch (error) {
+      setIsUnlocked(false);
+      setUnlockStatus("error");
+      setUnlockMessage(authErrorMessage(error instanceof Error ? error.message : ""));
+    } finally {
+      setIsUnlocking(false);
+    }
+  }
+
+  async function triggerSync() {
+    if (!requireUnlocked("products")) return;
+
+    if (!syncEndpoint.trim()) {
       setStatus("error");
-      setMessage(passwordError);
+      setMessage("Der feste DoktorABC Sync-Endpunkt ist nicht konfiguriert.");
       return;
     }
 
@@ -373,16 +462,11 @@ export function SyncConsole() {
   }
 
   async function triggerEndOfDayOrders() {
+    if (!requireUnlocked("eod")) return;
+
     if (!endOfDayEndpoint.trim()) {
       setEndOfDayStatus("error");
       setEndOfDayMessage("Der feste End-of-Day Bot-Endpunkt ist nicht konfiguriert.");
-      return;
-    }
-
-    const passwordError = validateOperatorPassword();
-    if (passwordError) {
-      setEndOfDayStatus("error");
-      setEndOfDayMessage(passwordError);
       return;
     }
 
@@ -443,6 +527,70 @@ export function SyncConsole() {
     status === "error" || endOfDayStatus === "error";
   const anyBotSuccess =
     status === "success" || endOfDayStatus === "success";
+
+  if (isSessionChecking) {
+    return (
+      <main className="page auth-page">
+        <section className="auth-gate" aria-label="EOD und Produktsync Sitzung">
+          <div className="auth-card">
+            <DoktorabcLogo />
+            <div>
+              <p className="section-kicker">EOD & Produktsync</p>
+              <h2>Sitzung wird geprüft</h2>
+            </div>
+            <div className="auth-message">
+              <Loader2 size={18} className="spin" />
+              <p>Bestehender Zugang wird geladen.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (!isUnlocked) {
+    return (
+      <main className="page auth-page">
+        <section className="auth-gate" aria-label="EOD und Produktsync Zugang">
+          <div className="auth-card">
+            <DoktorabcLogo />
+            <div>
+              <p className="section-kicker">EOD & Produktsync</p>
+              <h2>Zugang freischalten</h2>
+            </div>
+            <form className="auth-form" onSubmit={unlockConsole}>
+              <label className="field">
+                <span>Bedienerpasswort</span>
+                <div className="password-row">
+                  <KeyRound size={18} />
+                  <input
+                    value={passwordInput}
+                    onChange={(event) => setPasswordInput(event.target.value)}
+                    type="password"
+                    placeholder="Passwort eingeben"
+                    autoComplete="current-password"
+                    autoFocus
+                  />
+                </div>
+              </label>
+              <button className="unlock-button" type="submit" disabled={isUnlocking}>
+                {isUnlocking ? <Loader2 size={18} className="spin" /> : <ShieldCheck size={18} />}
+                <span>{isUnlocking ? "Prüfe Zugang" : "Zugang prüfen"}</span>
+              </button>
+            </form>
+            <div className={`auth-message auth-message-${unlockStatus}`}>
+              {unlockStatus === "success" ? <CheckCircle2 size={18} /> : unlockStatus === "error" ? <AlertTriangle size={18} /> : <LockKeyhole size={18} />}
+              <p>{unlockMessage}</p>
+            </div>
+            <button className="theme-button auth-theme-button" type="button" onClick={toggleTheme} aria-label="Darstellung wechseln">
+              {theme === "night" ? <Sun size={17} /> : <Moon size={17} />}
+              <span>{theme === "night" ? "Hell" : "Nacht"}</span>
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
 
   const productStatusPanel = (
     <aside className="status-surface action-status-panel" aria-label="Produktsync Ergebnis">
@@ -564,20 +712,6 @@ export function SyncConsole() {
               </div>
               <DatabaseZap size={26} />
             </div>
-
-            <label className="field">
-              <span>Bedienerpasswort</span>
-              <div className="password-row">
-                <KeyRound size={18} />
-                <input
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  type="password"
-                  placeholder="Passwort eingeben"
-                  autoComplete="current-password"
-                />
-              </div>
-            </label>
 
             <div className="bot-action-list">
               <section className="bot-action-row">

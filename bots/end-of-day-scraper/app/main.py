@@ -2284,6 +2284,10 @@ def get_pagination_state(page):
           const pagination = document.querySelector("#pagination-container");
           const current = pagination?.querySelector('nav[aria-label="pagination"] a[aria-current="page"]');
           const next = pagination?.querySelector('nav[aria-label="pagination"] a[aria-label="Go to next page"]');
+          const paginationText = normalize(pagination?.innerText || "");
+          const totalMatch =
+            paginationText.match(/(?:of|von)\\s+(\\d{1,6})\\b/i) ||
+            paginationText.match(/\\b\\d+\\s*[-–]\\s*\\d+\\s+(\\d{1,6})\\b/i);
           const orderRefs = Array.from(document.querySelectorAll('button[id$="-mark-order"], [id^="order-"][id$="-badge"]'))
             .map(orderReferenceFromMarker)
             .filter(Boolean);
@@ -2319,6 +2323,8 @@ def get_pagination_state(page):
             last_order_reference: orderRefs[orderRefs.length - 1] || null,
             order_refs_signature: orderRefs.join("|"),
             order_count: orderRefs.length,
+            total_count: totalMatch ? Number(totalMatch[1]) : null,
+            pagination_text: paginationText,
             has_next: hasEnabledNext,
             next_exists: Boolean(next),
             next_text: normalize(next?.innerText),
@@ -2672,10 +2678,19 @@ def fetch_eod_api_orders(page):
 
     raw_orders = result.get("orders") if isinstance(result, dict) else []
     pages = result.get("pages") if isinstance(result, dict) else []
+    api_totals = [
+        page_result.get("count")
+        for page_result in pages
+        if isinstance(page_result, dict) and isinstance(page_result.get("count"), (int, float))
+    ]
+    expected_total = max(api_totals) if api_totals else None
+    incomplete = expected_total is not None and len(raw_orders) < expected_total
 
     return {
         "orders": raw_orders,
         "pages": pages,
+        "expected_total": expected_total,
+        "incomplete": incomplete,
         "steps": [
             {
                 "name": "fetch_eod_api_orders",
@@ -2685,6 +2700,8 @@ def fetch_eod_api_orders(page):
                 "discovered_url": result.get("discovered_url") if isinstance(result, dict) else None,
                 "pages": pages,
                 "orders_found": len(raw_orders),
+                "expected_total": expected_total,
+                "incomplete": incomplete,
             }
         ],
         "duplicate_order_references": [],
@@ -3137,21 +3154,28 @@ def sync_end_of_day_orders():
                     api_invalid_orders = []
                     api_warnings = []
                     fallback_reason = None
+                    api_page_state = get_pagination_state(page)
+                    api_page_total = api_page_state.get("total_count")
 
                     if api_scrape_result["orders"]:
+                        if api_scrape_result.get("incomplete"):
+                            fallback_reason = "api_fetch_incomplete_expected_total"
+                        elif isinstance(api_page_total, int) and len(api_scrape_result["orders"]) < api_page_total:
+                            fallback_reason = "api_fetch_less_than_page_total"
+
                         api_rows = [
                             normalize_eod_api_order(order, scraped_at_iso)
                             for order in api_scrape_result["orders"]
                         ]
                         api_invalid_orders, api_warnings = validate_orders(api_rows, api_scrape_result["orders"])
 
-                        if not api_invalid_orders:
+                        if not fallback_reason and not api_invalid_orders:
                             scrape_result = api_scrape_result
                             raw_orders = scrape_result["orders"]
                             rows = api_rows
                             invalid_orders = api_invalid_orders
                             warnings = api_warnings
-                        else:
+                        elif api_invalid_orders and not fallback_reason:
                             fallback_reason = "api_rows_missing_required_fields"
                     else:
                         fallback_reason = "api_fetch_empty"
@@ -3169,6 +3193,10 @@ def sync_end_of_day_orders():
                                     "api_invalid_count": len(api_invalid_orders),
                                     "api_invalid_examples": api_invalid_orders[:5],
                                     "api_warnings_count": len(api_warnings),
+                                    "api_orders_found": len(api_scrape_result.get("orders", [])),
+                                    "api_expected_total": api_scrape_result.get("expected_total"),
+                                    "page_total_count": api_page_total,
+                                    "page_pagination_state": api_page_state,
                                 },
                                 *fallback_result.get("steps", []),
                             ],

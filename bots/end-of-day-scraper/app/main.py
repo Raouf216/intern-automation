@@ -46,6 +46,7 @@ DOKTORABC_USER_AGENT = (
     or DEFAULT_DOKTORABC_USER_AGENT
 )
 DEFAULT_END_OF_DAY_URL = "https://pharmacies.doktorabc.com/end-of-day"
+DEFAULT_DOKTORABC_LOGIN_URL = "https://pharmacies.doktorabc.com/manage-supplies"
 EOD_ORDER_TYPE = "eod"
 SELF_PICKUP_ORDER_TYPE = "self pickup"
 EOD_ORDER_LIST_TYPE = "eod"
@@ -812,7 +813,28 @@ def end_of_day_url():
 
 
 def login_url():
-    return (os.environ.get("DOKTORABC_LOGIN_URL") or "").strip() or end_of_day_url()
+    return (os.environ.get("DOKTORABC_LOGIN_URL") or "").strip() or DEFAULT_DOKTORABC_LOGIN_URL
+
+
+def login_url_candidates(target_url):
+    candidates = [
+        login_url(),
+        DEFAULT_DOKTORABC_LOGIN_URL,
+        target_url,
+        end_of_day_url(),
+    ]
+    unique = []
+    seen = set()
+
+    for candidate in candidates:
+        clean_candidate = (candidate or "").strip()
+        if not clean_candidate or clean_candidate in seen:
+            continue
+
+        seen.add(clean_candidate)
+        unique.append(clean_candidate)
+
+    return unique
 
 
 def self_pickup_url():
@@ -2612,12 +2634,27 @@ def open_fresh_session(browser, target_url, order_type, before_login_path=None):
 
     context = browser.new_context(**browser_context_options())
     page = context.new_page()
+    last_error = None
 
-    goto_page(page, login_url())
-    login_if_needed(page, context, target_url, before_login_path=before_login_path)
-    wait_result = wait_for_orders_page(page, target_url)
+    for candidate_url in login_url_candidates(target_url):
+        try:
+            log_event("fresh_session_login_candidate_start", order_type=order_type, url=candidate_url)
+            goto_page(page, candidate_url)
+            login_if_needed(page, context, target_url, before_login_path=before_login_path)
+            wait_result = wait_for_orders_page(page, target_url)
+            return context, page, False, wait_result
+        except Exception as exc:
+            last_error = exc
+            log_event(
+                "fresh_session_login_candidate_failed",
+                order_type=order_type,
+                url=candidate_url,
+                error=f"{type(exc).__name__}: {exc}",
+                diagnostics=page_readiness_diagnostics(page),
+            )
 
-    return context, page, False, wait_result
+    context.close()
+    raise RuntimeError(f"Could not open authenticated DoktorABC {order_type} page. Last error: {last_error}") from last_error
 
 
 def open_authenticated_orders_page(browser, target_url, order_type, before_login_path=None):

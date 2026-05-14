@@ -414,7 +414,13 @@ def open_fresh_session(browser, before_login_path=None):
     if session_state_dir:
         os.makedirs(session_state_dir, exist_ok=True)
 
-    context.storage_state(path=SESSION_STATE_PATH)
+    temp_path = f"{SESSION_STATE_PATH}.{os.getpid()}.tmp"
+    try:
+        context.storage_state(path=temp_path)
+        os.replace(temp_path, SESSION_STATE_PATH)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
     return context, page, False
 

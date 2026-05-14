@@ -34,7 +34,7 @@ services:
       - PICKUP_READY_BEFORE_OPEN_DELAY_MAX_SECONDS=${PICKUP_ACTION_BEFORE_OPEN_DELAY_MAX_SECONDS:-0}
       - PICKUP_DONE_DRY_RUN=${PICKUP_DONE_DRY_RUN:-true}
       - ARTIFACTS_DIR=/app/artifacts
-      - DOKTORABC_SESSION_STATE_PATH=${PICKUP_ACTION_SESSION_STATE_PATH:-/app/artifacts/doktorabc-pickup-action-storage-state.json}
+      - DOKTORABC_SESSION_STATE_PATH=${DOKTORABC_SESSION_STATE_PATH:-/app/artifacts/doktorabc-storage-state.json}
     volumes:
       - "${WEB_SCRAPER_ARTIFACTS_DIR:-../../web-scraper-artifacts}:/app/artifacts"
     networks:

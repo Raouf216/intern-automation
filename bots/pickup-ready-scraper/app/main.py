@@ -656,15 +656,85 @@ def browser_context_options():
     }
 
 
+def load_shared_session_state():
+    if not os.path.exists(SESSION_STATE_PATH):
+        return None
+
+    try:
+        with open(SESSION_STATE_PATH, "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+    except Exception as exc:
+        log_event("shared_session_state_load_failed", path=SESSION_STATE_PATH, error=f"{type(exc).__name__}: {exc}")
+        return None
+
+    if not isinstance(state, dict):
+        log_event("shared_session_state_invalid", path=SESSION_STATE_PATH)
+        return None
+
+    return state
+
+
+def apply_shared_session_state(context):
+    state = load_shared_session_state()
+    if not state:
+        return False
+
+    cookies = state.get("cookies") or []
+    origins = state.get("origins") or []
+    applied_cookies = 0
+    applied_origins = 0
+
+    try:
+        if cookies:
+            context.add_cookies(cookies)
+            applied_cookies = len(cookies)
+
+        local_storage_origins = [
+            origin_state
+            for origin_state in origins
+            if origin_state.get("origin") and origin_state.get("localStorage")
+        ]
+
+        if local_storage_origins:
+            page = context.pages[0] if context.pages else context.new_page()
+            for origin_state in local_storage_origins:
+                page.goto(origin_state["origin"], wait_until="domcontentloaded", timeout=EOD_NAVIGATION_TIMEOUT_MS)
+                page.evaluate(
+                    """
+                    (items) => {
+                      for (const item of items || []) {
+                        if (item && item.name) localStorage.setItem(item.name, item.value || "");
+                      }
+                    }
+                    """,
+                    origin_state.get("localStorage") or [],
+                )
+                applied_origins += 1
+    except Exception as exc:
+        log_event("shared_session_state_apply_failed", path=SESSION_STATE_PATH, error=f"{type(exc).__name__}: {exc}")
+        return False
+
+    log_event(
+        "shared_session_state_applied",
+        path=SESSION_STATE_PATH,
+        cookies=applied_cookies,
+        origins=applied_origins,
+    )
+    return True
+
+
 def launch_doktorabc_persistent_context(playwright):
     os.makedirs(PERSISTENT_CONTEXT_DIR, exist_ok=True)
     log_event("persistent_context_launch", user_data_dir=PERSISTENT_CONTEXT_DIR)
 
-    return playwright.chromium.launch_persistent_context(
+    context = playwright.chromium.launch_persistent_context(
         PERSISTENT_CONTEXT_DIR,
         headless=bool_env("DOKTORABC_HEADLESS", True),
         **browser_context_options(),
     )
+    apply_shared_session_state(context)
+
+    return context
 
 
 def log_event(event, **details):
@@ -846,7 +916,14 @@ def save_session_state(context):
     if session_state_dir:
         os.makedirs(session_state_dir, exist_ok=True)
 
-    context.storage_state(path=SESSION_STATE_PATH)
+    temp_path = f"{SESSION_STATE_PATH}.{os.getpid()}.tmp"
+    try:
+        context.storage_state(path=temp_path)
+        os.replace(temp_path, SESSION_STATE_PATH)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
     log_event("session_state_saved", path=SESSION_STATE_PATH)
 
 

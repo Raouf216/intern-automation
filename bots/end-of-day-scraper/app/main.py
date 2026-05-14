@@ -47,6 +47,7 @@ DOKTORABC_USER_AGENT = (
 )
 DEFAULT_END_OF_DAY_URL = "https://pharmacies.doktorabc.com/end-of-day"
 DEFAULT_DOKTORABC_LOGIN_URL = "https://pharmacies.doktorabc.com/manage-supplies"
+DEFAULT_DOKTORABC_LOGIN_FORM_URL = "https://pharmacies.doktorabc.com/login"
 EOD_ORDER_TYPE = "eod"
 SELF_PICKUP_ORDER_TYPE = "self pickup"
 EOD_ORDER_LIST_TYPE = "eod"
@@ -820,6 +821,7 @@ def login_url_candidates(target_url):
     candidates = [
         login_url(),
         DEFAULT_DOKTORABC_LOGIN_URL,
+        DEFAULT_DOKTORABC_LOGIN_FORM_URL,
         target_url,
         end_of_day_url(),
     ]
@@ -973,7 +975,7 @@ def goto_page(page, url):
 
 
 def visible_login_form(page):
-    if "login" in page.url.lower():
+    if re.search(r"(^|/|[?&])login($|[/?#=&])", page.url.lower()):
         return True
 
     for selector in (
@@ -988,6 +990,24 @@ def visible_login_form(page):
             continue
 
     return False
+
+
+def require_visible_login_form(page):
+    for selector in (
+        'input[placeholder*="Email" i]',
+        'input[type="email"]',
+        'input[name*="email" i]',
+    ):
+        try:
+            page.locator(selector).first.wait_for(state="visible", timeout=EOD_LOGIN_FIELD_TIMEOUT_MS)
+            break
+        except PlaywrightTimeoutError:
+            continue
+    else:
+        raise RuntimeError(
+            "DoktorABC login form was not visible. "
+            f"Diagnostics: {page_readiness_diagnostics(page)}"
+        )
 
 
 def fill_first_visible(page, selectors, value):
@@ -1154,11 +1174,8 @@ def wait_for_business_condition(page, name, script, timeout_ms, ready_statuses, 
     return result
 
 
-def login_if_needed(page, context, target_url, before_login_path=None):
-    if not visible_login_form(page):
-        log_event("login_not_needed", url=page.url)
-        return False
-
+def perform_login(page, context, target_url, before_login_path=None):
+    require_visible_login_form(page)
     log_event("login_required", url=page.url, target_url=target_url)
 
     fill_first_visible(
@@ -1178,22 +1195,24 @@ def login_if_needed(page, context, target_url, before_login_path=None):
 
     click_login_button(page)
     wait_for_load_states(page)
-    wait_for_business_condition(
-        page,
-        "doktorabc_login_success",
-        LOGIN_AUTHENTICATED_JS,
-        EOD_LOGIN_SUCCESS_TIMEOUT_MS,
-        ready_statuses={"authenticated"},
-        screenshot_label="eod-login-success-timeout",
-    )
 
     if not page.url.startswith(target_url):
         goto_page(page, target_url)
     else:
         page.wait_for_load_state("domcontentloaded")
 
+    wait_result = wait_for_orders_page(page, target_url)
     save_session_state(context)
 
+    return wait_result
+
+
+def login_if_needed(page, context, target_url, before_login_path=None):
+    if not visible_login_form(page):
+        log_event("login_not_needed", url=page.url)
+        return False
+
+    perform_login(page, context, target_url, before_login_path=before_login_path)
     return True
 
 
@@ -2640,8 +2659,7 @@ def open_fresh_session(browser, target_url, order_type, before_login_path=None):
         try:
             log_event("fresh_session_login_candidate_start", order_type=order_type, url=candidate_url)
             goto_page(page, candidate_url)
-            login_if_needed(page, context, target_url, before_login_path=before_login_path)
-            wait_result = wait_for_orders_page(page, target_url)
+            wait_result = perform_login(page, context, target_url, before_login_path=before_login_path)
             return context, page, False, wait_result
         except Exception as exc:
             last_error = exc

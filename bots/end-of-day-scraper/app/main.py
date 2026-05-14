@@ -70,6 +70,8 @@ EOD_EXPORT_DOWNLOAD_TIMEOUT_MS = 20_000
 EOD_EXPORT_BUTTON_VISIBLE_TIMEOUT_MS = 5_000
 EOD_EXPORT_BUTTON_CLICK_TIMEOUT_MS = 10_000
 EOD_LOGIN_FORM_CHECK_TIMEOUT_MS = 800
+EOD_LOGIN_UI_READY_TIMEOUT_MS = int_env("EOD_LOGIN_UI_READY_TIMEOUT_MS", 45_000)
+EOD_LOGIN_UI_READY_RETRY_TIMEOUT_MS = int_env("EOD_LOGIN_UI_READY_RETRY_TIMEOUT_MS", 30_000)
 EOD_LOGIN_FIELD_TIMEOUT_MS = 5_000
 EOD_PHARMACIST_ROLE_CLICK_TIMEOUT_MS = 5_000
 EOD_LOGIN_BUTTON_CLICK_TIMEOUT_MS = 10_000
@@ -938,6 +940,9 @@ def page_readiness_diagnostics(page):
               const passwordVisible = Array.from(
                 document.querySelectorAll('input[placeholder*="Password" i], input[type="password"], input[name*="password" i]')
               ).some(visible);
+              const loginButtonVisible = Array.from(
+                document.querySelectorAll("button, input[type='submit'], [role='button']")
+              ).some((element) => visible(element) && /login/i.test(normalize(element.innerText || element.value || element.textContent)));
               const rows100Visible = Array.from(
                 document.querySelectorAll("#pagination-container #rows-per-page-container li")
               ).some((element) => visible(element) && /^100$/.test(normalize(element.innerText)));
@@ -955,6 +960,7 @@ def page_readiness_diagnostics(page):
                 readyState: document.readyState,
                 emailVisible,
                 passwordVisible,
+                loginButtonVisible,
                 rows100Visible,
                 paginationVisible: visible(document.querySelector("#pagination-container")),
                 orderMarkerCount: document.querySelectorAll('button[id$="-mark-order"], [id^="order-"][id$="-badge"]').length,
@@ -974,40 +980,108 @@ def goto_page(page, url):
     log_event("goto_domcontentloaded", url=page.url)
 
 
+def is_login_url(url):
+    return bool(re.search(r"(^|/|[?&])login($|[/?#=&])", (url or "").lower()))
+
+
+LOGIN_FORM_READY_JS = """
+() => {
+  const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+  const visible = (element) => {
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      Number(style.opacity) !== 0 &&
+      rect.width > 0 &&
+      rect.height > 0
+    );
+  };
+  const emailVisible = Array.from(
+    document.querySelectorAll('input[placeholder*="Email" i], input[type="email"], input[name*="email" i]')
+  ).some(visible);
+  const passwordVisible = Array.from(
+    document.querySelectorAll('input[placeholder*="Password" i], input[type="password"], input[name*="password" i]')
+  ).some(visible);
+  const loginButtonVisible = Array.from(
+    document.querySelectorAll("button, input[type='submit'], [role='button']")
+  ).some((element) => visible(element) && /login/i.test(normalize(element.innerText || element.value || element.textContent)));
+
+  if (emailVisible && passwordVisible && loginButtonVisible) {
+    return {
+      status: "login_ready",
+      url: window.location.href,
+      readyState: document.readyState,
+      emailVisible,
+      passwordVisible,
+      loginButtonVisible,
+    };
+  }
+
+  return false;
+}
+"""
+
+
+def wait_for_rendered_login_form(page, timeout_ms=EOD_LOGIN_UI_READY_TIMEOUT_MS):
+    log_event("login_form_wait_start", timeout_ms=timeout_ms, url=page.url)
+
+    try:
+        handle = page.wait_for_function(LOGIN_FORM_READY_JS, timeout=timeout_ms, polling=250)
+        result = handle.json_value()
+        log_event("login_form_wait_ready", result=result)
+        return result
+    except PlaywrightTimeoutError as exc:
+        diagnostics = page_readiness_diagnostics(page)
+        log_event("login_form_wait_timeout", timeout_ms=timeout_ms, diagnostics=diagnostics)
+        raise RuntimeError(
+            "DoktorABC login form was not visible. "
+            "Expected rendered email field, password field, and Login button. "
+            f"Diagnostics: {diagnostics}"
+        ) from exc
+
+
 def visible_login_form(page):
-    if re.search(r"(^|/|[?&])login($|[/?#=&])", page.url.lower()):
+    try:
+        wait_for_rendered_login_form(page, timeout_ms=EOD_LOGIN_FORM_CHECK_TIMEOUT_MS)
         return True
-
-    for selector in (
-        'input[placeholder*="Email" i]',
-        'input[type="email"]',
-        'input[name*="email" i]',
-    ):
-        try:
-            page.locator(selector).first.wait_for(state="visible", timeout=EOD_LOGIN_FORM_CHECK_TIMEOUT_MS)
-            return True
-        except PlaywrightTimeoutError:
-            continue
-
-    return False
+    except Exception:
+        return False
 
 
 def require_visible_login_form(page):
-    for selector in (
-        'input[placeholder*="Email" i]',
-        'input[type="email"]',
-        'input[name*="email" i]',
-    ):
-        try:
-            page.locator(selector).first.wait_for(state="visible", timeout=EOD_LOGIN_FIELD_TIMEOUT_MS)
-            break
-        except PlaywrightTimeoutError:
-            continue
-    else:
-        raise RuntimeError(
-            "DoktorABC login form was not visible. "
-            f"Diagnostics: {page_readiness_diagnostics(page)}"
+    try:
+        return wait_for_rendered_login_form(page, timeout_ms=EOD_LOGIN_UI_READY_TIMEOUT_MS)
+    except RuntimeError as first_exc:
+        log_event(
+            "login_form_wait_retry_reload",
+            url=page.url,
+            first_error=f"{type(first_exc).__name__}: {first_exc}",
         )
+
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=EOD_NAVIGATION_TIMEOUT_MS)
+            wait_for_load_states(page)
+        except Exception as reload_exc:
+            log_event("login_form_reload_failed", error=f"{type(reload_exc).__name__}: {reload_exc}")
+
+        try:
+            return wait_for_rendered_login_form(page, timeout_ms=EOD_LOGIN_UI_READY_RETRY_TIMEOUT_MS)
+        except RuntimeError as second_exc:
+            diagnostics = page_readiness_diagnostics(page)
+            log_event(
+                "login_form_wait_failed_after_retry",
+                diagnostics=diagnostics,
+                first_error=f"{type(first_exc).__name__}: {first_exc}",
+                second_error=f"{type(second_exc).__name__}: {second_exc}",
+            )
+            raise RuntimeError(
+                "DoktorABC login form was not visible. "
+                "The page loaded, but the rendered Login button/email/password did not appear. "
+                f"Diagnostics: {page_readiness_diagnostics(page)}"
+            ) from second_exc
 
 
 def fill_first_visible(page, selectors, value):
@@ -1175,8 +1249,8 @@ def wait_for_business_condition(page, name, script, timeout_ms, ready_statuses, 
 
 
 def perform_login(page, context, target_url, before_login_path=None):
-    require_visible_login_form(page)
-    log_event("login_required", url=page.url, target_url=target_url)
+    login_state = require_visible_login_form(page)
+    log_event("login_required", url=page.url, target_url=target_url, login_state=login_state)
 
     fill_first_visible(
         page,
@@ -1195,6 +1269,14 @@ def perform_login(page, context, target_url, before_login_path=None):
 
     click_login_button(page)
     wait_for_load_states(page)
+    wait_for_business_condition(
+        page,
+        "doktorabc_login_success",
+        LOGIN_AUTHENTICATED_JS,
+        EOD_LOGIN_SUCCESS_TIMEOUT_MS,
+        {"authenticated"},
+        screenshot_label="eod-login-success",
+    )
 
     if not page.url.startswith(target_url):
         goto_page(page, target_url)
@@ -1208,7 +1290,7 @@ def perform_login(page, context, target_url, before_login_path=None):
 
 
 def login_if_needed(page, context, target_url, before_login_path=None):
-    if not visible_login_form(page):
+    if not visible_login_form(page) and not is_login_url(page.url):
         log_event("login_not_needed", url=page.url)
         return False
 
@@ -2032,6 +2114,8 @@ def click_ready_for_customer(page):
     for name, locator in candidates:
         try:
             locator.wait_for(state="visible", timeout=EOD_READY_FOR_CUSTOMER_VISIBLE_TIMEOUT_MS)
+            locator.scroll_into_view_if_needed(timeout=EOD_READY_FOR_CUSTOMER_VISIBLE_TIMEOUT_MS)
+            locator.click(timeout=EOD_READY_FOR_CUSTOMER_CLICK_TIMEOUT_MS, trial=True)
             locator.click(timeout=EOD_READY_FOR_CUSTOMER_CLICK_TIMEOUT_MS)
             return name
         except PlaywrightTimeoutError:
@@ -2117,8 +2201,9 @@ def select_100_rows(page):
 
         return debug
 
+    rows_100.scroll_into_view_if_needed(timeout=EOD_SELECT_100_VISIBLE_TIMEOUT_MS)
+    rows_100.click(timeout=EOD_SELECT_100_CLICK_TIMEOUT_MS, trial=True)
     rows_100.click(timeout=EOD_SELECT_100_CLICK_TIMEOUT_MS)
-    page.wait_for_load_state("domcontentloaded")
     debug["wait_result"] = wait_for_order_list(page)
     debug["after"] = get_pagination_state(page)
     debug["clicked"] = True
@@ -2152,8 +2237,9 @@ def click_next_page(page, before_state):
         return False, get_pagination_state(page), "next_not_visible"
 
     before_signature = pagination_signature(before_state)
+    next_link.scroll_into_view_if_needed(timeout=EOD_NEXT_VISIBLE_TIMEOUT_MS)
+    next_link.click(timeout=EOD_NEXT_CLICK_TIMEOUT_MS, trial=True)
     next_link.click(timeout=EOD_NEXT_CLICK_TIMEOUT_MS)
-    page.wait_for_load_state("domcontentloaded")
 
     deadline = time.monotonic() + EOD_NEXT_CHANGE_TIMEOUT_MS / 1000
     last_state = before_state
@@ -2857,7 +2943,6 @@ def sync_end_of_day_orders():
                     wait_for_load_states(page)
                     ready_for_customer_click_strategy = click_ready_for_customer(page)
                     ready_for_customer_clicked = True
-                    page.wait_for_load_state("domcontentloaded")
                     target_wait_result = wait_for_rows_100_control(page)
                 else:
                     target_wait_result = wait_for_orders_page(page, target_url)

@@ -70,6 +70,15 @@ class BlankDoktorAbcShell:
     def locator(self, selector):
         return MissingLocator()
 
+    def wait_for_function(self, *args, **kwargs):
+        raise FakePlaywrightTimeoutError()
+
+    def reload(self, *args, **kwargs):
+        pass
+
+    def wait_for_load_state(self, *args, **kwargs):
+        pass
+
     def evaluate(self, script):
         return {
             "url": self.url,
@@ -77,6 +86,7 @@ class BlankDoktorAbcShell:
             "readyState": "complete",
             "emailVisible": False,
             "passwordVisible": False,
+            "loginButtonVisible": False,
             "rows100Visible": False,
             "paginationVisible": False,
             "orderMarkerCount": 0,
@@ -91,6 +101,12 @@ class AuthRegressionTest(unittest.TestCase):
 
     def test_blank_end_of_day_shell_is_not_login_form(self):
         page = BlankDoktorAbcShell()
+
+        self.assertFalse(self.eod.visible_login_form(page))
+
+    def test_login_url_alone_is_not_login_form(self):
+        page = BlankDoktorAbcShell()
+        page.url = "https://pharmacies.doktorabc.com/login"
 
         self.assertFalse(self.eod.visible_login_form(page))
 

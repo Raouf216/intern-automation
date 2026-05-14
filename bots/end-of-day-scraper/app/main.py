@@ -102,6 +102,8 @@ EOD_NEXT_VISIBLE_TIMEOUT_MS = 10_000
 EOD_NEXT_CLICK_TIMEOUT_MS = 10_000
 EOD_NEXT_CHANGE_TIMEOUT_MS = 20_000
 EOD_NEXT_CHANGE_POLL_MS = 500
+DOKTORABC_CLICK_BLOCKER_TIMEOUT_MS = int_env("DOKTORABC_CLICK_BLOCKER_TIMEOUT_MS", 5_000)
+DOKTORABC_CLICK_BLOCKER_POLL_MS = int_env("DOKTORABC_CLICK_BLOCKER_POLL_MS", 100)
 EOD_AFTER_LOGIN_CLICK_WAIT_MS = 2_000
 EOD_PZN_POPUP_WAIT_MS = int_env("EOD_PZN_POPUP_WAIT_MS", 180)
 EOD_PZN_CLOSE_WAIT_MS = int_env("EOD_PZN_CLOSE_WAIT_MS", 50)
@@ -2093,6 +2095,93 @@ def render_stability_key(snapshot):
     )
 
 
+def click_blocker_state(page):
+    return page.evaluate(
+        """
+        () => {
+          const describe = (element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return {
+              id: element.id || "",
+              class_name: String(element.className || ""),
+              opacity: style.opacity,
+              pointer_events: style.pointerEvents,
+              position: style.position,
+              rect: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+              },
+            };
+          };
+          const candidates = Array.from(
+            document.querySelectorAll('#loader-container, [id*="loader" i], [class*="loader" i], [class*="backdrop" i]')
+          );
+          const blocking = candidates.filter((element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            if (
+              style.display === "none" ||
+              style.visibility === "hidden" ||
+              style.pointerEvents === "none" ||
+              rect.width <= 0 ||
+              rect.height <= 0 ||
+              rect.right <= 0 ||
+              rect.bottom <= 0 ||
+              rect.left >= window.innerWidth ||
+              rect.top >= window.innerHeight
+            ) {
+              return false;
+            }
+
+            const coversMostViewport =
+              rect.width >= window.innerWidth * 0.75 &&
+              rect.height >= window.innerHeight * 0.75;
+            return style.position === "fixed" || coversMostViewport;
+          });
+
+          const cleared = [];
+          for (const element of blocking) {
+            const style = window.getComputedStyle(element);
+            const className = String(element.className || "");
+            const invisible = Number(style.opacity) === 0 || /opacity-0/.test(className);
+
+            if (invisible) {
+              element.style.pointerEvents = "none";
+              element.setAttribute("data-bot-pointer-events-cleared", "true");
+              cleared.push(describe(element));
+            }
+          }
+
+          const remaining = blocking.filter((element) => window.getComputedStyle(element).pointerEvents !== "none");
+
+          return {
+            ready: remaining.length === 0,
+            cleared,
+            remaining: remaining.slice(0, 5).map(describe),
+          };
+        }
+        """
+    )
+
+
+def wait_for_click_blockers_clear(page, timeout_ms=DOKTORABC_CLICK_BLOCKER_TIMEOUT_MS):
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_state = None
+
+    while time.monotonic() < deadline:
+        last_state = click_blocker_state(page)
+        if last_state.get("ready"):
+            return last_state
+
+        page.wait_for_timeout(DOKTORABC_CLICK_BLOCKER_POLL_MS)
+
+    log_event("click_blocker_wait_timeout", state=last_state, timeout_ms=timeout_ms, url=page.url)
+    return last_state or {"ready": False}
+
+
 def wait_for_rows_100_control(page, timeout_ms=EOD_ROWS_100_TIMEOUT_MS):
     rows_100 = rows_100_locator(page)
     started_at = time.monotonic()
@@ -2170,6 +2259,7 @@ def click_ready_for_customer(page):
         try:
             locator.wait_for(state="visible", timeout=EOD_READY_FOR_CUSTOMER_VISIBLE_TIMEOUT_MS)
             locator.scroll_into_view_if_needed(timeout=EOD_READY_FOR_CUSTOMER_VISIBLE_TIMEOUT_MS)
+            wait_for_click_blockers_clear(page)
             locator.click(timeout=EOD_READY_FOR_CUSTOMER_CLICK_TIMEOUT_MS, trial=True)
             locator.click(timeout=EOD_READY_FOR_CUSTOMER_CLICK_TIMEOUT_MS)
             return name
@@ -2257,6 +2347,7 @@ def select_100_rows(page):
         return debug
 
     rows_100.scroll_into_view_if_needed(timeout=EOD_SELECT_100_VISIBLE_TIMEOUT_MS)
+    wait_for_click_blockers_clear(page)
     rows_100.click(timeout=EOD_SELECT_100_CLICK_TIMEOUT_MS, trial=True)
     rows_100.click(timeout=EOD_SELECT_100_CLICK_TIMEOUT_MS)
     debug["wait_result"] = wait_for_order_list(page)
@@ -2293,6 +2384,7 @@ def click_next_page(page, before_state):
 
     before_signature = pagination_signature(before_state)
     next_link.scroll_into_view_if_needed(timeout=EOD_NEXT_VISIBLE_TIMEOUT_MS)
+    wait_for_click_blockers_clear(page)
     next_link.click(timeout=EOD_NEXT_CLICK_TIMEOUT_MS, trial=True)
     next_link.click(timeout=EOD_NEXT_CLICK_TIMEOUT_MS)
 

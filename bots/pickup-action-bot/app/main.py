@@ -111,6 +111,8 @@ PICKUP_DONE_NEXT_VISIBLE_TIMEOUT_MS = int_env("PICKUP_DONE_NEXT_VISIBLE_TIMEOUT_
 PICKUP_DONE_NEXT_CLICK_TIMEOUT_MS = int_env("PICKUP_DONE_NEXT_CLICK_TIMEOUT_MS", 3_000)
 PICKUP_DONE_NEXT_CHANGE_TIMEOUT_MS = int_env("PICKUP_DONE_NEXT_CHANGE_TIMEOUT_MS", 4_000)
 PICKUP_DONE_NEXT_CHANGE_POLL_MS = int_env("PICKUP_DONE_NEXT_CHANGE_POLL_MS", 150)
+PICKUP_DONE_CLICK_BLOCKER_TIMEOUT_MS = int_env("PICKUP_DONE_CLICK_BLOCKER_TIMEOUT_MS", 5_000)
+PICKUP_DONE_CLICK_BLOCKER_POLL_MS = int_env("PICKUP_DONE_CLICK_BLOCKER_POLL_MS", 100)
 PICKUP_DONE_ORDER_PROBE_TIMEOUT_MS = int_env("PICKUP_DONE_ORDER_PROBE_TIMEOUT_MS", 500)
 PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS = int_env("PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS", 5_000)
 PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS = int_env("PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS", 5_000)
@@ -1793,6 +1795,9 @@ def click_ready_for_customer_fast(page):
     for name, locator in candidates:
         try:
             locator.wait_for(state="visible", timeout=PICKUP_DONE_READY_TAB_VISIBLE_TIMEOUT_MS)
+            locator.scroll_into_view_if_needed(timeout=PICKUP_DONE_READY_TAB_VISIBLE_TIMEOUT_MS)
+            wait_for_click_blockers_clear(page)
+            locator.click(timeout=PICKUP_DONE_READY_TAB_CLICK_TIMEOUT_MS, trial=True)
             locator.click(timeout=PICKUP_DONE_READY_TAB_CLICK_TIMEOUT_MS)
             return name
         except PlaywrightTimeoutError:
@@ -1898,6 +1903,98 @@ def pagination_signature(state):
     )
 
 
+def click_blocker_state(page):
+    return page.evaluate(
+        """
+        () => {
+          const describe = (element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return {
+              id: element.id || "",
+              class_name: String(element.className || ""),
+              opacity: style.opacity,
+              pointer_events: style.pointerEvents,
+              display: style.display,
+              visibility: style.visibility,
+              position: style.position,
+              rect: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+              },
+            };
+          };
+          const candidates = Array.from(
+            document.querySelectorAll('#loader-container, [id*="loader" i], [class*="loader" i], [class*="backdrop" i]')
+          );
+          const blocking = candidates.filter((element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            if (
+              style.display === "none" ||
+              style.visibility === "hidden" ||
+              style.pointerEvents === "none" ||
+              rect.width <= 0 ||
+              rect.height <= 0 ||
+              rect.right <= 0 ||
+              rect.bottom <= 0 ||
+              rect.left >= window.innerWidth ||
+              rect.top >= window.innerHeight
+            ) {
+              return false;
+            }
+
+            const coversMostViewport =
+              rect.width >= window.innerWidth * 0.75 &&
+              rect.height >= window.innerHeight * 0.75;
+            return style.position === "fixed" || coversMostViewport;
+          });
+
+          const cleared = [];
+          for (const element of blocking) {
+            const style = window.getComputedStyle(element);
+            const className = String(element.className || "");
+            const invisible = Number(style.opacity) === 0 || /opacity-0/.test(className);
+
+            if (invisible) {
+              element.style.pointerEvents = "none";
+              element.setAttribute("data-bot-pointer-events-cleared", "true");
+              cleared.push(describe(element));
+            }
+          }
+
+          const remaining = blocking.filter((element) => {
+            const style = window.getComputedStyle(element);
+            return style.pointerEvents !== "none";
+          });
+
+          return {
+            ready: remaining.length === 0,
+            cleared,
+            remaining: remaining.slice(0, 5).map(describe),
+          };
+        }
+        """
+    )
+
+
+def wait_for_click_blockers_clear(page, timeout_ms=PICKUP_DONE_CLICK_BLOCKER_TIMEOUT_MS):
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_state = None
+
+    while time.monotonic() < deadline:
+        last_state = click_blocker_state(page)
+        if last_state.get("ready"):
+            return last_state
+
+        page.wait_for_timeout(PICKUP_DONE_CLICK_BLOCKER_POLL_MS)
+
+    log_event("click_blocker_wait_timeout", state=last_state, timeout_ms=timeout_ms, url=page.url)
+    return last_state or {"ready": False}
+
+
 def click_next_page(page, before_state):
     if not before_state.get("next_exists"):
         return False, before_state, "next_not_visible"
@@ -1913,6 +2010,9 @@ def click_next_page(page, before_state):
         return False, get_pagination_state(page), "next_not_visible"
 
     before_signature = pagination_signature(before_state)
+    wait_for_click_blockers_clear(page)
+    next_link.scroll_into_view_if_needed(timeout=EOD_NEXT_VISIBLE_TIMEOUT_MS)
+    next_link.click(timeout=EOD_NEXT_CLICK_TIMEOUT_MS, trial=True)
     next_link.click(timeout=EOD_NEXT_CLICK_TIMEOUT_MS)
     page.wait_for_load_state("domcontentloaded")
 
@@ -1946,6 +2046,9 @@ def click_next_page_fast(page, before_state):
         return False, get_pagination_state(page), "next_not_visible"
 
     before_signature = pagination_signature(before_state)
+    wait_for_click_blockers_clear(page)
+    next_link.scroll_into_view_if_needed(timeout=PICKUP_DONE_NEXT_VISIBLE_TIMEOUT_MS)
+    next_link.click(timeout=PICKUP_DONE_NEXT_CLICK_TIMEOUT_MS, trial=True)
     next_link.click(timeout=PICKUP_DONE_NEXT_CLICK_TIMEOUT_MS)
 
     try:
@@ -3267,6 +3370,7 @@ def try_pickup_done_on_current_page(page, order_reference, dry_run):
     try:
         button.wait_for(state="visible", timeout=PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS)
         button.scroll_into_view_if_needed(timeout=PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS)
+        wait_for_click_blockers_clear(page)
         button_snapshot = pickup_done_button_snapshot(button)
         button_visible = button.is_visible()
         button_enabled = button.is_enabled()

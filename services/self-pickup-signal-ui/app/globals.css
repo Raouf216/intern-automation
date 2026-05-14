@@ -234,34 +234,51 @@ h1 {
   width: fit-content;
   display: inline-flex;
   align-items: center;
+  gap: 8px;
   border: 0;
   border-radius: 0;
   padding: 0;
+  color: #050505;
   line-height: 0;
-  background: transparent;
+  background: #ffffff;
   box-shadow: none;
 }
 
 body[data-theme="night"] .doktorabc-logo-card {
-  background: transparent;
+  color: #f7fafc;
+  background: #111820;
 }
 
-.doktorabc-logo-image {
-  display: block;
-  width: min(198px, 100%);
-  height: auto;
+.doktorabc-symbol {
+  width: 31px;
+  height: 31px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: #20e3ad;
+  stroke-linejoin: miter;
+  stroke-width: 2.4;
 }
 
-.doktorabc-logo-night {
-  display: none;
+.doktorabc-wordmark {
+  display: grid;
+  gap: 4px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-body[data-theme="night"] .doktorabc-logo-light {
-  display: none;
+.doktorabc-wordmark strong {
+  color: currentColor;
+  font-size: 24px;
+  font-weight: 950;
+  letter-spacing: 0;
 }
 
-body[data-theme="night"] .doktorabc-logo-night {
-  display: block;
+.doktorabc-wordmark small {
+  color: color-mix(in srgb, currentColor 74%, transparent);
+  font-size: 17px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-align: center;
 }
 
 .doktorabc-ready-link {

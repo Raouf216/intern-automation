@@ -108,7 +108,7 @@ EOD_AFTER_LOGIN_CLICK_WAIT_MS = 2_000
 EOD_PZN_POPUP_WAIT_MS = int_env("EOD_PZN_POPUP_WAIT_MS", 180)
 EOD_PZN_CLOSE_WAIT_MS = int_env("EOD_PZN_CLOSE_WAIT_MS", 50)
 EOD_API_FETCH_ENABLED = (
-    os.environ.get("EOD_API_FETCH_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+    os.environ.get("EOD_API_FETCH_ENABLED", "false").strip().lower() not in {"0", "false", "no", "off"}
 )
 EOD_API_LIMIT = int_env("EOD_API_LIMIT", 100)
 SUPABASE_SCHEMA = os.environ.get("SUPABASE_SCHEMA", "private")

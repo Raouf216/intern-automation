@@ -100,10 +100,25 @@ EOD_AFTER_LOGIN_CLICK_WAIT_MS = 2_000
 EOD_PZN_POPUP_WAIT_MS = 350
 EOD_PZN_CLOSE_WAIT_MS = 100
 PICKUP_DONE_MAX_ORDER_REFERENCES = int_env("PICKUP_DONE_MAX_ORDER_REFERENCES", 50)
-PICKUP_DONE_ORDER_PROBE_TIMEOUT_MS = int_env("PICKUP_DONE_ORDER_PROBE_TIMEOUT_MS", 800)
-PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS = int_env("PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS", 10_000)
-PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS = int_env("PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS", 10_000)
-PICKUP_DONE_AFTER_CLICK_WAIT_MS = int_env("PICKUP_DONE_AFTER_CLICK_WAIT_MS", 2_000)
+PICKUP_DONE_NAVIGATION_TIMEOUT_MS = int_env("PICKUP_DONE_NAVIGATION_TIMEOUT_MS", 10_000)
+PICKUP_DONE_FAST_LOAD_TIMEOUT_MS = int_env("PICKUP_DONE_FAST_LOAD_TIMEOUT_MS", 3_000)
+PICKUP_DONE_PAGE_READY_TIMEOUT_MS = int_env("PICKUP_DONE_PAGE_READY_TIMEOUT_MS", 8_000)
+PICKUP_DONE_PAGE_READY_POLL_MS = int_env("PICKUP_DONE_PAGE_READY_POLL_MS", 150)
+PICKUP_DONE_READY_TAB_VISIBLE_TIMEOUT_MS = int_env("PICKUP_DONE_READY_TAB_VISIBLE_TIMEOUT_MS", 3_000)
+PICKUP_DONE_READY_TAB_CLICK_TIMEOUT_MS = int_env("PICKUP_DONE_READY_TAB_CLICK_TIMEOUT_MS", 3_000)
+PICKUP_DONE_AFTER_READY_CLICK_SETTLE_MS = int_env("PICKUP_DONE_AFTER_READY_CLICK_SETTLE_MS", 0)
+PICKUP_DONE_NEXT_VISIBLE_TIMEOUT_MS = int_env("PICKUP_DONE_NEXT_VISIBLE_TIMEOUT_MS", 2_000)
+PICKUP_DONE_NEXT_CLICK_TIMEOUT_MS = int_env("PICKUP_DONE_NEXT_CLICK_TIMEOUT_MS", 3_000)
+PICKUP_DONE_NEXT_CHANGE_TIMEOUT_MS = int_env("PICKUP_DONE_NEXT_CHANGE_TIMEOUT_MS", 4_000)
+PICKUP_DONE_NEXT_CHANGE_POLL_MS = int_env("PICKUP_DONE_NEXT_CHANGE_POLL_MS", 150)
+PICKUP_DONE_ORDER_PROBE_TIMEOUT_MS = int_env("PICKUP_DONE_ORDER_PROBE_TIMEOUT_MS", 500)
+PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS = int_env("PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS", 5_000)
+PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS = int_env("PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS", 5_000)
+PICKUP_DONE_AFTER_CLICK_RESULT_TIMEOUT_MS = int_env(
+    "PICKUP_DONE_AFTER_CLICK_RESULT_TIMEOUT_MS",
+    int_env("PICKUP_DONE_AFTER_CLICK_WAIT_MS", 1_500),
+)
+PICKUP_DONE_AFTER_CLICK_POLL_MS = int_env("PICKUP_DONE_AFTER_CLICK_POLL_MS", 150)
 PICKUP_READY_AUTO_SYNC_MIN_MINUTES = int_env("PICKUP_READY_AUTO_SYNC_MIN_MINUTES", 27)
 PICKUP_READY_AUTO_SYNC_MAX_MINUTES = int_env("PICKUP_READY_AUTO_SYNC_MAX_MINUTES", 33)
 PICKUP_READY_AUTO_SYNC_INITIAL_DELAY_SECONDS = int_env("PICKUP_READY_AUTO_SYNC_INITIAL_DELAY_SECONDS", 15)
@@ -1678,6 +1693,37 @@ def click_ready_for_customer(page):
     raise RuntimeError('Could not find visible "Ready for Customer" tab.')
 
 
+def click_ready_for_customer_fast(page):
+    candidates = (
+        (
+            "tab_role_name",
+            page.get_by_role("tab", name=re.compile(r"\bReady\s+for\s+Customer\b", re.I)).first,
+        ),
+        (
+            "ready_for_customer_tab_id",
+            page.locator('button[role="tab"][id*="ready-for-customer"]').first,
+        ),
+        (
+            "ready_for_customer_tab_text",
+            page.locator('[role="tab"]:has-text("Ready for Customer")').first,
+        ),
+        (
+            "ready_for_customer_button_text",
+            page.locator('button:has-text("Ready for Customer")').first,
+        ),
+    )
+
+    for name, locator in candidates:
+        try:
+            locator.wait_for(state="visible", timeout=PICKUP_DONE_READY_TAB_VISIBLE_TIMEOUT_MS)
+            locator.click(timeout=PICKUP_DONE_READY_TAB_CLICK_TIMEOUT_MS)
+            return name
+        except PlaywrightTimeoutError:
+            continue
+
+    raise RuntimeError('Could not find visible "Ready for Customer" tab for pickup done action.')
+
+
 def get_pagination_state(page):
     return page.evaluate(
         """
@@ -1804,6 +1850,46 @@ def click_next_page(page, before_state):
         if pagination_signature(state) != before_signature:
             wait_result = wait_for_order_list(page)
             return True, wait_result["pagination_state"], "page_changed"
+
+    return False, last_state, "next_click_did_not_change_page"
+
+
+def click_next_page_fast(page, before_state):
+    if not before_state.get("next_exists"):
+        return False, before_state, "next_not_visible"
+
+    if not before_state.get("has_next"):
+        return False, before_state, "next_disabled"
+
+    next_link = page.locator('#pagination-container nav[aria-label="pagination"] a[aria-label="Go to next page"]').first
+
+    try:
+        next_link.wait_for(state="visible", timeout=PICKUP_DONE_NEXT_VISIBLE_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        return False, get_pagination_state(page), "next_not_visible"
+
+    before_signature = pagination_signature(before_state)
+    next_link.click(timeout=PICKUP_DONE_NEXT_CLICK_TIMEOUT_MS)
+
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=PICKUP_DONE_FAST_LOAD_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        pass
+
+    deadline = time.monotonic() + PICKUP_DONE_NEXT_CHANGE_TIMEOUT_MS / 1000
+    last_state = before_state
+
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(PICKUP_DONE_NEXT_CHANGE_POLL_MS)
+        state = get_pagination_state(page)
+        last_state = state
+
+        if pagination_signature(state) != before_signature:
+            try:
+                wait_result = wait_for_pickup_done_page_ready(page, timeout_ms=PICKUP_DONE_NEXT_CHANGE_TIMEOUT_MS)
+                return True, wait_result["pagination_state"], "page_changed"
+            except Exception:
+                return True, state, "page_changed"
 
     return False, last_state, "next_click_did_not_change_page"
 
@@ -2185,6 +2271,97 @@ def open_authenticated_persistent_orders_page(context, target_url, order_type, b
     wait_result = wait_for_orders_page(page, target_url)
 
     return context, page, not logged_in, wait_result
+
+
+def open_authenticated_persistent_pickup_done_page(context, target_url, before_login_path=None):
+    print("trying persistent DoktorABC context for pickup done action ...", flush=True)
+
+    page = context.pages[0] if context.pages else context.new_page()
+
+    if not page.url.startswith(target_url):
+        log_event("pickup_done_auth_goto_start", url=target_url)
+        page.goto(target_url, wait_until="domcontentloaded", timeout=PICKUP_DONE_NAVIGATION_TIMEOUT_MS)
+        log_event("pickup_done_auth_goto_domcontentloaded", url=page.url)
+    else:
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=PICKUP_DONE_FAST_LOAD_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            pass
+
+    logged_in = login_if_needed(page, context, target_url, before_login_path=before_login_path)
+    wait_result = {
+        "ready": True,
+        "waited_for": "pickup_done_authenticated_shell",
+        "current_url": page.url,
+        "login_checked": True,
+    }
+
+    return context, page, not logged_in, wait_result
+
+
+def open_saved_pickup_done_session(browser, target_url):
+    if not os.path.exists(SESSION_STATE_PATH):
+        return None
+
+    print("trying saved DoktorABC session for pickup done action ...", flush=True)
+
+    try:
+        context = browser.new_context(
+            storage_state=SESSION_STATE_PATH,
+            **browser_context_options(),
+        )
+    except Exception as exc:
+        print(
+            f"saved DoktorABC pickup done session could not be opened: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        return None
+
+    page = context.new_page()
+
+    try:
+        log_event("pickup_done_saved_goto_start", url=target_url)
+        page.goto(target_url, wait_until="domcontentloaded", timeout=PICKUP_DONE_NAVIGATION_TIMEOUT_MS)
+        log_event("pickup_done_saved_goto_domcontentloaded", url=page.url)
+        logged_in = login_if_needed(page, context, target_url)
+        wait_result = {
+            "ready": True,
+            "waited_for": "pickup_done_authenticated_shell",
+            "current_url": page.url,
+            "login_checked": True,
+        }
+        return context, page, not logged_in, wait_result
+    except Exception as exc:
+        context.close()
+        print(f"saved DoktorABC pickup done session is expired or not ready: {type(exc).__name__}: {exc}", flush=True)
+        return None
+
+
+def open_fresh_pickup_done_session(browser, target_url, before_login_path=None):
+    print("trying fresh DoktorABC login for pickup done action ...", flush=True)
+
+    context = browser.new_context(**browser_context_options())
+    page = context.new_page()
+
+    page.goto(login_url(), wait_until="domcontentloaded", timeout=PICKUP_DONE_NAVIGATION_TIMEOUT_MS)
+    login_if_needed(page, context, target_url, before_login_path=before_login_path)
+    wait_result = {
+        "ready": True,
+        "waited_for": "pickup_done_authenticated_shell",
+        "current_url": page.url,
+        "login_checked": True,
+    }
+
+    return context, page, False, wait_result
+
+
+def open_authenticated_pickup_done_page(browser, target_url, before_login_path=None):
+    saved_session = open_saved_pickup_done_session(browser, target_url)
+
+    if saved_session is not None:
+        return saved_session
+
+    return open_fresh_pickup_done_session(browser, target_url, before_login_path=before_login_path)
 
 
 def open_authenticated_end_of_day_page(browser, before_login_path=None):
@@ -2856,6 +3033,146 @@ def pickup_done_button_snapshot(button):
         return {"snapshot_error": f"{type(exc).__name__}: {exc}"}
 
 
+def pickup_done_page_snapshot(page):
+    return page.evaluate(
+        """
+        () => {
+          const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+          const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity) !== 0 &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          };
+          const bodyText = normalize(document.body?.innerText || "");
+          const markers = Array.from(document.querySelectorAll('button[id$="-mark-order"], [id^="order-"][id$="-badge"]'))
+            .filter(visible);
+          const doneButtons = Array.from(document.querySelectorAll("button"))
+            .filter((button) => visible(button) && /self\\s*pickup\\s*done/i.test(button.innerText || button.textContent || ""));
+          const emptyVisible = /no\\s+orders|no\\s+data|keine\\s+bestellungen|keine\\s+daten/i.test(bodyText);
+
+          return {
+            ready: markers.length > 0 || doneButtons.length > 0 || emptyVisible,
+            ready_state: document.readyState,
+            marker_count: markers.length,
+            self_pickup_done_button_count: doneButtons.length,
+            empty_visible: emptyVisible,
+            text_sample: bodyText.slice(0, 240),
+            url: window.location.href,
+          };
+        }
+        """
+    )
+
+
+def wait_for_pickup_done_page_ready(page, timeout_ms=PICKUP_DONE_PAGE_READY_TIMEOUT_MS):
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_snapshot = None
+
+    while time.monotonic() < deadline:
+        last_snapshot = pickup_done_page_snapshot(page)
+        if last_snapshot.get("ready"):
+            return {
+                "ready": True,
+                "waited_for": "pickup_done_button_or_order_marker",
+                "snapshot": last_snapshot,
+                "pagination_state": get_pagination_state(page),
+            }
+
+        page.wait_for_timeout(PICKUP_DONE_PAGE_READY_POLL_MS)
+
+    raise RuntimeError(f"DoktorABC Self Pickup list did not render in time. Last snapshot: {last_snapshot}")
+
+
+def pickup_done_order_state(page, order_reference):
+    reference = order_reference_key(order_reference)
+    return page.evaluate(
+        """
+        (reference) => {
+          const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+          const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity) !== 0 &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          };
+          const marker = Array.from(document.querySelectorAll('button[id$="-mark-order"], [id^="order-"][id$="-badge"], label[for$="-mark-order"]'))
+            .find((element) => {
+              const id = element.id || "";
+              const htmlFor = element.getAttribute("for") || "";
+              return id === `order-${reference}-badge` || id === `${reference}-mark-order` || htmlFor === `${reference}-mark-order`;
+            });
+
+          if (!marker || !visible(marker)) {
+            return {
+              status: "gone",
+              visible: false,
+              marker_found: Boolean(marker),
+              order_reference: reference,
+            };
+          }
+
+          let root = marker;
+          for (let depth = 0; depth < 14 && root; depth += 1) {
+            const text = normalize(root.innerText || root.textContent || "");
+            if (text.includes(reference) && /self\\s*pickup\\s*done|abgeholt/i.test(text)) break;
+            root = root.parentElement;
+          }
+
+          root = root || marker.parentElement || marker;
+          const text = normalize(root.innerText || root.textContent || "");
+          const buttons = Array.from(root.querySelectorAll("button")).map((button) => ({
+            id: button.id || null,
+            text: normalize(button.innerText || button.textContent || ""),
+            disabled: Boolean(button.disabled) || button.getAttribute("aria-disabled") === "true",
+          }));
+          const confirmedText = /\\babgeholt\\b|collected|picked\\s*up/i.test(text);
+          const disabledDoneButton = buttons.some((button) =>
+            /self\\s*pickup\\s*done|\\babgeholt\\b/i.test(button.text) && button.disabled
+          );
+
+          return {
+            status: confirmedText || disabledDoneButton ? "confirmed" : "still_visible",
+            visible: true,
+            marker_found: true,
+            order_reference: reference,
+            confirmed_text: confirmedText,
+            disabled_done_button: disabledDoneButton,
+            buttons,
+            text_sample: text.slice(0, 240),
+          };
+        }
+        """,
+        reference,
+    )
+
+
+def wait_for_pickup_done_click_result(page, order_reference):
+    deadline = time.monotonic() + PICKUP_DONE_AFTER_CLICK_RESULT_TIMEOUT_MS / 1000
+    last_state = None
+
+    while time.monotonic() < deadline:
+        last_state = pickup_done_order_state(page, order_reference)
+        if last_state.get("status") in {"gone", "confirmed"}:
+            return last_state
+
+        page.wait_for_timeout(PICKUP_DONE_AFTER_CLICK_POLL_MS)
+
+    return last_state or pickup_done_order_state(page, order_reference)
+
+
 def try_pickup_done_on_current_page(page, order_reference, dry_run):
     pagination_state = get_pagination_state(page)
     button, debug = pickup_done_button_locator(page, order_reference)
@@ -2893,8 +3210,8 @@ def try_pickup_done_on_current_page(page, order_reference, dry_run):
             }
 
         button.click(timeout=PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS)
-        page.wait_for_timeout(PICKUP_DONE_AFTER_CLICK_WAIT_MS)
-        still_visible = page.locator(f'[id="order-{order_reference_key(order_reference)}-badge"]').count() > 0
+        click_result = wait_for_pickup_done_click_result(page, order_reference)
+        still_visible = click_result.get("status") == "still_visible"
 
         return {
             "order_reference": order_reference,
@@ -2911,6 +3228,7 @@ def try_pickup_done_on_current_page(page, order_reference, dry_run):
             "button_visible": button_visible,
             "button_enabled": button_enabled,
             "button": button_snapshot,
+            "click_result": click_result,
             "pagination_state": pagination_state,
             "debug": debug,
         }
@@ -2928,16 +3246,32 @@ def try_pickup_done_on_current_page(page, order_reference, dry_run):
 
 
 def prepare_pickup_done_page(page, target_url):
-    goto_page(page, target_url)
-    wait_for_load_states(page)
-    ready_for_customer_click_strategy = click_ready_for_customer(page)
+    if not page.url.startswith(target_url):
+        log_event("pickup_done_goto_start", url=target_url)
+        page.goto(target_url, wait_until="domcontentloaded", timeout=PICKUP_DONE_NAVIGATION_TIMEOUT_MS)
+        log_event("pickup_done_goto_domcontentloaded", url=page.url)
+    else:
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=PICKUP_DONE_FAST_LOAD_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            pass
 
-    if EOD_AFTER_READY_FOR_CUSTOMER_CLICK_WAIT_MS > 0:
-        page.wait_for_timeout(EOD_AFTER_READY_FOR_CUSTOMER_CLICK_WAIT_MS)
+    ready_for_customer_click_strategy = click_ready_for_customer_fast(page)
 
-    page.wait_for_load_state("domcontentloaded")
-    wait_result = wait_for_rows_100_control(page)
-    rows_debug = select_100_rows(page)
+    if PICKUP_DONE_AFTER_READY_CLICK_SETTLE_MS > 0:
+        page.wait_for_timeout(PICKUP_DONE_AFTER_READY_CLICK_SETTLE_MS)
+
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=PICKUP_DONE_FAST_LOAD_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        pass
+
+    wait_result = wait_for_pickup_done_page_ready(page)
+    rows_debug = {
+        "clicked": False,
+        "skipped_reason": "pickup_done_action_uses_current_page_size",
+        "after": get_pagination_state(page),
+    }
 
     return {
         "target_url": target_url,
@@ -2945,6 +3279,128 @@ def prepare_pickup_done_page(page, target_url):
         "ready_for_customer_click_strategy": ready_for_customer_click_strategy,
         "wait_result": wait_result,
         "rows_debug": rows_debug,
+    }
+
+
+def pickup_done_checked_page_summary(page_index, state, pending_count, page_results=None):
+    return {
+        "page_index": page_index,
+        "current_page": state.get("current_page"),
+        "order_count": state.get("order_count"),
+        "first_order_reference": state.get("first_order_reference"),
+        "last_order_reference": state.get("last_order_reference"),
+        "has_next": state.get("has_next"),
+        "next_exists": state.get("next_exists"),
+        "pending_count": pending_count,
+        "results": page_results or [],
+    }
+
+
+def visible_pickup_done_candidates(state, pending):
+    refs_on_page = {
+        order_reference_key(order_reference)
+        for order_reference in (state.get("order_refs") or [])
+        if order_reference
+    }
+
+    return [order_reference for order_reference in pending if order_reference_key(order_reference) in refs_on_page]
+
+
+def find_and_try_pickup_done_orders(page, order_references, dry_run):
+    pending = list(order_references)
+    results_by_reference = {}
+    checked_pages = []
+    scan_pages = []
+    last_state = None
+    last_next_reason = None
+
+    for page_index in range(1, EOD_MAX_PAGES + 1):
+        page_results = []
+
+        while pending:
+            state_before = get_pagination_state(page)
+            last_state = state_before
+            candidates = visible_pickup_done_candidates(state_before, pending)
+            if not candidates:
+                break
+
+            made_progress = False
+            for order_reference in list(candidates):
+                result = try_pickup_done_on_current_page(page, order_reference, dry_run)
+                result["page_index"] = page_index
+
+                if result["status"] == "not_found_on_page":
+                    result = {
+                        **result,
+                        "status": "not_clickable",
+                        "message": "Order is visible on this page, but the Self pickup done button was not found.",
+                    }
+
+                result["pages_checked"] = checked_pages.copy()
+                results_by_reference[order_reference] = result
+                pending.remove(order_reference)
+                made_progress = True
+                page_results.append(
+                    {
+                        "order_reference": order_reference,
+                        "status": result["status"],
+                    }
+                )
+
+            if not made_progress:
+                break
+
+        state_before_next = get_pagination_state(page)
+        last_state = state_before_next
+        scan_pages.append(
+            pickup_done_checked_page_summary(
+                page_index,
+                state_before_next,
+                len(pending),
+                page_results=page_results,
+            )
+        )
+
+        if not pending:
+            break
+
+        checked_pages.append(pickup_done_checked_page_summary(page_index, state_before_next, len(pending)))
+        changed, state_after, next_reason = click_next_page_fast(page, state_before_next)
+        last_state = state_after
+        last_next_reason = next_reason
+
+        if not changed:
+            for order_reference in pending:
+                results_by_reference[order_reference] = {
+                    "order_reference": order_reference,
+                    "status": "not_found",
+                    "message": "Order was not found after checking all reachable Self Pickup pages.",
+                    "dry_run": dry_run,
+                    "would_click": False,
+                    "page_index": page_index,
+                    "pages_checked": checked_pages,
+                    "pagination_state": state_after,
+                    "next_reason": next_reason,
+                }
+            pending = []
+            break
+
+    for order_reference in pending:
+        results_by_reference[order_reference] = {
+            "order_reference": order_reference,
+            "status": "not_found",
+            "message": f"Order was not found before EOD_MAX_PAGES={EOD_MAX_PAGES} was reached.",
+            "dry_run": dry_run,
+            "would_click": False,
+            "pages_checked": checked_pages,
+            "pagination_state": last_state,
+            "next_reason": last_next_reason,
+        }
+
+    return [results_by_reference[order_reference] for order_reference in order_references], {
+        "pages": scan_pages,
+        "checked_pages": checked_pages,
+        "remaining": len(pending),
     }
 
 
@@ -3045,19 +3501,16 @@ def _mark_pickup_done_orders_unlocked(payload):
 
             if bool_env("DOKTORABC_PERSISTENT_CONTEXT_ENABLED", True):
                 context = launch_doktorabc_persistent_context(playwright)
-                context, page, reused_session, wait_result = open_authenticated_persistent_orders_page(
+                context, page, reused_session, wait_result = open_authenticated_persistent_pickup_done_page(
                     context,
                     target_url,
-                    SELF_PICKUP_ORDER_TYPE,
                     before_login_path=before_login_path,
                 )
             else:
                 browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
-                wait_before_opening_page()
-                context, page, reused_session, wait_result = open_authenticated_orders_page(
+                context, page, reused_session, wait_result = open_authenticated_pickup_done_page(
                     browser,
                     target_url,
-                    SELF_PICKUP_ORDER_TYPE,
                     before_login_path=before_login_path,
                 )
 
@@ -3070,28 +3523,33 @@ def _mark_pickup_done_orders_unlocked(payload):
                 "wait_result": wait_result,
             }
 
-            results = []
-            for order_reference in order_references:
-                steps.append({"name": "prepare_pickup_done_page", "ok": None, "order_reference": order_reference})
-                prepare_result = prepare_pickup_done_page(page, target_url)
-                steps[-1] = {
-                    "name": "prepare_pickup_done_page",
-                    "ok": True,
-                    "order_reference": order_reference,
-                    **prepare_result,
-                }
+            steps.append({"name": "prepare_pickup_done_page", "ok": None, "order_count": len(order_references)})
+            prepare_result = prepare_pickup_done_page(page, target_url)
+            steps[-1] = {
+                "name": "prepare_pickup_done_page",
+                "ok": True,
+                "order_count": len(order_references),
+                **prepare_result,
+            }
 
-                steps.append({"name": "try_self_pickup_done", "ok": None, "order_reference": order_reference})
-                result = find_and_try_pickup_done_order(page, order_reference, dry_run)
+            steps.append({"name": "try_self_pickup_done_batch", "ok": None, "order_count": len(order_references)})
+            results, scan_summary = find_and_try_pickup_done_orders(page, order_references, dry_run)
+            for result in results:
                 result["prepare"] = prepare_result
-                results.append(result)
-                steps[-1] = {
-                    "name": "try_self_pickup_done",
-                    "ok": result["status"] in {"clickable", "clicked", "clicked_still_visible"},
-                    "order_reference": order_reference,
-                    "status": result["status"],
-                    "message": result["message"],
-                }
+            steps[-1] = {
+                "name": "try_self_pickup_done_batch",
+                "ok": all(result["status"] in {"clickable", "clicked", "clicked_still_visible"} for result in results),
+                "order_count": len(order_references),
+                "statuses": [
+                    {
+                        "order_reference": result["order_reference"],
+                        "status": result["status"],
+                        "message": result["message"],
+                    }
+                    for result in results
+                ],
+                "scan": scan_summary,
+            }
 
             try:
                 page.screenshot(path=screenshot_path, full_page=True)

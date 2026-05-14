@@ -24,7 +24,7 @@ type ConfigStatus = {
   schema: string;
 };
 
-type SectionKey = "upload" | "doktorabc_sync" | "check_bot" | "abrechnung_verification";
+type SectionKey = "upload" | "doktorabc_sync" | "check_bot" | "realtime_bot" | "abrechnung_verification";
 
 type Props = {
   initialNotifications: StoredNotification[];
@@ -144,6 +144,13 @@ const sections: Array<{ label: string; value: SectionKey; description: string; c
     active: true,
   },
   {
+    label: "RealTime-bot",
+    value: "realtime_bot",
+    description: "Pickup READY Auto-Refresh",
+    caption: "Live-Meldungen vom Pickup Ready Bot",
+    active: true,
+  },
+  {
     label: "Abrechnung Verifikation",
     value: "abrechnung_verification",
     description: "Abrechnung-Verifikation",
@@ -254,7 +261,7 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
           counts[section.value] = displayNotifications.filter((notification) => notification.section === section.value).length;
           return counts;
         },
-        { upload: 0, doktorabc_sync: 0, check_bot: 0, abrechnung_verification: 0 } as Record<SectionKey, number>
+        { upload: 0, doktorabc_sync: 0, check_bot: 0, realtime_bot: 0, abrechnung_verification: 0 } as Record<SectionKey, number>
       );
     },
     [notifications]
@@ -370,7 +377,7 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
             <span>Arbeitsbereiche</span>
           </div>
           <p className="panel-copy">
-            Uploads, DoktorABC Sync, Bot Check und Abrechnung-Verifikation bleiben getrennt. Der gewählte Bereich bleibt nach dem Aktualisieren geöffnet.
+            Uploads, DoktorABC Sync, Bot Check, RealTime-bot und Abrechnung-Verifikation bleiben getrennt. Der gewählte Bereich bleibt nach dem Aktualisieren geöffnet.
           </p>
         </aside>
       </div>
@@ -405,7 +412,7 @@ function NotifyBrandMark() {
 }
 
 function isSectionKey(value: string | null): value is SectionKey {
-  return value === "upload" || value === "doktorabc_sync" || value === "check_bot" || value === "abrechnung_verification";
+  return value === "upload" || value === "doktorabc_sync" || value === "check_bot" || value === "realtime_bot" || value === "abrechnung_verification";
 }
 
 function NotificationRow({ notification }: { notification: StoredNotification }) {
@@ -936,6 +943,10 @@ function emptyCopy(section: SectionKey) {
 
   if (section === "check_bot") {
     return "Sobald der EOD Abgleich läuft, werden Erfolgsmeldungen und Abweichungen hier angezeigt.";
+  }
+
+  if (section === "realtime_bot") {
+    return "Sobald der Pickup Ready Bot automatisch aktualisiert, erscheinen seine Meldungen hier.";
   }
 
   if (section === "abrechnung_verification") {

@@ -1884,10 +1884,10 @@ async () => {
       .filter(visible)
       .map((element) => element.innerText || "")
       .join("\\n");
-    let codes = unique(popupText.match(/\\b\\d{7,8}\\b/g) || []);
+    let codes = unique(popupText.match(/\\b\\d{7,8}[A-Z]*\\b/gi) || []);
 
     if (!codes.length) {
-      codes = unique((document.body.innerText || "").match(/\\b\\d{7,8}\\b/g) || []);
+      codes = unique((document.body.innerText || "").match(/\\b\\d{7,8}[A-Z]*\\b/gi) || []);
     }
 
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

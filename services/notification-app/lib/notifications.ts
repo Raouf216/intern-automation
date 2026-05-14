@@ -1,4 +1,4 @@
-export type NotificationSection = "upload" | "doktorabc_sync" | "check_bot" | "abrechnung_verification";
+export type NotificationSection = "upload" | "doktorabc_sync" | "check_bot" | "realtime_bot" | "abrechnung_verification";
 export type NotificationStatus = "triggered" | "success" | "failure" | "info" | "warning";
 
 export type StoredNotification = {
@@ -167,9 +167,10 @@ export function normalizeUploadNotification(payload: UploadWebhookPayload): Omit
 
   if (isEodBotNotification(payload)) {
     const isExcel = isEodExcelExport(payload);
+    const section = isExcel ? "upload" : isRealtimeBotNotification(payload) ? "realtime_bot" : "doktorabc_sync";
 
     return {
-      section: isExcel ? "upload" : "doktorabc_sync",
+      section,
       event,
       status,
       title: eodBotTitle(status, payload),
@@ -495,6 +496,7 @@ function isEodBotNotification(payload: UploadWebhookPayload) {
   const event = payload.event || "";
   return (
     payload.section === "doktorabc_orders" ||
+    payload.section === "realtime_bot" ||
     (payload.section === "doktorabc_sync" && payload.sync_type === "doktorabc_eod_bot") ||
     (payload.section === "upload" && payload.sync_type === "doktorabc_eod_bot") ||
     payload.sync_type === "doktorabc_eod_bot" ||
@@ -506,6 +508,19 @@ function isEodBotNotification(payload: UploadWebhookPayload) {
     event === "doktorabc_pickup_ready_orders_failure" ||
     event === "doktorabc_eod_excel_export_success" ||
     event === "doktorabc_eod_excel_export_failure"
+  );
+}
+
+function isRealtimeBotNotification(payload: UploadWebhookPayload) {
+  const event = payload.event || "";
+  const source = String(payload.service || payload.source || "").toLowerCase();
+
+  return (
+    payload.section === "realtime_bot" ||
+    source.includes("pickup-ready") ||
+    payload.order_list_type === "pickup_ready" ||
+    event === "doktorabc_pickup_ready_orders_success" ||
+    event === "doktorabc_pickup_ready_orders_failure"
   );
 }
 

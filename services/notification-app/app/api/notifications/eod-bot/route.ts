@@ -17,9 +17,16 @@ export async function POST(request: Request) {
       payload.upload_type === "doktorabc_eod_excel_export" ||
       event === "doktorabc_eod_excel_export_success" ||
       event === "doktorabc_eod_excel_export_failure";
+    const source = String(payload.service || payload.source || "").toLowerCase();
+    const isRealtimeBot =
+      payload.section === "realtime_bot" ||
+      source.includes("pickup-ready") ||
+      payload.order_list_type === "pickup_ready" ||
+      event === "doktorabc_pickup_ready_orders_success" ||
+      event === "doktorabc_pickup_ready_orders_failure";
     const notification = normalizeUploadNotification({
       ...payload,
-      section: isExcelExport ? "upload" : "doktorabc_sync",
+      section: isExcelExport ? "upload" : isRealtimeBot ? "realtime_bot" : "doktorabc_sync",
       sync_type: "doktorabc_eod_bot",
       upload_type: isExcelExport ? payload.upload_type || "doktorabc_eod_excel_export" : payload.upload_type,
     });

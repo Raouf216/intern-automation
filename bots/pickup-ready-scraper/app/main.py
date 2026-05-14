@@ -365,7 +365,7 @@ def send_orders_sync_notification(rows_by_order_type, targets, timestamp, supaba
         {
             "event": "doktorabc_eod_pickup_orders_success",
             "status": "success",
-            "section": "doktorabc_sync",
+            "section": "realtime_bot",
             "sync_type": "doktorabc_eod_bot",
             "service": SERVICE_NAME,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -436,6 +436,7 @@ def send_failure_notification(
     if failure_part == PICKUP_READY_ORDER_LIST_TYPE:
         event = "doktorabc_pickup_ready_orders_failure"
         order_type = SELF_PICKUP_ORDER_TYPE
+        section = "realtime_bot"
     elif failure_part == EXCEL_EXPORT_ORDER_LIST_TYPE:
         event = "doktorabc_eod_excel_export_failure"
         section = "upload"
@@ -1878,10 +1879,10 @@ async () => {
       .filter(visible)
       .map((element) => element.innerText || "")
       .join("\\n");
-    let codes = unique(popupText.match(/\\b\\d{7,8}\\b/g) || []);
+    let codes = unique(popupText.match(/\\b\\d{7,8}[A-Z]*\\b/gi) || []);
 
     if (!codes.length) {
-      codes = unique((document.body.innerText || "").match(/\\b\\d{7,8}\\b/g) || []);
+      codes = unique((document.body.innerText || "").match(/\\b\\d{7,8}[A-Z]*\\b/gi) || []);
     }
 
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

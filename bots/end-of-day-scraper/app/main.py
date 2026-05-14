@@ -1174,7 +1174,7 @@ def login_if_needed(page, context, target_url, before_login_path=None):
     click_pharmacist_role(page)
 
     if before_login_path:
-        page.screenshot(path=before_login_path, full_page=True)
+        capture_optional_screenshot(page, before_login_path, "eod-before-login")
 
     click_login_button(page)
     wait_for_load_states(page)
@@ -2687,7 +2687,11 @@ def login_end_of_day():
                 browser,
                 before_login_path=before_login_path,
             )
-            page.screenshot(path=after_login_path, full_page=True)
+            after_login_path, after_login_error = capture_optional_screenshot(
+                page,
+                after_login_path,
+                "eod-after-login",
+            )
 
             return {
                 "ok": True,
@@ -2697,6 +2701,7 @@ def login_end_of_day():
                 "session_state_path": SESSION_STATE_PATH,
                 "before_login_path": None if reused_session else before_login_path,
                 "after_login_path": after_login_path,
+                "after_login_screenshot_error": after_login_error,
                 "wait_result": wait_result,
             }
         finally:

@@ -59,6 +59,7 @@ EOD_AFTER_NEXT_CLICK_WAIT_MS = int_env("EOD_AFTER_NEXT_CLICK_WAIT_MS", 1_500)
 EOD_READY_TIMEOUT_MS = 20_000
 EOD_NAVIGATION_TIMEOUT_MS = 20_000
 EOD_SUPABASE_TIMEOUT_SECONDS = 30
+EOD_STORAGE_UPLOAD_TIMEOUT_SECONDS = int_env("EOD_STORAGE_UPLOAD_TIMEOUT_SECONDS", 30)
 EOD_N8N_UPLOAD_TIMEOUT_SECONDS = 30
 EOD_NOTIFICATION_TIMEOUT_SECONDS = 30
 EOD_EXPORT_DOWNLOAD_TIMEOUT_MS = 20_000
@@ -95,6 +96,10 @@ EOD_PZN_POPUP_WAIT_MS = 350
 EOD_PZN_CLOSE_WAIT_MS = 100
 SUPABASE_SCHEMA = os.environ.get("SUPABASE_SCHEMA", "private")
 SUPABASE_EOD_ORDERS_TABLE = os.environ.get("SUPABASE_EOD_ORDERS_TABLE", "doktorabc_eod_bot_orders")
+END_OF_DAY_EXPORT_STORAGE_BUCKET = (os.environ.get("END_OF_DAY_EXPORT_STORAGE_BUCKET") or "").strip()
+END_OF_DAY_EXPORT_STORAGE_PREFIX = (
+    os.environ.get("END_OF_DAY_EXPORT_STORAGE_PREFIX", "doktorabc-eod-export").strip().strip("/")
+)
 END_OF_DAY_EXPORT_N8N_WEBHOOK_URL = (os.environ.get("END_OF_DAY_EXPORT_N8N_WEBHOOK_URL") or "").strip()
 END_OF_DAY_NOTIFICATION_WEBHOOK_URL = (os.environ.get("END_OF_DAY_NOTIFICATION_WEBHOOK_URL") or "").strip()
 SERVICE_NAME = (os.environ.get("DOKTORABC_SCRAPER_SERVICE_NAME") or "end-of-day-scraper").strip() or "end-of-day-scraper"
@@ -163,6 +168,25 @@ def supabase_headers():
     }
 
 
+def supabase_storage_object_url(bucket, object_path):
+    supabase_url = required_env("SUPABASE_URL").rstrip("/")
+    encoded_bucket = quote(bucket, safe="")
+    encoded_path = quote(object_path, safe="/")
+    return f"{supabase_url}/storage/v1/object/{encoded_bucket}/{encoded_path}"
+
+
+def supabase_storage_upload_headers(content_type):
+    service_role_key = required_env("SUPABASE_SERVICE_ROLE_KEY")
+
+    return {
+        "apikey": service_role_key,
+        "Authorization": f"Bearer {service_role_key}",
+        "Content-Type": content_type,
+        "Cache-Control": "3600",
+        "x-upsert": "true",
+    }
+
+
 def response_preview(response):
     body = response.text
 
@@ -190,6 +214,15 @@ def filename_timestamp(value):
 
 def to_check_excel_filename(value):
     return f"to_check_{filename_timestamp(value)}.xlsx"
+
+
+def to_check_excel_storage_filename(export_date):
+    return f"to_check_{export_date}.xlsx"
+
+
+def storage_object_path(filename, prefix):
+    clean_prefix = (prefix or "").strip("/")
+    return f"{clean_prefix}/{filename}" if clean_prefix else filename
 
 
 def upsert_supabase_eod_orders(orders):
@@ -256,6 +289,37 @@ def send_export_to_n8n(download_path, metadata):
     return {
         "sent_to_n8n": True,
         "n8n_status_code": response.status_code,
+    }
+
+
+def upload_export_to_supabase_storage(download_path, storage_filename):
+    if not END_OF_DAY_EXPORT_STORAGE_BUCKET:
+        return {
+            "sent_to_storage": False,
+            "storage_skipped_reason": "END_OF_DAY_EXPORT_STORAGE_BUCKET is not configured",
+        }
+
+    object_path = storage_object_path(storage_filename, END_OF_DAY_EXPORT_STORAGE_PREFIX)
+    content_type = mimetypes.guess_type(storage_filename)[0] or "application/octet-stream"
+
+    with open(download_path, "rb") as file_handle:
+        response = httpx.post(
+            supabase_storage_object_url(END_OF_DAY_EXPORT_STORAGE_BUCKET, object_path),
+            headers=supabase_storage_upload_headers(content_type),
+            content=file_handle,
+            timeout=EOD_STORAGE_UPLOAD_TIMEOUT_SECONDS,
+        )
+
+    if response.status_code >= 400:
+        raise RuntimeError(f"Supabase Storage export upload failed: {response_preview(response)}")
+
+    return {
+        "sent_to_storage": True,
+        "storage_status_code": response.status_code,
+        "storage_bucket": END_OF_DAY_EXPORT_STORAGE_BUCKET,
+        "storage_path": object_path,
+        "storage_filename": storage_filename,
+        "storage_replaced_existing": True,
     }
 
 
@@ -391,19 +455,28 @@ def send_excel_export_notification(export_result, timestamp):
             "run_id": timestamp,
             "order_list_type": EXCEL_EXPORT_ORDER_LIST_TYPE,
             "filename": export_result.get("download_filename"),
-            "path": export_result.get("download_path"),
+            "bucket": export_result.get("storage_bucket"),
+            "path": export_result.get("storage_path") or export_result.get("download_path"),
             "size_bytes": export_result.get("download_size_bytes"),
             "download_filename": export_result.get("download_filename"),
             "download_path": export_result.get("download_path"),
             "download_size_bytes": export_result.get("download_size_bytes"),
             "excel_row_count": export_result.get("excel_row_count"),
             "export_date": export_result.get("export_date"),
+            "sent_to_storage": export_result.get("sent_to_storage"),
+            "storage_bucket": export_result.get("storage_bucket"),
+            "storage_path": export_result.get("storage_path"),
+            "storage_filename": export_result.get("storage_filename"),
+            "storage_status_code": export_result.get("storage_status_code"),
+            "storage_replaced_existing": export_result.get("storage_replaced_existing"),
+            "storage_skipped_reason": export_result.get("storage_skipped_reason"),
             "sent_to_n8n": export_result.get("sent_to_n8n"),
             "n8n_status_code": export_result.get("n8n_status_code"),
             "n8n_skipped_reason": export_result.get("n8n_skipped_reason"),
             "summary": {
                 "excel_files": 1,
                 "excel_rows": export_result.get("excel_row_count"),
+                "sent_to_storage": 1 if export_result.get("sent_to_storage") else 0,
                 "sent_to_n8n": 1 if export_result.get("sent_to_n8n") else 0,
             },
         }
@@ -556,6 +629,8 @@ def export_end_of_day_excel_to_n8n(page, timestamp, metadata, scraped_at):
     download_size_bytes = os.path.getsize(download_path)
     excel_row_count = count_xlsx_rows(download_path)
     export_date = scraped_at.astimezone(german_timezone_for_utc(scraped_at)).date().isoformat()
+    storage_filename = to_check_excel_storage_filename(export_date)
+    storage_result = upload_export_to_supabase_storage(download_path, storage_filename)
 
     n8n_result = send_export_to_n8n(
         download_path,
@@ -570,6 +645,7 @@ def export_end_of_day_excel_to_n8n(page, timestamp, metadata, scraped_at):
             "export_date": export_date,
             "exported_at": scraped_at_iso,
             "scraped_at": scraped_at_iso,
+            **storage_result,
         },
     )
 
@@ -581,6 +657,7 @@ def export_end_of_day_excel_to_n8n(page, timestamp, metadata, scraped_at):
         "excel_row_count": excel_row_count,
         "export_date": export_date,
         "scraped_at": scraped_at_iso,
+        **storage_result,
         **n8n_result,
     }
 

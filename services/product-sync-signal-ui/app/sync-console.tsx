@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Clock3,
   DatabaseZap,
+  FileSpreadsheet,
   KeyRound,
   Loader2,
   LockKeyhole,
@@ -49,6 +50,12 @@ type SyncResponse = {
   reused_session?: boolean;
   new_products?: Product[];
   changed_products?: ChangedProduct[];
+};
+
+type ProductChangeExport = {
+  filename: string;
+  rowCount: number;
+  generatedAt: string;
 };
 
 type EndOfDayResponse = {
@@ -217,6 +224,204 @@ function formatChangeValue(value: unknown) {
   return String(value);
 }
 
+function germanyFilenameTimestamp(value: Date) {
+  const parts = new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(value);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value || "00";
+
+  return `${part("year")}-${part("month")}-${part("day")}_${part("hour")}-${part("minute")}-${part("second")}`;
+}
+
+function exportDisplayTime(value: string) {
+  return new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
+    dateStyle: "short",
+    timeStyle: "medium",
+  }).format(new Date(value));
+}
+
+function excelCell(value: unknown) {
+  return formatChangeValue(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function productValue(product: Product | undefined, field: keyof Product) {
+  return product?.[field];
+}
+
+const productFieldLabels: Record<string, string> = {
+  product_name: "Produktname",
+  pzn: "PZN",
+  strain: "Sorte",
+  quantity: "Menge",
+  price_per_g_incl_vat: "Preis/g inkl. MwSt.",
+  additional_cost: "Zusatzkosten",
+  site_price: "Seitenpreis",
+  availability: "Verfügbarkeit",
+};
+
+const productExportColumns = [
+  "Änderung",
+  "Produktname",
+  "PZN",
+  "Feld",
+  "Alter Wert",
+  "Neuer Wert",
+  "Sorte vorher",
+  "Sorte nachher",
+  "Menge vorher",
+  "Menge nachher",
+  "Preis/g vorher",
+  "Preis/g nachher",
+  "Zusatzkosten vorher",
+  "Zusatzkosten nachher",
+  "Seitenpreis vorher",
+  "Seitenpreis nachher",
+  "Verfügbarkeit vorher",
+  "Verfügbarkeit nachher",
+];
+
+function productExportRow(kind: string, productName: unknown, pzn: unknown, field: string, oldValue: unknown, newValue: unknown, before?: Product, after?: Product) {
+  return [
+    kind,
+    productName,
+    pzn,
+    field,
+    oldValue,
+    newValue,
+    productValue(before, "strain"),
+    productValue(after, "strain"),
+    productValue(before, "quantity"),
+    productValue(after, "quantity"),
+    productValue(before, "price_per_g_incl_vat"),
+    productValue(after, "price_per_g_incl_vat"),
+    productValue(before, "additional_cost"),
+    productValue(after, "additional_cost"),
+    productValue(before, "site_price"),
+    productValue(after, "site_price"),
+    productValue(before, "availability"),
+    productValue(after, "availability"),
+  ];
+}
+
+function productChangeRows(payload: SyncResponse) {
+  const rows: unknown[][] = [];
+
+  for (const product of payload.new_products || []) {
+    rows.push(productExportRow("Neu", product.product_name, product.pzn, "Neues Produkt", "", "neu", undefined, product));
+  }
+
+  for (const product of payload.changed_products || []) {
+    const changes = Object.entries(product.changes || {});
+    const before = product.before;
+    const after = product.after;
+    const productName = product.product_name || after?.product_name || before?.product_name;
+    const pzn = product.pzn || after?.pzn || before?.pzn;
+
+    if (!changes.length) {
+      rows.push(productExportRow("Geändert", productName, pzn, "Geändert", "", "", before, after));
+      continue;
+    }
+
+    for (const [field, change] of changes) {
+      rows.push(
+        productExportRow(
+          "Geändert",
+          productName,
+          pzn,
+          productFieldLabels[field] || field,
+          change.old,
+          change.new,
+          before,
+          after
+        )
+      );
+    }
+  }
+
+  return rows;
+}
+
+function productChangesExcelHtml(payload: SyncResponse, rows: unknown[][], generatedAt: Date) {
+  const summary = syncSummary(payload);
+  const generatedAtLabel = new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
+    dateStyle: "medium",
+    timeStyle: "medium",
+  }).format(generatedAt);
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font-family: Arial, sans-serif; }
+    h1 { font-size: 18px; }
+    table { border-collapse: collapse; }
+    th, td { border: 1px solid #999; padding: 6px 8px; mso-number-format:"\\@"; }
+    th { background: #e8eef8; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>DoktorABC Produktänderungen</h1>
+  <table>
+    <tbody>
+      <tr><th>Erstellt</th><td>${excelCell(generatedAtLabel)}</td></tr>
+      <tr><th>Gescrapt</th><td>${excelCell(summary.scraped)}</td></tr>
+      <tr><th>Neu</th><td>${excelCell(summary.inserted)}</td></tr>
+      <tr><th>Geändert</th><td>${excelCell(summary.updated)}</td></tr>
+      <tr><th>Unverändert</th><td>${excelCell(summary.unchanged)}</td></tr>
+      <tr><th>An Supabase gesendet</th><td>${excelCell(summary.sent_to_supabase)}</td></tr>
+    </tbody>
+  </table>
+  <br />
+  <table>
+    <thead>
+      <tr>${productExportColumns.map((column) => `<th>${excelCell(column)}</th>`).join("")}</tr>
+    </thead>
+    <tbody>
+      ${rows.map((row) => `<tr>${row.map((cell) => `<td>${excelCell(cell)}</td>`).join("")}</tr>`).join("")}
+    </tbody>
+  </table>
+</body>
+</html>`;
+}
+
+function downloadProductChangesExcel(payload: SyncResponse, generatedAt = new Date()): ProductChangeExport | null {
+  const rows = productChangeRows(payload);
+
+  if (!rows.length) return null;
+
+  const filename = `doktorabc-produkt-aenderungen_${germanyFilenameTimestamp(generatedAt)}.xls`;
+  const html = productChangesExcelHtml(payload, rows, generatedAt);
+  const blob = new Blob(["\ufeff", html], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+
+  return {
+    filename,
+    rowCount: rows.length,
+    generatedAt: generatedAt.toISOString(),
+  };
+}
+
 function syncSummary(payload: SyncResponse | null) {
   return {
     scraped: numberValue(payload?.scraped),
@@ -307,6 +512,7 @@ export function SyncConsole() {
   const [endOfDayMessage, setEndOfDayMessage] = useState("Bereit für End-of-Day Bestellungen und Excel-Export.");
   const [result, setResult] = useState<SyncResponse | null>(null);
   const [endOfDayResult, setEndOfDayResult] = useState<EndOfDayResponse | null>(null);
+  const [productExport, setProductExport] = useState<ProductChangeExport | null>(null);
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [finishedAt, setFinishedAt] = useState<Date | null>(null);
   const [endOfDayStartedAt, setEndOfDayStartedAt] = useState<Date | null>(null);
@@ -369,6 +575,15 @@ export function SyncConsole() {
     return false;
   }
 
+  function exportProductChanges(payload: SyncResponse, generatedAt = new Date()) {
+    try {
+      setProductExport(downloadProductChangesExcel(payload, generatedAt));
+    } catch (error) {
+      console.warn("Could not create product change Excel export", error);
+      setProductExport(null);
+    }
+  }
+
   async function unlockConsole(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const nextPassword = passwordInput.trim();
@@ -415,6 +630,7 @@ export function SyncConsole() {
     setStatus("idle");
     setMessage("Synchronisierung läuft. Bitte warten, der Vorgang kann bis zu 5 Minuten dauern.");
     setResult(null);
+    setProductExport(null);
     const runStartedAt = new Date();
     setStartedAt(runStartedAt);
     setFinishedAt(null);
@@ -452,6 +668,7 @@ export function SyncConsole() {
       );
       const runFinishedAt = new Date();
       setFinishedAt(runFinishedAt);
+      exportProductChanges(payload, runFinishedAt);
       await sendFinalSyncNotification({
         event: "doktorabc_sync_success",
         status: "success",
@@ -719,6 +936,22 @@ export function SyncConsole() {
           <strong>{finishedAt ? finishedAt.toLocaleTimeString() : "noch nicht"}</strong>
         </div>
       </div>
+
+      {productExport ? (
+        <div className="product-export-note">
+          <FileSpreadsheet size={18} />
+          <div>
+            <span>Excel-Datei erstellt</span>
+            <strong>{productExport.filename}</strong>
+            <small>
+              {productExport.rowCount} Änderungszeilen · {exportDisplayTime(productExport.generatedAt)}
+            </small>
+          </div>
+          <button type="button" onClick={() => result && exportProductChanges(result)} aria-label="Produktänderungen erneut als Excel exportieren">
+            <FileSpreadsheet size={16} />
+          </button>
+        </div>
+      ) : null}
     </aside>
   );
 

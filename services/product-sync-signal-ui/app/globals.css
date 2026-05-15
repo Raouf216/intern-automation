@@ -871,6 +871,61 @@ body[data-theme="night"] .message-error {
   color: var(--ink);
 }
 
+.product-export-note {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  border: 1px solid rgba(4, 120, 87, 0.22);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.product-export-note > svg {
+  flex: 0 0 auto;
+}
+
+.product-export-note div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.product-export-note span,
+.product-export-note small {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.product-export-note strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.product-export-note button {
+  width: 38px;
+  height: 38px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(4, 120, 87, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--green);
+  cursor: pointer;
+}
+
+.product-export-note button:hover {
+  background: #ffffff;
+}
+
+body[data-theme="night"] .product-export-note button {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .eod-result-panel {
   display: grid;
   gap: 14px;

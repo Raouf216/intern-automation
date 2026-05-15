@@ -85,6 +85,13 @@ type EndOfDayResponse = {
   };
 };
 
+type EndOfDayHealthResponse = {
+  ok?: boolean;
+  service?: string;
+  eod_sync_running?: boolean;
+  eod_sync_started_at?: string | null;
+};
+
 type SyncNotification = {
   event: "doktorabc_sync_success" | "doktorabc_sync_failure";
   status: "success" | "failure";
@@ -126,6 +133,7 @@ const fallbackEndpoint = "http://178.104.144.30:8020/jobs/product-prices";
 const fallbackEndOfDayEndpoint = "http://178.104.144.30:8021/jobs/end-of-day/orders/sync";
 const syncEndpoint = configuredEndpoint || fallbackEndpoint;
 const endOfDayEndpoint = configuredEndOfDayEndpoint || fallbackEndOfDayEndpoint;
+const endOfDayHealthEndpoint = healthEndpointFor(endOfDayEndpoint);
 const staffSteps = [
   {
     before: "Alle Produkte, bei denen Informationen geändert werden, zuerst in DoktorABC auf ",
@@ -160,6 +168,39 @@ const endOfDaySteps = [
   "Starten Sie zuerst den End-of-Day-Lauf hier im Dashboard.",
   "Warten Sie auf die Antwort des Bots. Richtwert: ca. 1 Minute je 100 Orders.",
 ];
+
+function healthEndpointFor(value: string) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}/health`;
+  } catch {
+    return "";
+  }
+}
+
+function isFetchFailureMessage(value: string) {
+  const normalized = value.toLowerCase();
+  return normalized.includes("failed to fetch") || normalized.includes("networkerror");
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function fetchEndOfDayHealth() {
+  if (!endOfDayHealthEndpoint) return null;
+
+  const response = await fetch(endOfDayHealthEndpoint, {
+    method: "GET",
+    cache: "no-store",
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json")
+    ? ((await response.json()) as EndOfDayHealthResponse)
+    : ({ ok: false } satisfies EndOfDayHealthResponse);
+
+  return response.ok && payload.ok ? payload : null;
+}
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -477,6 +518,7 @@ export function SyncConsole() {
     const runStartedAt = new Date();
     setEndOfDayStartedAt(runStartedAt);
     setEndOfDayFinishedAt(null);
+    let keepEndOfDayRunning = false;
 
     try {
       const response = await fetch(endOfDayEndpoint.trim(), {
@@ -505,12 +547,61 @@ export function SyncConsole() {
       setEndOfDayMessage(`End-of-Day abgeschlossen: ${botSavedCount(payload)} Bestellung(en) gespeichert, Export ${exportState(payload)}.`);
       setEndOfDayFinishedAt(new Date());
     } catch (error) {
-      setEndOfDayStatus("error");
       const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
-      const isFetchFailure =
-        errorMessage.toLowerCase().includes("failed to fetch") ||
-        errorMessage.toLowerCase().includes("networkerror");
+      const isFetchFailure = isFetchFailureMessage(errorMessage);
 
+      if (isFetchFailure) {
+        try {
+          const health = await fetchEndOfDayHealth();
+
+          if (health?.eod_sync_running) {
+            setEndOfDayStatus("idle");
+            setEndOfDayMessage(
+              "Die Browser-Verbindung zur Antwort wurde unterbrochen, aber der End-of-Day Bot läuft weiter. Bitte nicht erneut klicken; ich warte auf den Abschluss."
+            );
+            keepEndOfDayRunning = true;
+
+            for (let attempt = 1; attempt <= 540; attempt += 1) {
+              await wait(5_000);
+              let nextHealth: EndOfDayHealthResponse | null = null;
+
+              try {
+                nextHealth = await fetchEndOfDayHealth();
+              } catch {
+                nextHealth = null;
+              }
+
+              if (nextHealth && !nextHealth.eod_sync_running) {
+                keepEndOfDayRunning = false;
+                setEndOfDayStatus("success");
+                setEndOfDayMessage(
+                  "End-of-Day Bot ist fertig. Die Browser-Verbindung zur direkten Antwort war unterbrochen; bitte Ergebnis in der Notification App prüfen."
+                );
+                setEndOfDayFinishedAt(new Date());
+                return;
+              }
+
+              if (attempt % 12 === 0) {
+                setEndOfDayMessage(
+                  "End-of-Day Bot läuft weiter. Browser-Verbindung zur direkten Antwort war unterbrochen; ich prüfe den Abschluss weiter."
+                );
+              }
+            }
+
+            keepEndOfDayRunning = false;
+            setEndOfDayStatus("error");
+            setEndOfDayMessage(
+              "Die Browser-Verbindung war unterbrochen und der Bot meldet nach langer Wartezeit noch keinen Abschluss. Bitte /health und die Notification App prüfen."
+            );
+            setEndOfDayFinishedAt(new Date());
+            return;
+          }
+        } catch {
+          // If the health probe is also blocked, show the original network/CORS message below.
+        }
+      }
+
+      setEndOfDayStatus("error");
       setEndOfDayMessage(
         isFetchFailure
           ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den End-of-Day Bot unter ${endOfDayEndpoint} nicht erreichen oder die Antwort nicht lesen.`
@@ -518,7 +609,7 @@ export function SyncConsole() {
       );
       setEndOfDayFinishedAt(new Date());
     } finally {
-      setIsEndOfDayRunning(false);
+      setIsEndOfDayRunning(keepEndOfDayRunning);
     }
   }
 

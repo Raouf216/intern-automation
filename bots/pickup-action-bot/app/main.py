@@ -125,6 +125,7 @@ PICKUP_DONE_AFTER_CLICK_RESULT_TIMEOUT_MS = int_env(
 )
 PICKUP_DONE_AFTER_CLICK_POLL_MS = int_env("PICKUP_DONE_AFTER_CLICK_POLL_MS", 150)
 PICKUP_DONE_NOT_FOUND_RESCAN_ATTEMPTS = int_env("PICKUP_DONE_NOT_FOUND_RESCAN_ATTEMPTS", 1)
+PICKUP_DONE_INCONSISTENT_PAGE_RELOADS = int_env("PICKUP_DONE_INCONSISTENT_PAGE_RELOADS", 1)
 PICKUP_READY_AUTO_SYNC_MIN_MINUTES = int_env("PICKUP_READY_AUTO_SYNC_MIN_MINUTES", 27)
 PICKUP_READY_AUTO_SYNC_MAX_MINUTES = int_env("PICKUP_READY_AUTO_SYNC_MAX_MINUTES", 33)
 PICKUP_READY_AUTO_SYNC_INITIAL_DELAY_SECONDS = int_env("PICKUP_READY_AUTO_SYNC_INITIAL_DELAY_SECONDS", 15)
@@ -1815,6 +1816,18 @@ def get_pagination_state(page):
         """
         () => {
           const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+          const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity) !== 0 &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          };
           const orderReferenceFromMarker = (marker) => {
             const id = normalize(marker?.id);
             if (/-mark-order$/.test(id)) return id.replace(/-mark-order$/, "");
@@ -1826,6 +1839,7 @@ def get_pagination_state(page):
           const current = pagination?.querySelector('nav[aria-label="pagination"] a[aria-current="page"]');
           const next = pagination?.querySelector('nav[aria-label="pagination"] a[aria-label="Go to next page"]');
           const orderRefs = Array.from(document.querySelectorAll('button[id$="-mark-order"], [id^="order-"][id$="-badge"]'))
+            .filter(visible)
             .map(orderReferenceFromMarker)
             .filter(Boolean);
 
@@ -3153,20 +3167,11 @@ def normalize_pickup_done_order_references(payload):
 
 def pickup_done_button_locator(page, order_reference):
     reference = order_reference_key(order_reference)
+    token = f"pickup-done-target-{reference}-{int(time.monotonic() * 1000)}-{random.randint(1000, 9999)}"
     marker_selector = (
         f'[id="order-{reference}-badge"], '
         f'[id="{reference}-mark-order"], '
         f'label[for="{reference}-mark-order"]'
-    )
-    button_xpath = (
-        'xpath=.//button[@id="self-pickup-done-button" or '
-        'contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), '
-        '"self pickup done")]'
-    )
-    root_xpath = (
-        'xpath=ancestor::div[.//button[@id="self-pickup-done-button" or '
-        'contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), '
-        '"self pickup done")]][1]'
     )
     debug = {
         "order_reference": reference,
@@ -3174,20 +3179,82 @@ def pickup_done_button_locator(page, order_reference):
         "button_selector": 'button#self-pickup-done-button or text "Self pickup done"',
     }
 
-    marker = page.locator(marker_selector).first
-    try:
-        marker.wait_for(state="attached", timeout=PICKUP_DONE_ORDER_PROBE_TIMEOUT_MS)
-    except PlaywrightTimeoutError:
-        return None, {**debug, "marker_found": False}
+    probe = page.evaluate(
+        """
+        ({ reference, token }) => {
+          const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+          const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity) !== 0 &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          };
+          const isTargetMarker = (element) => {
+            const id = element.id || "";
+            const htmlFor = element.getAttribute("for") || "";
+            return id === `order-${reference}-badge` || id === `${reference}-mark-order` || htmlFor === `${reference}-mark-order`;
+          };
+          const isDoneButton = (button) => {
+            const text = normalize(button.innerText || button.textContent || "");
+            return visible(button) && (button.id === "self-pickup-done-button" || /self\\s*pickup\\s*done/i.test(text));
+          };
+          const markers = Array.from(document.querySelectorAll('button[id$="-mark-order"], [id^="order-"][id$="-badge"], label[for$="-mark-order"]'))
+            .filter(isTargetMarker);
+          const marker = markers.find(visible) || markers[0] || null;
 
-    root = marker.locator(root_xpath)
-    try:
-        root.wait_for(state="attached", timeout=PICKUP_DONE_ORDER_PROBE_TIMEOUT_MS)
-    except PlaywrightTimeoutError:
-        return None, {**debug, "marker_found": True, "card_with_button_found": False}
+          if (!marker) {
+            return {
+              marker_found: false,
+              marker_visible: false,
+              button_found: false,
+            };
+          }
 
-    button = root.locator(button_xpath).first
-    return button, {**debug, "marker_found": True, "card_with_button_found": True}
+          let root = marker;
+          for (let depth = 0; depth < 18 && root; depth += 1) {
+            const text = normalize(root.innerText || root.textContent || "");
+            const buttons = Array.from(root.querySelectorAll("button")).filter(isDoneButton);
+            if (text.includes(reference) && buttons.length) {
+              buttons[0].setAttribute("data-pickup-done-target", token);
+              return {
+                marker_found: true,
+                marker_visible: visible(marker),
+                button_found: true,
+                button_target: token,
+                ancestor_depth: depth,
+                button_text: normalize(buttons[0].innerText || buttons[0].textContent || ""),
+                button_id: buttons[0].id || null,
+                root_text_sample: text.slice(0, 240),
+              };
+            }
+            root = root.parentElement;
+          }
+
+          return {
+            marker_found: true,
+            marker_visible: visible(marker),
+            button_found: false,
+            root_text_sample: normalize((marker.closest("div") || marker).innerText || (marker.closest("div") || marker).textContent || "").slice(0, 240),
+          };
+        }
+        """,
+        {"reference": reference, "token": token},
+    )
+
+    if not probe.get("marker_found"):
+        return None, {**debug, **probe}
+
+    if not probe.get("button_found"):
+        return None, {**debug, **probe, "card_with_button_found": False}
+
+    button = page.locator(f'[data-pickup-done-target="{probe["button_target"]}"]').first
+    return button, {**debug, **probe, "card_with_button_found": True}
 
 
 def pickup_done_button_snapshot(button, timeout_ms=PICKUP_DONE_BUTTON_STATE_TIMEOUT_MS):
@@ -3492,6 +3559,42 @@ def try_pickup_done_on_current_page(page, order_reference, dry_run):
         page.wait_for_timeout(PICKUP_DONE_BUTTON_READY_POLL_MS)
 
 
+def retry_pickup_done_after_inconsistent_page(page, order_reference, dry_run, original_result):
+    if PICKUP_DONE_INCONSISTENT_PAGE_RELOADS <= 0:
+        return original_result
+
+    retry_notes = []
+    result = original_result
+
+    for attempt in range(1, PICKUP_DONE_INCONSISTENT_PAGE_RELOADS + 1):
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=PICKUP_DONE_NAVIGATION_TIMEOUT_MS)
+            wait_result = wait_for_pickup_done_page_ready(page, timeout_ms=PICKUP_DONE_PAGE_READY_TIMEOUT_MS)
+            retry_result = try_pickup_done_on_current_page(page, order_reference, dry_run)
+            retry_result["inconsistent_page_retry"] = {
+                "attempt": attempt,
+                "reloaded_url": page.url,
+                "wait_result": wait_result,
+                "previous_status": result.get("status"),
+                "previous_message": result.get("message"),
+            }
+            return retry_result
+        except Exception as exc:
+            retry_notes.append(
+                {
+                    "attempt": attempt,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "url": page.url,
+                }
+            )
+
+    result["inconsistent_page_retry"] = {
+        "attempts": retry_notes,
+        "kept_original_result": True,
+    }
+    return result
+
+
 def prepare_pickup_done_page(page, target_url):
     current_base_url = page.url.split("?", 1)[0].rstrip("/")
     target_base_url = target_url.rstrip("/")
@@ -3581,12 +3684,9 @@ def find_and_try_pickup_done_orders(page, order_references, dry_run, target_url=
                 result = try_pickup_done_on_current_page(page, order_reference, dry_run)
                 result["page_index"] = page_index
 
-                if result["status"] == "not_found_on_page":
-                    result = {
-                        **result,
-                        "status": "not_clickable",
-                        "message": "Order is visible on this page, but the Self pickup done button was not found.",
-                    }
+                if result["status"] in {"not_found_on_page", "not_clickable"}:
+                    result = retry_pickup_done_after_inconsistent_page(page, order_reference, dry_run, result)
+                    result["page_index"] = page_index
 
                 result["pages_checked"] = checked_pages.copy()
                 results_by_reference[order_reference] = result

@@ -59,6 +59,8 @@ type ProductChangeExport = {
   generatedAt: string;
 };
 
+type ProductRunStep = "syncing" | "notifying" | "exporting" | null;
+
 type QuantityChangeExportRow = {
   productName: string;
   pzn: string;
@@ -419,6 +421,8 @@ export function SyncConsole() {
   const [result, setResult] = useState<SyncResponse | null>(null);
   const [endOfDayResult, setEndOfDayResult] = useState<EndOfDayResponse | null>(null);
   const [productExport, setProductExport] = useState<ProductChangeExport | null>(null);
+  const [productRunStep, setProductRunStep] = useState<ProductRunStep>(null);
+  const [isProductExporting, setIsProductExporting] = useState(false);
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [finishedAt, setFinishedAt] = useState<Date | null>(null);
   const [endOfDayStartedAt, setEndOfDayStartedAt] = useState<Date | null>(null);
@@ -481,13 +485,41 @@ export function SyncConsole() {
     return false;
   }
 
-  function exportProductChanges(payload: SyncResponse, generatedAt = new Date()) {
+  async function exportProductChanges(payload: SyncResponse, generatedAt = new Date(), messageText?: string) {
+    setIsProductExporting(true);
+    setProductRunStep("exporting");
+
+    if (messageText) {
+      setMessage(messageText);
+    }
+
+    await wait(80);
+
     try {
-      setProductExport(downloadProductChangesExcel(payload, generatedAt));
+      const nextExport = downloadProductChangesExcel(payload, generatedAt);
+      setProductExport(nextExport);
+      return nextExport;
     } catch (error) {
       console.warn("Could not create product change Excel export", error);
       setProductExport(null);
+      return null;
+    } finally {
+      setIsProductExporting(false);
     }
+  }
+
+  async function reExportProductChanges() {
+    if (!result || !productExport) return;
+
+    const nextExport = await exportProductChanges(
+      result,
+      new Date(productExport.generatedAt),
+      "XLSX für Mengenänderungen wird erneut erstellt."
+    );
+
+    setProductRunStep(null);
+    setStatus("success");
+    setMessage(nextExport ? "XLSX für Mengenänderungen wurde erneut erstellt." : "Keine Mengenänderungen für XLSX gefunden.");
   }
 
   async function unlockConsole(event?: FormEvent<HTMLFormElement>) {
@@ -533,6 +565,8 @@ export function SyncConsole() {
     }
 
     setIsRunning(true);
+    setProductRunStep("syncing");
+    setIsProductExporting(false);
     setStatus("idle");
     setMessage("Synchronisierung läuft. Bitte warten, der Vorgang kann bis zu 5 Minuten dauern.");
     setResult(null);
@@ -566,15 +600,14 @@ export function SyncConsole() {
         );
       }
 
-      setStatus("success");
-      setMessage(
-        `Erfolgreich abgeschlossen: ${payload.inserted || 0} neu, ${payload.updated || 0} geändert, ${
-          payload.unchanged || 0
-        } unverändert.`
-      );
+      const successMessage = `Erfolgreich abgeschlossen: ${payload.inserted || 0} neu, ${payload.updated || 0} geändert, ${
+        payload.unchanged || 0
+      } unverändert.`;
       const runFinishedAt = new Date();
       setFinishedAt(runFinishedAt);
-      exportProductChanges(payload, runFinishedAt);
+      setProductRunStep("notifying");
+      setMessage(`${successMessage} Notification wird gesendet.`);
+      await wait(80);
       await sendFinalSyncNotification({
         event: "doktorabc_sync_success",
         status: "success",
@@ -589,6 +622,10 @@ export function SyncConsole() {
         summary: syncSummary(payload),
         logs: payload,
       });
+      const exportResult = await exportProductChanges(payload, runFinishedAt, "Notification verarbeitet. XLSX für Mengenänderungen wird erstellt.");
+      setProductRunStep(null);
+      setStatus("success");
+      setMessage(exportResult ? successMessage : `${successMessage} Keine Mengenänderungen für XLSX gefunden.`);
     } catch (error) {
       setStatus("error");
       const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
@@ -596,13 +633,16 @@ export function SyncConsole() {
         errorMessage.toLowerCase().includes("failed to fetch") ||
         errorMessage.toLowerCase().includes("networkerror");
 
-      setMessage(
+      const failureMessage =
         isFetchFailure
           ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den DoktorABC Sync-Bot unter ${syncEndpoint} nicht erreichen oder die Antwort nicht lesen.`
-          : `Sync-Anfrage fehlgeschlagen: ${errorMessage}`
-      );
+          : `Sync-Anfrage fehlgeschlagen: ${errorMessage}`;
+
+      setProductRunStep("notifying");
+      setMessage(`${failureMessage} Notification wird gesendet.`);
       const runFinishedAt = new Date();
       setFinishedAt(runFinishedAt);
+      await wait(80);
       await sendFinalSyncNotification({
         event: "doktorabc_sync_failure",
         status: "failure",
@@ -620,8 +660,11 @@ export function SyncConsole() {
           ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den DoktorABC Sync-Bot unter ${syncEndpoint} nicht erreichen oder die Antwort nicht lesen.`
           : `Sync-Anfrage fehlgeschlagen: ${errorMessage}`,
       });
+      setMessage(failureMessage);
     } finally {
       setIsRunning(false);
+      setIsProductExporting(false);
+      setProductRunStep(null);
     }
   }
 
@@ -736,7 +779,16 @@ export function SyncConsole() {
     }
   }
 
-  const anyBotRunning = isRunning || isEndOfDayRunning;
+  const isProductBusy = isRunning || isProductExporting;
+  const productActionLabel =
+    productRunStep === "notifying"
+      ? "Notification wird gesendet"
+      : productRunStep === "exporting" || isProductExporting
+        ? "XLSX wird erstellt"
+        : isRunning
+          ? "Synchronisierung läuft"
+          : "Produkte synchronisieren (DoktorABC)";
+  const anyBotRunning = isProductBusy || isEndOfDayRunning;
   const anyBotError =
     status === "error" || endOfDayStatus === "error";
   const anyBotSuccess =
@@ -813,11 +865,11 @@ export function SyncConsole() {
           <p className="section-kicker">Live-Ergebnis</p>
           <h2>Laufübersicht</h2>
         </div>
-        {status === "success" ? <CheckCircle2 size={25} /> : status === "error" ? <AlertTriangle size={25} /> : <Sparkles size={25} />}
+        {isProductBusy ? <Loader2 size={25} className="spin" /> : status === "success" ? <CheckCircle2 size={25} /> : status === "error" ? <AlertTriangle size={25} /> : <Sparkles size={25} />}
       </div>
 
-      <div className={`message message-${isRunning ? "running" : status}`}>
-        {isRunning ? <Loader2 size={18} className="spin" /> : status === "success" ? <CheckCircle2 size={18} /> : status === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
+      <div className={`message message-${isProductBusy ? "running" : status}`}>
+        {isProductBusy ? <Loader2 size={18} className="spin" /> : status === "success" ? <CheckCircle2 size={18} /> : status === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
         <p>{message}</p>
       </div>
 
@@ -853,8 +905,13 @@ export function SyncConsole() {
               {productExport.rowCount} Mengenänderungen · {exportDisplayTime(productExport.generatedAt)}
             </small>
           </div>
-          <button type="button" onClick={() => result && exportProductChanges(result)} aria-label="Mengenänderungen erneut als XLSX exportieren">
-            <FileSpreadsheet size={16} />
+          <button
+            type="button"
+            onClick={reExportProductChanges}
+            disabled={isProductExporting}
+            aria-label="Mengenänderungen erneut als XLSX exportieren"
+          >
+            {isProductExporting ? <Loader2 size={16} className="spin" /> : <FileSpreadsheet size={16} />}
           </button>
         </div>
       ) : null}
@@ -992,9 +1049,9 @@ export function SyncConsole() {
                       ))}
                     </ol>
                   </section>
-                  <button className="trigger-button" type="button" onClick={triggerSync} disabled={isRunning}>
-                    {isRunning ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
-                    <span>{isRunning ? "Synchronisierung läuft" : "Produkte synchronisieren (DoktorABC)"}</span>
+                  <button className="trigger-button" type="button" onClick={triggerSync} disabled={isProductBusy}>
+                    {isProductBusy ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
+                    <span>{productActionLabel}</span>
                     <ArrowRight size={20} />
                   </button>
                 </div>

@@ -2154,11 +2154,44 @@ def fetch_self_pickup_api_orders(page):
             url.searchParams.set("status", "ready-for-customer");
             url.searchParams.set("search", "");
 
-            const response = await fetch(url.href, {
-              credentials: "include",
-              headers: { Accept: "application/json" },
-            });
-            const payload = await response.json();
+            let response;
+            let payload = null;
+            let text = "";
+            let contentType = "";
+            try {
+              response = await fetch(url.href, {
+                credentials: "include",
+                headers: { Accept: "application/json" },
+              });
+              contentType = response.headers.get("content-type") || "";
+              text = await response.text();
+              const trimmed = text.trim();
+              if (contentType.includes("json") || trimmed.startsWith("{") || trimmed.startsWith("[")) {
+                payload = JSON.parse(trimmed);
+              } else {
+                pages.push({
+                  offset,
+                  url: url.href,
+                  status: response.status,
+                  content_type: contentType,
+                  results: 0,
+                  error: "response_not_json",
+                  body_preview: trimmed.slice(0, 120),
+                });
+                break;
+              }
+            } catch (error) {
+              pages.push({
+                offset,
+                url: url.href,
+                status: response?.status ?? null,
+                content_type: contentType,
+                results: 0,
+                error: `${error?.name || "Error"}: ${error?.message || String(error)}`,
+                body_preview: text.trim().slice(0, 120),
+              });
+              break;
+            }
             const results = Array.isArray(payload?.results) ? payload.results : [];
 
             pages.push({
@@ -2545,6 +2578,8 @@ def sync_end_of_day_orders():
                     fallback_reason = None
                     if not scrape_result["orders"] and (get_pagination_state(page).get("order_count") or 0) > 0:
                         fallback_reason = "api_fetch_empty_but_page_has_orders"
+                    elif any(page_result.get("error") for page_result in scrape_result.get("pages", [])):
+                        fallback_reason = "api_fetch_failed"
                     elif any((page_result.get("status") or 0) >= 400 for page_result in scrape_result.get("pages", [])):
                         fallback_reason = "api_fetch_failed"
 

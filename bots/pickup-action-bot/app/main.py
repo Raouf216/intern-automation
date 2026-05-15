@@ -116,11 +116,15 @@ PICKUP_DONE_CLICK_BLOCKER_POLL_MS = int_env("PICKUP_DONE_CLICK_BLOCKER_POLL_MS",
 PICKUP_DONE_ORDER_PROBE_TIMEOUT_MS = int_env("PICKUP_DONE_ORDER_PROBE_TIMEOUT_MS", 500)
 PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS = int_env("PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS", 5_000)
 PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS = int_env("PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS", 5_000)
+PICKUP_DONE_BUTTON_STATE_TIMEOUT_MS = int_env("PICKUP_DONE_BUTTON_STATE_TIMEOUT_MS", 750)
+PICKUP_DONE_BUTTON_READY_TIMEOUT_MS = int_env("PICKUP_DONE_BUTTON_READY_TIMEOUT_MS", 4_500)
+PICKUP_DONE_BUTTON_READY_POLL_MS = int_env("PICKUP_DONE_BUTTON_READY_POLL_MS", 150)
 PICKUP_DONE_AFTER_CLICK_RESULT_TIMEOUT_MS = int_env(
     "PICKUP_DONE_AFTER_CLICK_RESULT_TIMEOUT_MS",
     int_env("PICKUP_DONE_AFTER_CLICK_WAIT_MS", 1_500),
 )
 PICKUP_DONE_AFTER_CLICK_POLL_MS = int_env("PICKUP_DONE_AFTER_CLICK_POLL_MS", 150)
+PICKUP_DONE_NOT_FOUND_RESCAN_ATTEMPTS = int_env("PICKUP_DONE_NOT_FOUND_RESCAN_ATTEMPTS", 1)
 PICKUP_READY_AUTO_SYNC_MIN_MINUTES = int_env("PICKUP_READY_AUTO_SYNC_MIN_MINUTES", 27)
 PICKUP_READY_AUTO_SYNC_MAX_MINUTES = int_env("PICKUP_READY_AUTO_SYNC_MAX_MINUTES", 33)
 PICKUP_READY_AUTO_SYNC_INITIAL_DELAY_SECONDS = int_env("PICKUP_READY_AUTO_SYNC_INITIAL_DELAY_SECONDS", 15)
@@ -3186,7 +3190,7 @@ def pickup_done_button_locator(page, order_reference):
     return button, {**debug, "marker_found": True, "card_with_button_found": True}
 
 
-def pickup_done_button_snapshot(button):
+def pickup_done_button_snapshot(button, timeout_ms=PICKUP_DONE_BUTTON_STATE_TIMEOUT_MS):
     try:
         return button.evaluate(
             """
@@ -3207,10 +3211,18 @@ def pickup_done_button_snapshot(button):
                 },
               };
             }
-            """
+            """,
+            timeout=timeout_ms,
         )
     except Exception as exc:
         return {"snapshot_error": f"{type(exc).__name__}: {exc}"}
+
+
+def pickup_done_snapshot_enabled(snapshot):
+    if not snapshot or snapshot.get("snapshot_error"):
+        return None
+
+    return not snapshot.get("disabled") and str(snapshot.get("aria_disabled") or "").lower() != "true"
 
 
 def pickup_done_page_snapshot(page):
@@ -3353,81 +3365,139 @@ def wait_for_pickup_done_click_result(page, order_reference):
     return last_state or pickup_done_order_state(page, order_reference)
 
 
+def pickup_done_not_ready_result(order_reference, dry_run, pagination_state, debug, attempts, message):
+    marker_seen = any((attempt.get("debug") or {}).get("marker_found") for attempt in attempts)
+    status = "not_clickable" if marker_seen or debug.get("marker_found") else "not_found_on_page"
+
+    return {
+        "order_reference": order_reference,
+        "status": status,
+        "message": message,
+        "dry_run": dry_run,
+        "would_click": False,
+        "pagination_state": pagination_state,
+        "debug": debug,
+        "button_ready_attempts": attempts,
+    }
+
+
 def try_pickup_done_on_current_page(page, order_reference, dry_run):
-    pagination_state = get_pagination_state(page)
-    button, debug = pickup_done_button_locator(page, order_reference)
+    deadline = time.monotonic() + PICKUP_DONE_BUTTON_READY_TIMEOUT_MS / 1000
+    attempts = []
+    last_debug = {}
+    last_pagination_state = get_pagination_state(page)
+    last_message = "Order card or Self pickup done button was not ready on this page."
 
-    if button is None:
-        return {
-            "order_reference": order_reference,
-            "status": "not_found_on_page",
-            "message": "Order card or Self pickup done button was not found on this page.",
-            "dry_run": dry_run,
-            "pagination_state": pagination_state,
+    while True:
+        last_pagination_state = get_pagination_state(page)
+        button, debug = pickup_done_button_locator(page, order_reference)
+        last_debug = debug
+        attempt = {
+            "attempt": len(attempts) + 1,
             "debug": debug,
+            "pagination_state": last_pagination_state,
         }
 
-    try:
-        button.wait_for(state="visible", timeout=PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS)
-        button.scroll_into_view_if_needed(timeout=PICKUP_DONE_BUTTON_VISIBLE_TIMEOUT_MS)
-        wait_for_click_blockers_clear(page)
-        button_snapshot = pickup_done_button_snapshot(button)
-        button_visible = button.is_visible()
-        button_enabled = button.is_enabled()
-        button.click(timeout=PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS, trial=True)
+        if button is None:
+            try:
+                attempt["order_state"] = pickup_done_order_state(page, order_reference)
+            except Exception as exc:
+                attempt["order_state_error"] = f"{type(exc).__name__}: {exc}"
 
-        if dry_run:
-            return {
-                "order_reference": order_reference,
-                "status": "clickable",
-                "message": "Dry run passed. Playwright can click the Self pickup done button.",
-                "dry_run": True,
-                "would_click": True,
-                "button_visible": button_visible,
-                "button_enabled": button_enabled,
-                "button": button_snapshot,
-                "pagination_state": pagination_state,
-                "debug": debug,
-            }
+            attempts.append(attempt)
+            last_message = (
+                "Order is visible on this page, but the Self pickup done button was not found yet."
+                if debug.get("marker_found")
+                else "Order card or Self pickup done button was not found on this page."
+            )
+        else:
+            try:
+                button.wait_for(state="visible", timeout=PICKUP_DONE_BUTTON_STATE_TIMEOUT_MS)
+                button.scroll_into_view_if_needed(timeout=PICKUP_DONE_BUTTON_STATE_TIMEOUT_MS)
+                wait_for_click_blockers_clear(page)
+                button_snapshot = pickup_done_button_snapshot(button)
+                button_enabled = pickup_done_snapshot_enabled(button_snapshot)
+                button.click(timeout=PICKUP_DONE_BUTTON_STATE_TIMEOUT_MS, trial=True)
 
-        button.click(timeout=PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS)
-        click_result = wait_for_pickup_done_click_result(page, order_reference)
-        still_visible = click_result.get("status") == "still_visible"
+                attempt.update(
+                    {
+                        "button_ready": True,
+                        "button_enabled": button_enabled,
+                        "button": button_snapshot,
+                    }
+                )
+                attempts.append(attempt)
 
-        return {
-            "order_reference": order_reference,
-            "status": "clicked_still_visible" if still_visible else "clicked",
-            "message": (
-                "Self pickup done was clicked, but the order is still visible."
-                if still_visible
-                else "Self pickup done was clicked and the order disappeared from the visible list."
-            ),
-            "dry_run": False,
-            "would_click": True,
-            "clicked": True,
-            "order_still_visible": still_visible,
-            "button_visible": button_visible,
-            "button_enabled": button_enabled,
-            "button": button_snapshot,
-            "click_result": click_result,
-            "pagination_state": pagination_state,
-            "debug": debug,
-        }
-    except Exception as exc:
-        return {
-            "order_reference": order_reference,
-            "status": "not_clickable",
-            "message": f"{type(exc).__name__}: {exc}",
-            "dry_run": dry_run,
-            "would_click": False,
-            "button": pickup_done_button_snapshot(button),
-            "pagination_state": pagination_state,
-            "debug": debug,
-        }
+                if dry_run:
+                    return {
+                        "order_reference": order_reference,
+                        "status": "clickable",
+                        "message": "Dry run passed. Playwright can click the Self pickup done button.",
+                        "dry_run": True,
+                        "would_click": True,
+                        "button_visible": True,
+                        "button_enabled": button_enabled,
+                        "button": button_snapshot,
+                        "pagination_state": last_pagination_state,
+                        "debug": debug,
+                        "button_ready_attempts": attempts,
+                    }
+
+                button.click(timeout=PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS)
+                click_result = wait_for_pickup_done_click_result(page, order_reference)
+                still_visible = click_result.get("status") == "still_visible"
+
+                return {
+                    "order_reference": order_reference,
+                    "status": "clicked_still_visible" if still_visible else "clicked",
+                    "message": (
+                        "Self pickup done was clicked, but the order is still visible."
+                        if still_visible
+                        else "Self pickup done was clicked and the order disappeared from the visible list."
+                    ),
+                    "dry_run": False,
+                    "would_click": True,
+                    "clicked": True,
+                    "order_still_visible": still_visible,
+                    "button_visible": True,
+                    "button_enabled": button_enabled,
+                    "button": button_snapshot,
+                    "click_result": click_result,
+                    "pagination_state": last_pagination_state,
+                    "debug": debug,
+                    "button_ready_attempts": attempts,
+                }
+            except Exception as exc:
+                button_snapshot = pickup_done_button_snapshot(button)
+                attempt.update(
+                    {
+                        "button_ready": False,
+                        "button": button_snapshot,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                attempts.append(attempt)
+                last_message = f"{type(exc).__name__}: {exc}"
+
+        if time.monotonic() >= deadline:
+            return pickup_done_not_ready_result(
+                order_reference,
+                dry_run,
+                last_pagination_state,
+                last_debug,
+                attempts,
+                last_message,
+            )
+
+        page.wait_for_timeout(PICKUP_DONE_BUTTON_READY_POLL_MS)
 
 
 def prepare_pickup_done_page(page, target_url):
-    if not page.url.startswith(target_url):
+    current_base_url = page.url.split("?", 1)[0].rstrip("/")
+    target_base_url = target_url.rstrip("/")
+    should_reset_to_first_page = current_base_url != target_base_url or page.url != target_url
+
+    if should_reset_to_first_page:
         log_event("pickup_done_goto_start", url=target_url)
         page.goto(target_url, wait_until="domcontentloaded", timeout=PICKUP_DONE_NAVIGATION_TIMEOUT_MS)
         log_event("pickup_done_goto_domcontentloaded", url=page.url)
@@ -3487,13 +3557,14 @@ def visible_pickup_done_candidates(state, pending):
     return [order_reference for order_reference in pending if order_reference_key(order_reference) in refs_on_page]
 
 
-def find_and_try_pickup_done_orders(page, order_references, dry_run):
+def find_and_try_pickup_done_orders(page, order_references, dry_run, target_url=None):
     pending = list(order_references)
     results_by_reference = {}
     checked_pages = []
     scan_pages = []
     last_state = None
     last_next_reason = None
+    rescan_attempts = 0
 
     for page_index in range(1, EOD_MAX_PAGES + 1):
         page_results = []
@@ -3551,6 +3622,22 @@ def find_and_try_pickup_done_orders(page, order_references, dry_run):
         last_next_reason = next_reason
 
         if not changed:
+            if target_url and rescan_attempts < PICKUP_DONE_NOT_FOUND_RESCAN_ATTEMPTS:
+                rescan_attempts += 1
+                rescan_result = prepare_pickup_done_page(page, target_url)
+                scan_pages.append(
+                    {
+                        "page_index": page_index,
+                        "rescan_attempt": rescan_attempts,
+                        "reason": next_reason,
+                        "pending_count": len(pending),
+                        "prepare": rescan_result,
+                    }
+                )
+                last_state = get_pagination_state(page)
+                last_next_reason = "rescan_from_first_page"
+                continue
+
             for order_reference in pending:
                 results_by_reference[order_reference] = {
                     "order_reference": order_reference,
@@ -3582,6 +3669,7 @@ def find_and_try_pickup_done_orders(page, order_references, dry_run):
         "pages": scan_pages,
         "checked_pages": checked_pages,
         "remaining": len(pending),
+        "rescan_attempts": rescan_attempts,
     }
 
 
@@ -3714,7 +3802,12 @@ def _mark_pickup_done_orders_unlocked(payload):
             }
 
             steps.append({"name": "try_self_pickup_done_batch", "ok": None, "order_count": len(order_references)})
-            results, scan_summary = find_and_try_pickup_done_orders(page, order_references, dry_run)
+            results, scan_summary = find_and_try_pickup_done_orders(
+                page,
+                order_references,
+                dry_run,
+                target_url=target_url,
+            )
             for result in results:
                 result["prepare"] = prepare_result
             steps[-1] = {

@@ -19,6 +19,7 @@ import {
   Sun,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { utils as xlsxUtils, writeFileXLSX } from "xlsx";
 
 type Product = {
   product_name?: string;
@@ -56,6 +57,14 @@ type ProductChangeExport = {
   filename: string;
   rowCount: number;
   generatedAt: string;
+};
+
+type QuantityChangeExportRow = {
+  productName: string;
+  pzn: string;
+  oldQuantity: number | string;
+  newQuantity: number | string;
+  difference: number | string;
 };
 
 type EndOfDayResponse = {
@@ -248,172 +257,69 @@ function exportDisplayTime(value: string) {
   }).format(new Date(value));
 }
 
-function excelCell(value: unknown) {
-  return formatChangeValue(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+function quantityNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+
+  const parsed = Number(value.trim().replace(/\s/g, "").replace(",", "."));
+
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-function productValue(product: Product | undefined, field: keyof Product) {
-  return product?.[field];
+function quantityExportValue(value: unknown) {
+  return quantityNumber(value) ?? formatChangeValue(value);
 }
 
-const productFieldLabels: Record<string, string> = {
-  product_name: "Produktname",
-  pzn: "PZN",
-  strain: "Sorte",
-  quantity: "Menge",
-  price_per_g_incl_vat: "Preis/g inkl. MwSt.",
-  additional_cost: "Zusatzkosten",
-  site_price: "Seitenpreis",
-  availability: "Verfügbarkeit",
-};
-
-const productExportColumns = [
-  "Änderung",
-  "Produktname",
-  "PZN",
-  "Feld",
-  "Alter Wert",
-  "Neuer Wert",
-  "Sorte vorher",
-  "Sorte nachher",
-  "Menge vorher",
-  "Menge nachher",
-  "Preis/g vorher",
-  "Preis/g nachher",
-  "Zusatzkosten vorher",
-  "Zusatzkosten nachher",
-  "Seitenpreis vorher",
-  "Seitenpreis nachher",
-  "Verfügbarkeit vorher",
-  "Verfügbarkeit nachher",
-];
-
-function productExportRow(kind: string, productName: unknown, pzn: unknown, field: string, oldValue: unknown, newValue: unknown, before?: Product, after?: Product) {
-  return [
-    kind,
-    productName,
-    pzn,
-    field,
-    oldValue,
-    newValue,
-    productValue(before, "strain"),
-    productValue(after, "strain"),
-    productValue(before, "quantity"),
-    productValue(after, "quantity"),
-    productValue(before, "price_per_g_incl_vat"),
-    productValue(after, "price_per_g_incl_vat"),
-    productValue(before, "additional_cost"),
-    productValue(after, "additional_cost"),
-    productValue(before, "site_price"),
-    productValue(after, "site_price"),
-    productValue(before, "availability"),
-    productValue(after, "availability"),
-  ];
-}
-
-function productChangeRows(payload: SyncResponse) {
-  const rows: unknown[][] = [];
-
-  for (const product of payload.new_products || []) {
-    rows.push(productExportRow("Neu", product.product_name, product.pzn, "Neues Produkt", "", "neu", undefined, product));
-  }
+function quantityChangeRows(payload: SyncResponse): QuantityChangeExportRow[] {
+  const rows: QuantityChangeExportRow[] = [];
 
   for (const product of payload.changed_products || []) {
-    const changes = Object.entries(product.changes || {});
+    const quantityChange = product.changes?.quantity;
     const before = product.before;
     const after = product.after;
-    const productName = product.product_name || after?.product_name || before?.product_name;
-    const pzn = product.pzn || after?.pzn || before?.pzn;
+    const oldRaw = quantityChange?.old ?? before?.quantity;
+    const newRaw = quantityChange?.new ?? after?.quantity;
+    const oldQuantity = quantityNumber(oldRaw);
+    const newQuantity = quantityNumber(newRaw);
 
-    if (!changes.length) {
-      rows.push(productExportRow("Geändert", productName, pzn, "Geändert", "", "", before, after));
-      continue;
-    }
+    if (!quantityChange && oldQuantity === newQuantity) continue;
 
-    for (const [field, change] of changes) {
-      rows.push(
-        productExportRow(
-          "Geändert",
-          productName,
-          pzn,
-          productFieldLabels[field] || field,
-          change.old,
-          change.new,
-          before,
-          after
-        )
-      );
-    }
+    rows.push({
+      productName: String(product.product_name || after?.product_name || before?.product_name || ""),
+      pzn: String(product.pzn || after?.pzn || before?.pzn || ""),
+      oldQuantity: quantityExportValue(oldRaw),
+      newQuantity: quantityExportValue(newRaw),
+      difference: oldQuantity !== null && newQuantity !== null ? newQuantity - oldQuantity : "",
+    });
   }
 
   return rows;
 }
 
-function productChangesExcelHtml(payload: SyncResponse, rows: unknown[][], generatedAt: Date) {
-  const summary = syncSummary(payload);
-  const generatedAtLabel = new Intl.DateTimeFormat("de-DE", {
-    timeZone: "Europe/Berlin",
-    dateStyle: "medium",
-    timeStyle: "medium",
-  }).format(generatedAt);
-
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <style>
-    body { font-family: Arial, sans-serif; }
-    h1 { font-size: 18px; }
-    table { border-collapse: collapse; }
-    th, td { border: 1px solid #999; padding: 6px 8px; mso-number-format:"\\@"; }
-    th { background: #e8eef8; font-weight: bold; }
-  </style>
-</head>
-<body>
-  <h1>DoktorABC Produktänderungen</h1>
-  <table>
-    <tbody>
-      <tr><th>Erstellt</th><td>${excelCell(generatedAtLabel)}</td></tr>
-      <tr><th>Gescrapt</th><td>${excelCell(summary.scraped)}</td></tr>
-      <tr><th>Neu</th><td>${excelCell(summary.inserted)}</td></tr>
-      <tr><th>Geändert</th><td>${excelCell(summary.updated)}</td></tr>
-      <tr><th>Unverändert</th><td>${excelCell(summary.unchanged)}</td></tr>
-      <tr><th>An Supabase gesendet</th><td>${excelCell(summary.sent_to_supabase)}</td></tr>
-    </tbody>
-  </table>
-  <br />
-  <table>
-    <thead>
-      <tr>${productExportColumns.map((column) => `<th>${excelCell(column)}</th>`).join("")}</tr>
-    </thead>
-    <tbody>
-      ${rows.map((row) => `<tr>${row.map((cell) => `<td>${excelCell(cell)}</td>`).join("")}</tr>`).join("")}
-    </tbody>
-  </table>
-</body>
-</html>`;
-}
-
 function downloadProductChangesExcel(payload: SyncResponse, generatedAt = new Date()): ProductChangeExport | null {
-  const rows = productChangeRows(payload);
+  const rows = quantityChangeRows(payload);
 
   if (!rows.length) return null;
 
-  const filename = `doktorabc-produkt-aenderungen_${germanyFilenameTimestamp(generatedAt)}.xls`;
-  const html = productChangesExcelHtml(payload, rows, generatedAt);
-  const blob = new Blob(["\ufeff", html], { type: "application/vnd.ms-excel;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  const filename = `doktorabc-mengen-aenderungen_${germanyFilenameTimestamp(generatedAt)}.xlsx`;
+  const worksheet = xlsxUtils.json_to_sheet(
+    rows.map((row) => ({
+      Produkt: row.productName,
+      PZN: row.pzn,
+      "Menge alt": row.oldQuantity,
+      "Menge neu": row.newQuantity,
+      "Änderung (neu - alt)": row.difference,
+    })),
+    {
+      header: ["Produkt", "PZN", "Menge alt", "Menge neu", "Änderung (neu - alt)"],
+    }
+  );
+  worksheet["!cols"] = [{ wch: 54 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 20 }];
+  worksheet["!autofilter"] = { ref: `A1:E${rows.length + 1}` };
+
+  const workbook = xlsxUtils.book_new();
+  xlsxUtils.book_append_sheet(workbook, worksheet, "Mengenänderungen");
+  writeFileXLSX(workbook, filename, { compression: true });
 
   return {
     filename,
@@ -941,13 +847,13 @@ export function SyncConsole() {
         <div className="product-export-note">
           <FileSpreadsheet size={18} />
           <div>
-            <span>Excel-Datei erstellt</span>
+            <span>XLSX für Mengenänderungen erstellt</span>
             <strong>{productExport.filename}</strong>
             <small>
-              {productExport.rowCount} Änderungszeilen · {exportDisplayTime(productExport.generatedAt)}
+              {productExport.rowCount} Mengenänderungen · {exportDisplayTime(productExport.generatedAt)}
             </small>
           </div>
-          <button type="button" onClick={() => result && exportProductChanges(result)} aria-label="Produktänderungen erneut als Excel exportieren">
+          <button type="button" onClick={() => result && exportProductChanges(result)} aria-label="Mengenänderungen erneut als XLSX exportieren">
             <FileSpreadsheet size={16} />
           </button>
         </div>

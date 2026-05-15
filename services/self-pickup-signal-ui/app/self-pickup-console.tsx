@@ -14,7 +14,7 @@ import {
   ShieldCheck,
   Sun,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 type PickupMarkResult = {
   order_reference: string;
@@ -111,6 +111,7 @@ function DoktorabcLogo() {
 }
 
 export function SelfPickupConsole() {
+  const pickupMarkRequestInFlightRef = useRef(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [isSessionChecking, setIsSessionChecking] = useState(true);
@@ -279,19 +280,24 @@ export function SelfPickupConsole() {
   }
 
   async function triggerPickupMarkOrders() {
+    if (pickupMarkRequestInFlightRef.current) {
+      return;
+    }
+
     if (!isUnlocked) {
       setUnlockStatus("error");
       setUnlockMessage("Bitte zuerst den Zugang freischalten.");
       return;
     }
 
-    const orderReferences = selectedPickupReferences;
+    const orderReferences = [...selectedPickupReferences];
     if (!orderReferences.length) {
       setPickupMarkStatus("error");
       setPickupMarkMessage("Bitte mindestens eine offene Self-Pickup Bestellung auswählen.");
       return;
     }
 
+    pickupMarkRequestInFlightRef.current = true;
     setIsPickupMarkRunning(true);
     setPickupMarkStatus("idle");
     setPickupMarkMessage("Self-Pickup Bestellungen werden geprüft.");
@@ -344,6 +350,7 @@ export function SelfPickupConsole() {
       setPickupMarkStatus("error");
       setPickupMarkMessage(error instanceof Error ? authErrorMessage(error.message) : "Self-Pickup Markierung fehlgeschlagen.");
     } finally {
+      pickupMarkRequestInFlightRef.current = false;
       setIsPickupMarkRunning(false);
     }
   }

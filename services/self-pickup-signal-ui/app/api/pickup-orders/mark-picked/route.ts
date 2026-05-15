@@ -22,6 +22,12 @@ type PendingPickupOrderRow = SupabaseOrderRow & {
   products: string | null;
 };
 
+type PickupAttemptOrderSnapshot = {
+  order_reference: string;
+  patient_name: string | null;
+  billing_date: string | null;
+};
+
 type NotificationRow = {
   created_at?: string;
   event?: string | null;
@@ -64,6 +70,20 @@ type PickupDoneBotResponse = {
   current_url?: string;
   screenshot_path?: string | null;
   results?: PickupDoneBotResult[];
+};
+
+type PickupAttemptNotificationInput = {
+  orderReferences: string[];
+  attemptedOrders: PickupAttemptOrderSnapshot[];
+  dryRun: boolean;
+  pickedAt: string;
+  botPayload: PickupDoneBotResponse | null;
+  combinedResults: MarkPickedResult[];
+  clickable: number;
+  picked: number;
+  alreadyPicked: number;
+  errors: number;
+  errorMessage?: string;
 };
 
 function requiredEnv(name: string) {
@@ -220,6 +240,10 @@ function notificationsTableName() {
 
 function notificationsTableUrl() {
   return `${supabaseUrl()}/rest/v1/${encodeURIComponent(notificationsTableName())}`;
+}
+
+function notificationHeaders() {
+  return supabaseHeadersForSchema(notificationsSchema());
 }
 
 function postgrestInValues(values: string[]) {
@@ -408,6 +432,45 @@ async function fetchPendingPickupOrders(orderReferences?: string[] | null) {
   return dedupeAndSortPendingOrders((await response.json()) as PendingPickupOrderRow[], orderReferences);
 }
 
+async function fetchPickupAttemptOrderSnapshots(orderReferences: string[]): Promise<PickupAttemptOrderSnapshot[]> {
+  if (!orderReferences.length) return [];
+
+  const url = new URL(tableUrl());
+  url.searchParams.set("select", "order_reference,patient_name,billing_date");
+  url.searchParams.set("order_type", `eq.${SELF_PICKUP_ORDER_TYPE}`);
+  url.searchParams.set("order_reference", postgrestInValues(orderReferences));
+
+  const response = await fetch(url, {
+    headers: supabaseHeaders(),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase attempt lookup failed (${response.status}): ${await response.text()}`);
+  }
+
+  const rows = (await response.json()) as PickupAttemptOrderSnapshot[];
+  const byReference = new Map(rows.map((row) => [row.order_reference.toUpperCase(), row]));
+
+  return orderReferences.map((orderReference) => {
+    const row = byReference.get(orderReference.toUpperCase());
+
+    return {
+      order_reference: orderReference,
+      patient_name: row?.patient_name || null,
+      billing_date: row?.billing_date || null,
+    };
+  });
+}
+
+function fallbackPickupAttemptOrderSnapshots(orderReferences: string[]): PickupAttemptOrderSnapshot[] {
+  return orderReferences.map((orderReference) => ({
+    order_reference: orderReference,
+    patient_name: null,
+    billing_date: null,
+  }));
+}
+
 async function markRowPicked(row: SupabaseOrderRow, pickedAt: string) {
   const url = new URL(tableUrl());
   url.searchParams.set("id", `eq.${row.id}`);
@@ -560,6 +623,118 @@ function isClickedBotResult(result: PickupDoneBotResult) {
   return ["clicked", "clicked_still_visible"].includes(result.status || "");
 }
 
+function pickupAttemptModeLabel(dryRun: boolean) {
+  return dryRun ? "Trockenlauf" : "Echter Klick";
+}
+
+function pickupAttemptOrderLabel(order: PickupAttemptOrderSnapshot) {
+  return [order.order_reference, order.patient_name].filter(Boolean).join(" - ");
+}
+
+function pickupAttemptMessage(input: PickupAttemptNotificationInput) {
+  const mode = pickupAttemptModeLabel(input.dryRun);
+  const countText = `${input.orderReferences.length} versucht`;
+  const resultText = input.dryRun
+    ? `${input.clickable} klickbar, nichts markiert`
+    : `${input.picked} markiert, ${input.alreadyPicked} bereits abgeholt`;
+  const errorText = input.errors ? `${input.errors} Fehler` : "0 Fehler";
+  const previewOrders = input.attemptedOrders.slice(0, 6).map(pickupAttemptOrderLabel).filter(Boolean);
+  const moreText = input.attemptedOrders.length > previewOrders.length
+    ? `; +${input.attemptedOrders.length - previewOrders.length} weitere`
+    : "";
+  const orderText = previewOrders.length ? ` IDs: ${previewOrders.join("; ")}${moreText}` : "";
+
+  return `${mode}: ${countText}, ${resultText}, ${errorText}.${orderText}`;
+}
+
+function pickupAttemptOrdersPayload(input: PickupAttemptNotificationInput) {
+  const resultByReference = new Map(
+    input.combinedResults.map((result) => [result.order_reference.toUpperCase(), result])
+  );
+
+  return input.attemptedOrders.map((order) => {
+    const result = resultByReference.get(order.order_reference.toUpperCase());
+
+    return {
+      order_reference: order.order_reference,
+      patient_name: order.patient_name,
+      billing_date: order.billing_date,
+      status: result?.status || (input.errorMessage ? "error" : "unknown"),
+      bot_status: result?.bot_status || null,
+      message: result?.message || input.errorMessage || "",
+    };
+  });
+}
+
+async function insertPickupAttemptNotification(input: PickupAttemptNotificationInput) {
+  const status = input.errorMessage || input.errors > 0 ? "failure" : "success";
+  const event = `doktorabc_pickup_done_attempt_${status}`;
+  const payload = {
+    action: "pickup_done_attempt",
+    section: "realtime_bot",
+    event,
+    status,
+    source: "self-pickup-signal-ui",
+    mode: input.dryRun ? "dry_run" : "real_click",
+    dry_run: input.dryRun,
+    attempted: input.orderReferences.length,
+    checked: input.combinedResults.length || input.orderReferences.length,
+    clickable: input.clickable,
+    picked: input.picked,
+    already_picked: input.alreadyPicked,
+    errors: input.errors,
+    picked_at: input.pickedAt,
+    orders: pickupAttemptOrdersPayload(input),
+    results: input.combinedResults,
+    bot: input.botPayload,
+    error: input.errorMessage || null,
+  };
+
+  const notification = {
+    section: "realtime_bot",
+    event,
+    status,
+    title: input.dryRun ? "Self Pickup Trockenlauf" : "Self Pickup Klickversuch",
+    message: pickupAttemptMessage(input),
+    filename: null,
+    upload_type: "doktorabc_pickup_done_attempt",
+    bucket: null,
+    path: null,
+    size_bytes: null,
+    error: input.errorMessage || null,
+    source: "self-pickup-signal-ui",
+    payload,
+    created_at: input.pickedAt,
+  };
+
+  const response = await fetch(notificationsTableUrl(), {
+    method: "POST",
+    headers: {
+      ...notificationHeaders(),
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify(notification),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase notification insert failed (${response.status}): ${await response.text()}`);
+  }
+
+  return { sent_to_notification_app: true, notification_status_code: response.status };
+}
+
+async function sendPickupAttemptNotification(input: PickupAttemptNotificationInput) {
+  try {
+    return await insertPickupAttemptNotification(input);
+  } catch (error) {
+    return {
+      sent_to_notification_app: false,
+      notification_error: error instanceof Error ? error.message : "Unknown notification error",
+    };
+  }
+}
+
 export async function GET(request: Request) {
   const auth = validateRequestAuth(request);
 
@@ -651,15 +826,41 @@ export async function POST(request: Request) {
   }
 
   const dryRun = booleanValue(payload.dry_run ?? payload.dryRun, pickupDoneDryRunDefault());
+  const pickedAt = new Date().toISOString();
+  const attemptedOrders = await fetchPickupAttemptOrderSnapshots(orderReferences).catch(() =>
+    fallbackPickupAttemptOrderSnapshots(orderReferences)
+  );
   let botPayload: PickupDoneBotResponse | null = null;
 
   try {
     botPayload = await callPickupDoneBot(orderReferences, dryRun);
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Pickup action bot failed.";
+    const failedResults = orderReferences.map((orderReference) => ({
+      order_reference: orderReference,
+      status: "error" as const,
+      dry_run: dryRun,
+      message: errorMessage,
+    }));
+    const notificationResult = await sendPickupAttemptNotification({
+      orderReferences,
+      attemptedOrders,
+      dryRun,
+      pickedAt,
+      botPayload,
+      combinedResults: failedResults,
+      clickable: 0,
+      picked: 0,
+      alreadyPicked: 0,
+      errors: orderReferences.length,
+      errorMessage,
+    });
+
     return NextResponse.json(
       {
         ok: false,
-        error: error instanceof Error ? error.message : "Pickup action bot failed.",
+        error: errorMessage,
+        notification: notificationResult,
       },
       { status: 502 }
     );
@@ -680,7 +881,6 @@ export async function POST(request: Request) {
       : botResults.filter((result) => !isClickedBotResult(result)).map(botResultToMarkResult)
     : [];
 
-  const pickedAt = new Date().toISOString();
   const results = await Promise.all(
     referencesToMark.map((orderReference) => processOrderReference(orderReference, pickedAt))
   );
@@ -691,6 +891,18 @@ export async function POST(request: Request) {
   const picked = combinedResults.filter((result) => result.status === "picked").length;
   const alreadyPicked = combinedResults.filter((result) => result.status === "already_picked").length;
   const errors = combinedResults.filter((result) => ["not_found", "wrong_order_type", "error"].includes(result.status)).length;
+  const notificationResult = await sendPickupAttemptNotification({
+    orderReferences,
+    attemptedOrders,
+    dryRun: Boolean(botPayload?.dry_run),
+    pickedAt,
+    botPayload,
+    combinedResults,
+    clickable,
+    picked,
+    alreadyPicked,
+    errors,
+  });
 
   const response = NextResponse.json({
     ok: true,
@@ -705,6 +917,7 @@ export async function POST(request: Request) {
     schema: supabaseSchema(),
     bot: botPayload,
     results: combinedResults,
+    notification: notificationResult,
   });
 
   if (auth.issueSession) {

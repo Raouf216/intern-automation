@@ -121,6 +121,27 @@ type BotCheckDetails = {
   sections: BotCheckProblemSection[];
 };
 
+type PickupAttemptOrder = {
+  orderReference: string;
+  patientName: string;
+  billingDate: string;
+  status: string;
+  botStatus: string;
+  message: string;
+};
+
+type PickupAttemptDetails = {
+  mode: "dry_run" | "real_click" | string;
+  dryRun: boolean;
+  attempted: number;
+  checked: number;
+  clickable: number;
+  picked: number;
+  alreadyPicked: number;
+  errors: number;
+  orders: PickupAttemptOrder[];
+};
+
 const sections: Array<{ label: string; value: SectionKey; description: string; caption: string; active: boolean }> = [
   {
     label: "Upload",
@@ -417,6 +438,7 @@ function isSectionKey(value: string | null): value is SectionKey {
 
 function NotificationRow({ notification }: { notification: StoredNotification }) {
   const rowsInserted = rowsInsertedFromPayload(notification.payload);
+  const pickupAttemptDetails = pickupAttemptDetailsFromPayload(notification.payload);
   const botCheckDetails = botCheckDetailsFromPayload(notification.payload);
   const syncDetails = syncDetailsFromPayload(notification.payload);
   const orderBotDetails = orderBotDetailsFromPayload(notification.payload);
@@ -452,7 +474,22 @@ function NotificationRow({ notification }: { notification: StoredNotification })
             </time>
           </div>
         </div>
-        {botCheckDetails ? (
+        {pickupAttemptDetails ? (
+          <dl className="detail-grid order-grid">
+            <div>
+              <dt>Modus</dt>
+              <dd>{pickupAttemptDetails.dryRun ? "Trockenlauf" : "Echter Klick"}</dd>
+            </div>
+            <div>
+              <dt>Versucht</dt>
+              <dd>{pickupAttemptDetails.attempted}</dd>
+            </div>
+            <div>
+              <dt>{pickupAttemptDetails.dryRun ? "Klickbar" : "Markiert"}</dt>
+              <dd>{pickupAttemptDetails.dryRun ? pickupAttemptDetails.clickable : pickupAttemptDetails.picked}</dd>
+            </div>
+          </dl>
+        ) : botCheckDetails ? (
           <dl className="detail-grid bot-check-grid">
             <div>
               <dt>Geprüfte Orders</dt>
@@ -535,7 +572,15 @@ function NotificationRow({ notification }: { notification: StoredNotification })
             )}
           </dl>
         ) : null}
-        {botCheckDetails ? (
+        {pickupAttemptDetails ? (
+          <details className={`sync-log-panel ${notification.status === "failure" ? "danger" : "success"}`}>
+            <summary>
+              <ChevronDown size={15} />
+              <span>Pickup-Klickversuch anzeigen</span>
+            </summary>
+            <PickupAttemptLogDetails details={pickupAttemptDetails} />
+          </details>
+        ) : botCheckDetails ? (
           <BotCheckLogDetails details={botCheckDetails} status={notification.status} />
         ) : orderBotDetails ? (
           orderBotDetails.kind === "orders" && notification.status !== "failure" ? (
@@ -713,6 +758,51 @@ function BotCheckDataSnapshot({ label, row }: { label: string; row: Record<strin
           </span>
         ))}
       </div>
+    </div>
+  );
+}
+
+function PickupAttemptLogDetails({ details }: { details: PickupAttemptDetails }) {
+  return (
+    <div className="sync-log-content">
+      <section className="sync-product-section" aria-label="Self Pickup Klickversuch">
+        <h4>
+          {details.dryRun ? "Trockenlauf" : "Echter Klick"}: {details.attempted} Orders
+        </h4>
+        <div className="sync-product-meta compact">
+          <span>
+            <b>Geprüft</b>
+            <strong>{details.checked}</strong>
+          </span>
+          <span>
+            <b>Klickbar</b>
+            <strong>{details.clickable}</strong>
+          </span>
+          <span>
+            <b>Markiert</b>
+            <strong>{details.picked}</strong>
+          </span>
+          <span>
+            <b>Fehler</b>
+            <strong>{details.errors}</strong>
+          </span>
+        </div>
+        <div className="order-bot-list">
+          {details.orders.map((order, index) => (
+            <article className="order-bot-card" key={`${order.orderReference}-${index}`}>
+              <div className="sync-product-head">
+                <strong>{order.orderReference || "Order ID fehlt"}</strong>
+                <span>{pickupAttemptStatusLabel(order.status)}</span>
+              </div>
+              <div className="order-bot-products">
+                <span>{order.patientName || "Name fehlt"}</span>
+                <strong>{order.billingDate ? formatExactDateTime(order.billingDate) : "Datum fehlt"}</strong>
+                {order.message ? <small>{order.message}</small> : null}
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
@@ -976,6 +1066,38 @@ function formatStatus(value: string) {
   return "Info";
 }
 
+function pickupAttemptStatusLabel(value: string) {
+  if (value === "clickable") {
+    return "Klickbar";
+  }
+
+  if (value === "picked" || value === "clicked") {
+    return "Geklickt";
+  }
+
+  if (value === "clicked_still_visible") {
+    return "Geklickt, sichtbar";
+  }
+
+  if (value === "already_picked") {
+    return "Bereits abgeholt";
+  }
+
+  if (value === "not_found") {
+    return "Nicht gefunden";
+  }
+
+  if (value === "wrong_order_type") {
+    return "Falscher Typ";
+  }
+
+  if (value === "error") {
+    return "Fehler";
+  }
+
+  return value || "Unklar";
+}
+
 function formatUploadType(value: string | null) {
   if (value === "doktorabc_abrechnung") {
     return "DoktorABC Abrechnung";
@@ -1099,6 +1221,40 @@ function botCheckDetailsFromPayload(payload: Record<string, unknown>): BotCheckD
     excelRowsChecked: numberValue(source.excel_rows_checked),
     totalProblems: nullableNumberValue(source.total_problems) ?? sectionProblemCount,
     sections,
+  };
+}
+
+function pickupAttemptDetailsFromPayload(payload: Record<string, unknown>): PickupAttemptDetails | null {
+  const event = stringValue(payload.event);
+  const isPickupAttempt =
+    payload.action === "pickup_done_attempt" ||
+    payload.upload_type === "doktorabc_pickup_done_attempt" ||
+    event === "doktorabc_pickup_done_attempt_success" ||
+    event === "doktorabc_pickup_done_attempt_failure";
+
+  if (!isPickupAttempt) {
+    return null;
+  }
+
+  const orders = arrayRecordValue(payload.orders).map((order) => ({
+    orderReference: stringValue(order.order_reference) || stringValue(order.orderReference),
+    patientName: stringValue(order.patient_name) || stringValue(order.patientName),
+    billingDate: stringValue(order.billing_date) || stringValue(order.billingDate),
+    status: stringValue(order.status),
+    botStatus: stringValue(order.bot_status) || stringValue(order.botStatus),
+    message: stringValue(order.message),
+  }));
+
+  return {
+    mode: stringValue(payload.mode) || (payload.dry_run ? "dry_run" : "real_click"),
+    dryRun: Boolean(payload.dry_run),
+    attempted: numberValue(payload.attempted) || orders.length,
+    checked: numberValue(payload.checked),
+    clickable: numberValue(payload.clickable),
+    picked: numberValue(payload.picked),
+    alreadyPicked: numberValue(payload.already_picked),
+    errors: numberValue(payload.errors),
+    orders,
   };
 }
 

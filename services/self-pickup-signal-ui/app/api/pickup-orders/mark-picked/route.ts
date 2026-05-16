@@ -315,8 +315,7 @@ async function fetchOrderRows(orderReference: string) {
 }
 
 function orderReferencesFromNotificationPayload(payload: Record<string, unknown>) {
-  const orderLists = recordValue(payload.order_lists);
-  const pickupReadyList = recordValue(orderLists?.pickup_ready) || recordValue(orderLists?.["self pickup"]);
+  const pickupReadyList = pickupReadyListFromNotificationPayload(payload);
   const directOrders = arrayRecordValue(payload.orders);
   const listOrders = arrayRecordValue(pickupReadyList?.orders);
   const orders = listOrders.length ? listOrders : directOrders;
@@ -326,14 +325,25 @@ function orderReferencesFromNotificationPayload(payload: Record<string, unknown>
   );
 }
 
+function pickupReadyListFromNotificationPayload(payload: Record<string, unknown>) {
+  const orderLists = recordValue(payload.order_lists);
+
+  return (
+    recordValue(orderLists?.pickup_ready) ||
+    recordValue(orderLists?.self_pickup) ||
+    recordValue(orderLists?.["self pickup"])
+  );
+}
+
 function hasPickupReadySnapshot(payload: Record<string, unknown>) {
   const event = String(payload.event || "");
   const source = String(payload.service || payload.source || "").toLowerCase();
+  const orderListType = String(payload.order_list_type || "").toLowerCase();
 
   return Boolean(
-    payload.section === "realtime_bot" ||
+    pickupReadyListFromNotificationPayload(payload) ||
       source.includes("pickup-ready") ||
-      payload.order_list_type === "pickup_ready" ||
+      orderListType === "pickup_ready" ||
       event === "doktorabc_pickup_ready_orders_success"
   );
 }

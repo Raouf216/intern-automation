@@ -263,7 +263,10 @@ function quantityNumber(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value !== "string") return null;
 
-  const parsed = Number(value.trim().replace(/\s/g, "").replace(",", "."));
+  const normalized = value.trim();
+  if (!normalized) return null;
+
+  const parsed = Number(normalized.replace(/\s/g, "").replace(",", "."));
 
   return Number.isFinite(parsed) ? parsed : null;
 }

@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Clock3,
   DatabaseZap,
+  FileSpreadsheet,
   KeyRound,
   Loader2,
   LockKeyhole,
@@ -18,6 +19,7 @@ import {
   Sun,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { utils as xlsxUtils, writeFileXLSX } from "xlsx";
 
 type Product = {
   product_name?: string;
@@ -49,6 +51,22 @@ type SyncResponse = {
   reused_session?: boolean;
   new_products?: Product[];
   changed_products?: ChangedProduct[];
+};
+
+type ProductChangeExport = {
+  filename: string;
+  rowCount: number;
+  generatedAt: string;
+};
+
+type ProductRunStep = "syncing" | "notifying" | "exporting" | null;
+
+type QuantityChangeExportRow = {
+  productName: string;
+  pzn: string;
+  oldQuantity: number | string;
+  newQuantity: number | string;
+  difference: number | string;
 };
 
 type EndOfDayResponse = {
@@ -217,6 +235,101 @@ function formatChangeValue(value: unknown) {
   return String(value);
 }
 
+function germanyFilenameTimestamp(value: Date) {
+  const parts = new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(value);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value || "00";
+
+  return `${part("year")}-${part("month")}-${part("day")}_${part("hour")}-${part("minute")}-${part("second")}`;
+}
+
+function exportDisplayTime(value: string) {
+  return new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
+    dateStyle: "short",
+    timeStyle: "medium",
+  }).format(new Date(value));
+}
+
+function quantityNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+
+  const parsed = Number(value.trim().replace(/\s/g, "").replace(",", "."));
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function quantityExportValue(value: unknown) {
+  return quantityNumber(value) ?? formatChangeValue(value);
+}
+
+function quantityChangeRows(payload: SyncResponse): QuantityChangeExportRow[] {
+  const rows: QuantityChangeExportRow[] = [];
+
+  for (const product of payload.changed_products || []) {
+    const quantityChange = product.changes?.quantity;
+    const before = product.before;
+    const after = product.after;
+    const oldRaw = quantityChange?.old ?? before?.quantity;
+    const newRaw = quantityChange?.new ?? after?.quantity;
+    const oldQuantity = quantityNumber(oldRaw);
+    const newQuantity = quantityNumber(newRaw);
+
+    if (!quantityChange && oldQuantity === newQuantity) continue;
+
+    rows.push({
+      productName: String(product.product_name || after?.product_name || before?.product_name || ""),
+      pzn: String(product.pzn || after?.pzn || before?.pzn || ""),
+      oldQuantity: quantityExportValue(oldRaw),
+      newQuantity: quantityExportValue(newRaw),
+      difference: oldQuantity !== null && newQuantity !== null ? newQuantity - oldQuantity : "",
+    });
+  }
+
+  return rows;
+}
+
+function downloadProductChangesExcel(payload: SyncResponse, generatedAt = new Date()): ProductChangeExport | null {
+  const rows = quantityChangeRows(payload);
+
+  if (!rows.length) return null;
+
+  const filename = `doktorabc-mengen-aenderungen_${germanyFilenameTimestamp(generatedAt)}.xlsx`;
+  const worksheet = xlsxUtils.json_to_sheet(
+    rows.map((row) => ({
+      Produkt: row.productName,
+      PZN: row.pzn,
+      "Menge alt": row.oldQuantity,
+      "Menge neu": row.newQuantity,
+      "Änderung (neu - alt)": row.difference,
+    })),
+    {
+      header: ["Produkt", "PZN", "Menge alt", "Menge neu", "Änderung (neu - alt)"],
+    }
+  );
+  worksheet["!cols"] = [{ wch: 54 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 20 }];
+  worksheet["!autofilter"] = { ref: `A1:E${rows.length + 1}` };
+
+  const workbook = xlsxUtils.book_new();
+  xlsxUtils.book_append_sheet(workbook, worksheet, "Mengenänderungen");
+  writeFileXLSX(workbook, filename, { compression: true });
+
+  return {
+    filename,
+    rowCount: rows.length,
+    generatedAt: generatedAt.toISOString(),
+  };
+}
+
 function syncSummary(payload: SyncResponse | null) {
   return {
     scraped: numberValue(payload?.scraped),
@@ -307,6 +420,9 @@ export function SyncConsole() {
   const [endOfDayMessage, setEndOfDayMessage] = useState("Bereit für End-of-Day Bestellungen und Excel-Export.");
   const [result, setResult] = useState<SyncResponse | null>(null);
   const [endOfDayResult, setEndOfDayResult] = useState<EndOfDayResponse | null>(null);
+  const [productExport, setProductExport] = useState<ProductChangeExport | null>(null);
+  const [productRunStep, setProductRunStep] = useState<ProductRunStep>(null);
+  const [isProductExporting, setIsProductExporting] = useState(false);
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [finishedAt, setFinishedAt] = useState<Date | null>(null);
   const [endOfDayStartedAt, setEndOfDayStartedAt] = useState<Date | null>(null);
@@ -369,6 +485,43 @@ export function SyncConsole() {
     return false;
   }
 
+  async function exportProductChanges(payload: SyncResponse, generatedAt = new Date(), messageText?: string) {
+    setIsProductExporting(true);
+    setProductRunStep("exporting");
+
+    if (messageText) {
+      setMessage(messageText);
+    }
+
+    await wait(80);
+
+    try {
+      const nextExport = downloadProductChangesExcel(payload, generatedAt);
+      setProductExport(nextExport);
+      return nextExport;
+    } catch (error) {
+      console.warn("Could not create product change Excel export", error);
+      setProductExport(null);
+      return null;
+    } finally {
+      setIsProductExporting(false);
+    }
+  }
+
+  async function reExportProductChanges() {
+    if (!result || !productExport) return;
+
+    const nextExport = await exportProductChanges(
+      result,
+      new Date(productExport.generatedAt),
+      "XLSX für Mengenänderungen wird erneut erstellt."
+    );
+
+    setProductRunStep(null);
+    setStatus("success");
+    setMessage(nextExport ? "XLSX für Mengenänderungen wurde erneut erstellt." : "Keine Mengenänderungen für XLSX gefunden.");
+  }
+
   async function unlockConsole(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const nextPassword = passwordInput.trim();
@@ -412,9 +565,12 @@ export function SyncConsole() {
     }
 
     setIsRunning(true);
+    setProductRunStep("syncing");
+    setIsProductExporting(false);
     setStatus("idle");
     setMessage("Synchronisierung läuft. Bitte warten, der Vorgang kann bis zu 5 Minuten dauern.");
     setResult(null);
+    setProductExport(null);
     const runStartedAt = new Date();
     setStartedAt(runStartedAt);
     setFinishedAt(null);
@@ -444,14 +600,14 @@ export function SyncConsole() {
         );
       }
 
-      setStatus("success");
-      setMessage(
-        `Erfolgreich abgeschlossen: ${payload.inserted || 0} neu, ${payload.updated || 0} geändert, ${
-          payload.unchanged || 0
-        } unverändert.`
-      );
+      const successMessage = `Erfolgreich abgeschlossen: ${payload.inserted || 0} neu, ${payload.updated || 0} geändert, ${
+        payload.unchanged || 0
+      } unverändert.`;
       const runFinishedAt = new Date();
       setFinishedAt(runFinishedAt);
+      setProductRunStep("notifying");
+      setMessage(`${successMessage} Notification wird gesendet.`);
+      await wait(80);
       await sendFinalSyncNotification({
         event: "doktorabc_sync_success",
         status: "success",
@@ -466,6 +622,10 @@ export function SyncConsole() {
         summary: syncSummary(payload),
         logs: payload,
       });
+      const exportResult = await exportProductChanges(payload, runFinishedAt, "Notification verarbeitet. XLSX für Mengenänderungen wird erstellt.");
+      setProductRunStep(null);
+      setStatus("success");
+      setMessage(exportResult ? successMessage : `${successMessage} Keine Mengenänderungen für XLSX gefunden.`);
     } catch (error) {
       setStatus("error");
       const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
@@ -473,13 +633,16 @@ export function SyncConsole() {
         errorMessage.toLowerCase().includes("failed to fetch") ||
         errorMessage.toLowerCase().includes("networkerror");
 
-      setMessage(
+      const failureMessage =
         isFetchFailure
           ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den DoktorABC Sync-Bot unter ${syncEndpoint} nicht erreichen oder die Antwort nicht lesen.`
-          : `Sync-Anfrage fehlgeschlagen: ${errorMessage}`
-      );
+          : `Sync-Anfrage fehlgeschlagen: ${errorMessage}`;
+
+      setProductRunStep("notifying");
+      setMessage(`${failureMessage} Notification wird gesendet.`);
       const runFinishedAt = new Date();
       setFinishedAt(runFinishedAt);
+      await wait(80);
       await sendFinalSyncNotification({
         event: "doktorabc_sync_failure",
         status: "failure",
@@ -497,8 +660,11 @@ export function SyncConsole() {
           ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den DoktorABC Sync-Bot unter ${syncEndpoint} nicht erreichen oder die Antwort nicht lesen.`
           : `Sync-Anfrage fehlgeschlagen: ${errorMessage}`,
       });
+      setMessage(failureMessage);
     } finally {
       setIsRunning(false);
+      setIsProductExporting(false);
+      setProductRunStep(null);
     }
   }
 
@@ -613,7 +779,16 @@ export function SyncConsole() {
     }
   }
 
-  const anyBotRunning = isRunning || isEndOfDayRunning;
+  const isProductBusy = isRunning || isProductExporting;
+  const productActionLabel =
+    productRunStep === "notifying"
+      ? "Notification wird gesendet"
+      : productRunStep === "exporting" || isProductExporting
+        ? "XLSX wird erstellt"
+        : isRunning
+          ? "Synchronisierung läuft"
+          : "Produkte synchronisieren (DoktorABC)";
+  const anyBotRunning = isProductBusy || isEndOfDayRunning;
   const anyBotError =
     status === "error" || endOfDayStatus === "error";
   const anyBotSuccess =
@@ -690,11 +865,11 @@ export function SyncConsole() {
           <p className="section-kicker">Live-Ergebnis</p>
           <h2>Laufübersicht</h2>
         </div>
-        {status === "success" ? <CheckCircle2 size={25} /> : status === "error" ? <AlertTriangle size={25} /> : <Sparkles size={25} />}
+        {isProductBusy ? <Loader2 size={25} className="spin" /> : status === "success" ? <CheckCircle2 size={25} /> : status === "error" ? <AlertTriangle size={25} /> : <Sparkles size={25} />}
       </div>
 
-      <div className={`message message-${isRunning ? "running" : status}`}>
-        {isRunning ? <Loader2 size={18} className="spin" /> : status === "success" ? <CheckCircle2 size={18} /> : status === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
+      <div className={`message message-${isProductBusy ? "running" : status}`}>
+        {isProductBusy ? <Loader2 size={18} className="spin" /> : status === "success" ? <CheckCircle2 size={18} /> : status === "error" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
         <p>{message}</p>
       </div>
 
@@ -719,6 +894,27 @@ export function SyncConsole() {
           <strong>{finishedAt ? finishedAt.toLocaleTimeString() : "noch nicht"}</strong>
         </div>
       </div>
+
+      {productExport ? (
+        <div className="product-export-note">
+          <FileSpreadsheet size={18} />
+          <div>
+            <span>XLSX für Mengenänderungen erstellt</span>
+            <strong>{productExport.filename}</strong>
+            <small>
+              {productExport.rowCount} Mengenänderungen · {exportDisplayTime(productExport.generatedAt)}
+            </small>
+          </div>
+          <button
+            type="button"
+            onClick={reExportProductChanges}
+            disabled={isProductExporting}
+            aria-label="Mengenänderungen erneut als XLSX exportieren"
+          >
+            {isProductExporting ? <Loader2 size={16} className="spin" /> : <FileSpreadsheet size={16} />}
+          </button>
+        </div>
+      ) : null}
     </aside>
   );
 
@@ -853,9 +1049,9 @@ export function SyncConsole() {
                       ))}
                     </ol>
                   </section>
-                  <button className="trigger-button" type="button" onClick={triggerSync} disabled={isRunning}>
-                    {isRunning ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
-                    <span>{isRunning ? "Synchronisierung läuft" : "Produkte synchronisieren (DoktorABC)"}</span>
+                  <button className="trigger-button" type="button" onClick={triggerSync} disabled={isProductBusy}>
+                    {isProductBusy ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
+                    <span>{productActionLabel}</span>
                     <ArrowRight size={20} />
                   </button>
                 </div>

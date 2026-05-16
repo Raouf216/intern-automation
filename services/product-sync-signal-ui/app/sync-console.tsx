@@ -154,7 +154,7 @@ const endOfDayEndpoint = configuredEndOfDayEndpoint || fallbackEndOfDayEndpoint;
 const endOfDayHealthEndpoint = healthEndpointFor(endOfDayEndpoint);
 const staffSteps = [
   {
-    before: "Alle Produkte, bei denen Informationen geändert werden, zuerst in DoktorABC auf ",
+    before: "Alle Produkte, bei denen Informationen geändert werden, und alle neu hinzugefügten Produkte vor dem Klick zuerst in DoktorABC auf ",
     emphasis: "NICHT VERFÜGBAR (unavailable)",
     after: " setzen.",
   },

@@ -69,7 +69,7 @@ EOD_STORAGE_UPLOAD_TIMEOUT_SECONDS = int_env("EOD_STORAGE_UPLOAD_TIMEOUT_SECONDS
 EOD_N8N_UPLOAD_TIMEOUT_SECONDS = 30
 EOD_NOTIFICATION_TIMEOUT_SECONDS = 30
 EOD_DEDUPE_TIMEZONE = (os.environ.get("EOD_DEDUPE_TIMEZONE") or "Europe/Berlin").strip() or "Europe/Berlin"
-EOD_EXPORT_DOWNLOAD_TIMEOUT_MS = 20_000
+EOD_EXPORT_DOWNLOAD_TIMEOUT_MS = int_env("EOD_EXPORT_DOWNLOAD_TIMEOUT_MS", 120_000)
 EOD_EXPORT_BUTTON_VISIBLE_TIMEOUT_MS = 5_000
 EOD_EXPORT_BUTTON_CLICK_TIMEOUT_MS = 10_000
 EOD_LOGIN_FORM_CHECK_TIMEOUT_MS = 800
@@ -402,6 +402,20 @@ def export_button_locator(page):
             continue
 
     raise RuntimeError('Could not find visible "Export" button.')
+
+
+def save_completed_download(download, download_path):
+    failure = download.failure()
+
+    if failure:
+        raise RuntimeError(f"Excel export download failed before completion: {failure}")
+
+    download.save_as(download_path)
+
+    if not os.path.exists(download_path):
+        raise RuntimeError(f"Excel export download completed but no file was saved at {download_path}")
+
+    return os.path.getsize(download_path)
 
 
 def send_export_to_n8n(download_path, metadata):
@@ -764,8 +778,7 @@ def export_end_of_day_excel_to_n8n(page, timestamp, metadata, scraped_at):
     scraped_at_iso = timestamptz_iso(scraped_at)
     download_filename = to_check_excel_filename(scraped_at)
     download_path = os.path.join(ARTIFACTS_DIR, download_filename)
-    download.save_as(download_path)
-    download_size_bytes = os.path.getsize(download_path)
+    download_size_bytes = save_completed_download(download, download_path)
     excel_row_count = count_xlsx_rows(download_path)
     export_date = scraped_at.astimezone(german_timezone_for_utc(scraped_at)).date().isoformat()
     storage_filename = to_check_excel_storage_filename(export_date)

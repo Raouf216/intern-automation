@@ -664,6 +664,123 @@ def ensure_available_checkbox_checked(page):
     return result
 
 
+def get_visible_availability_summary(page):
+    return page.evaluate(
+        """
+        () => {
+          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const fold = (value) => normalize(value)
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .toLowerCase();
+          const isVisible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
+          const table = document.querySelector('table.q-table');
+
+          if (!table) {
+            return { ok: false, error: 'inventory_table_not_found' };
+          }
+
+          const headers = Array.from(table.querySelectorAll('thead th'));
+          const availabilityIndex = headers.findIndex((header) => fold(header.innerText).includes('verfugbarkeit'));
+
+          if (availabilityIndex < 0) {
+            return { ok: false, error: 'availability_column_not_found' };
+          }
+
+          const rows = Array.from(table.querySelectorAll('tbody tr')).filter(isVisible);
+          const statuses = rows.map((row, rowIndex) => {
+            const cell = row.querySelectorAll('td')[availabilityIndex];
+            const text = normalize(cell ? cell.textContent : '');
+            const positive = Boolean(cell && cell.querySelector('.text-positive'));
+            const negative = Boolean(
+              cell && cell.querySelector('.text-negative, .text-red, .text-red-7, .text-red-8')
+            );
+
+            return {
+              row_index: rowIndex + 1,
+              text,
+              available: positive ? true : (negative ? false : null),
+            };
+          });
+          const unavailable = statuses.filter((status) => status.available !== true);
+
+          return {
+            ok: true,
+            row_count: rows.length,
+            available_count: statuses.filter((status) => status.available === true).length,
+            unavailable_count: unavailable.length,
+            unavailable_sample: unavailable.slice(0, 5),
+          };
+        }
+        """
+    )
+
+
+def wait_for_only_available_visible_rows(page, trace=None):
+    trace_step(trace, "wait_for_only_available_visible_rows", timeout_ms=SCRAPE_PAGE_READY_TIMEOUT_MS)
+    page.wait_for_function(
+        """
+        () => {
+          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const fold = (value) => normalize(value)
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .toLowerCase();
+          const isVisible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
+          const table = document.querySelector('table.q-table');
+
+          if (!table) {
+            return false;
+          }
+
+          const headers = Array.from(table.querySelectorAll('thead th'));
+          const availabilityIndex = headers.findIndex((header) => fold(header.innerText).includes('verfugbarkeit'));
+
+          if (availabilityIndex < 0) {
+            return false;
+          }
+
+          const rows = Array.from(table.querySelectorAll('tbody tr')).filter(isVisible);
+
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return rows.every((row) => {
+            const cell = row.querySelectorAll('td')[availabilityIndex];
+            return Boolean(cell && cell.querySelector('.text-positive'));
+          });
+        }
+        """,
+        timeout=SCRAPE_PAGE_READY_TIMEOUT_MS,
+    )
+    wait_for_next_render_frame(page)
+    summary = get_visible_availability_summary(page)
+    trace_step(trace, "only_available_visible_rows_ready", **summary)
+
+    return summary
+
+
 def apply_available_filter(page, trace=None):
     wait_for_inventory_page(page, trace=trace)
     trace_step(trace, "click_availability_filter")
@@ -671,11 +788,15 @@ def apply_available_filter(page, trace=None):
     wait_for_availability_filter_menu(page, trace=trace)
     trace_step(trace, "ensure_available_checkbox_checked")
     checkbox_result = ensure_available_checkbox_checked(page)
+    page.keyboard.press("Escape")
+    wait_for_inventory_page(page, trace=trace)
+    availability_summary = wait_for_only_available_visible_rows(page, trace=trace)
 
     return {
         "filter_button": click_result,
         "available_checkbox": checkbox_result,
-        "visible_rows": page.locator("tbody tr").count(),
+        "availability_summary": availability_summary,
+        "visible_rows": availability_summary.get("row_count"),
     }
 
 
@@ -1121,11 +1242,24 @@ def normalize_scraped_product(raw_product, page_number, source_url, scraped_at):
     return product
 
 
+def raw_product_is_available(raw_product):
+    status = normalize_space(raw_product.get("availability_status")).lower()
+    folded_status = (
+        status
+        .replace("ü", "u")
+        .replace("ä", "a")
+        .replace("ö", "o")
+        .replace("ß", "ss")
+    )
+
+    return raw_product.get("available") is True or folded_status == "verfugbar"
+
+
 def normalize_products_for_db(raw_products, source_url, scraped_at):
     return [
         normalize_scraped_product(raw_product, raw_product.get("page_number"), source_url, scraped_at)
         for raw_product in raw_products
-        if normalize_space(raw_product.get("product_name"))
+        if normalize_space(raw_product.get("product_name")) and raw_product_is_available(raw_product)
     ]
 
 
@@ -1614,8 +1748,6 @@ def scrape_all_available_products(base_url, trace=None):
                 trace=trace,
             )
             filter_result = apply_available_filter(page, trace=trace)
-            page.keyboard.press("Escape")
-            wait_for_inventory_page(page, trace=trace)
 
             raw_products = []
             pages = []
@@ -1629,6 +1761,13 @@ def scrape_all_available_products(base_url, trace=None):
                     trace=trace,
                 )
                 page_rows = page_result.get("rows", [])
+                availability_summary = get_visible_availability_summary(page)
+
+                if availability_summary.get("unavailable_count"):
+                    raise RuntimeError(
+                        "Availability filter is not fully applied. "
+                        f"Page {page_number} still has {availability_summary.get('unavailable_count')} visible unavailable rows."
+                    )
 
                 for row in page_rows:
                     row["page_number"] = page_number
@@ -1639,6 +1778,8 @@ def scrape_all_available_products(base_url, trace=None):
                         "page": page_number,
                         "label": pagination.get("label"),
                         "rows": len(page_rows),
+                        "available_rows": availability_summary.get("available_count"),
+                        "unavailable_rows": availability_summary.get("unavailable_count"),
                     }
                 )
 
@@ -1651,10 +1792,25 @@ def scrape_all_available_products(base_url, trace=None):
                     break
 
                 click_next_inventory_page(page, pagination, trace=trace)
+                wait_for_only_available_visible_rows(page, trace=trace)
             else:
                 raise RuntimeError(f"Stopped after WAWICAN_SCRAPE_MAX_PAGES={SCRAPE_MAX_PAGES}")
 
             products = normalize_products_for_db(raw_products, page.url, scraped_at)
+            skipped_non_available_rows = len(
+                [
+                    row
+                    for row in raw_products
+                    if normalize_space(row.get("product_name")) and not raw_product_is_available(row)
+                ]
+            )
+            trace_step(
+                trace,
+                "normalized_available_products",
+                raw_rows=len(raw_products),
+                products=len(products),
+                skipped_non_available_rows=skipped_non_available_rows,
+            )
             db_result = write_products_to_database(products, trace=trace)
             flat_view_result = ensure_products_flat_view(trace=trace)
             screenshot_result = capture_screenshot_now(
@@ -1675,6 +1831,8 @@ def scrape_all_available_products(base_url, trace=None):
                 "filter": filter_result,
                 "pages_scraped": pages,
                 "products_scraped": len(products),
+                "raw_rows_seen": len(raw_products),
+                "skipped_non_available_rows": skipped_non_available_rows,
                 "database": db_result,
                 "flat_view": flat_view_result,
                 **screenshot_result,

@@ -892,16 +892,64 @@ def products_flat_view():
     ).strip() or "wawican_products_flat"
 
 
+DIRECT_PRODUCT_COLUMNS = [
+    "product_name",
+    "price_per_g_text",
+    "price_per_g",
+    "net_purchase_price_per_g_text",
+    "net_purchase_price_per_g",
+    "availability_status",
+    "available",
+    "actual_stock_text",
+    "actual_stock",
+    "virtual_stock_text",
+    "virtual_stock",
+    "price_calculation_enabled",
+    "always_available",
+    "remaining_quantity_text",
+    "remaining_quantity",
+    "cultivar",
+    "genetics",
+    "dominance",
+    "thc",
+    "cbd",
+    "supplier_reserved_quantity_text",
+    "supplier_reserved_quantity",
+    "expiry_date_text",
+    "expiry_date",
+    "expires_at",
+    "hidden",
+    "do_not_show",
+    "page_number",
+    "row_index",
+    "source_url",
+    "scraped_at",
+]
+
+
 def rest_insert_columns():
     value = (os.environ.get("WAWICAN_PRODUCTS_REST_COLUMNS") or "").strip()
 
     if not value:
-        return ["product_name", "raw_data", "scraped_at"]
+        return list(DIRECT_PRODUCT_COLUMNS)
 
     if value == "*":
         return None
 
-    return [column.strip() for column in value.split(",") if column.strip()]
+    columns = [column.strip() for column in value.split(",") if column.strip()]
+
+    if columns == ["product_name", "raw_data", "scraped_at"] and not bool_env(
+        "WAWICAN_PRODUCTS_ALLOW_RAW_REST_COLUMNS",
+        False,
+    ):
+        return list(DIRECT_PRODUCT_COLUMNS)
+
+    return columns
+
+
+def products_upsert_on():
+    value = (os.environ.get("WAWICAN_PRODUCTS_UPSERT_ON") or "product_name").strip()
+    return value or None
 
 
 def supabase_url():
@@ -1263,6 +1311,47 @@ def normalize_products_for_db(raw_products, source_url, scraped_at):
     ]
 
 
+def product_name_key(product):
+    return normalize_space(product.get("product_name")).casefold()
+
+
+def dedupe_products_by_name(products):
+    deduped = []
+    index_by_name = {}
+    duplicate_samples = []
+    duplicate_count = 0
+
+    for product in products:
+        key = product_name_key(product)
+
+        if not key:
+            continue
+
+        if key in index_by_name:
+            duplicate_count += 1
+
+            if len(duplicate_samples) < 10:
+                original = deduped[index_by_name[key]]
+                duplicate_samples.append(
+                    {
+                        "product_name": product.get("product_name"),
+                        "first_page": original.get("page_number"),
+                        "duplicate_page": product.get("page_number"),
+                    }
+                )
+            continue
+
+        index_by_name[key] = len(deduped)
+        deduped.append(product)
+
+    return deduped, {
+        "input_rows": len(products),
+        "unique_rows": len(deduped),
+        "duplicate_rows": duplicate_count,
+        "duplicate_samples": duplicate_samples,
+    }
+
+
 def get_db_columns(cursor, schema_name, table_name):
     cursor.execute(
         """
@@ -1400,6 +1489,10 @@ def write_products_to_supabase_rest(products, trace=None):
     dry_run = bool_env("WAWICAN_PRODUCTS_DRY_RUN", False)
     schema_name = validate_identifier(products_schema(), "WAWICAN_PRODUCTS_SCHEMA")
     table_name = validate_identifier(products_table(), "WAWICAN_PRODUCTS_TABLE")
+    upsert_on = products_upsert_on()
+
+    if upsert_on:
+        validate_identifier(upsert_on, "WAWICAN_PRODUCTS_UPSERT_ON")
 
     if dry_run:
         return {
@@ -1420,6 +1513,7 @@ def write_products_to_supabase_rest(products, trace=None):
         table=table_name,
         rows=len(products),
         replace_all=replace_all,
+        upsert_on=upsert_on,
     )
 
     payloads = [product_payload_for_rest(product) for product in products]
@@ -1443,12 +1537,14 @@ def write_products_to_supabase_rest(products, trace=None):
             for payload in payloads
         ]
 
+    deleted_rows = None
+
     if replace_all:
         response = httpx.delete(
             supabase_table_url(),
             headers={
                 **supabase_headers(),
-                "Prefer": "return=minimal",
+                "Prefer": "return=representation,count=exact",
             },
             params={
                 "product_name": "not.is.null",
@@ -1459,16 +1555,30 @@ def write_products_to_supabase_rest(products, trace=None):
         if response.status_code >= 400:
             raise RuntimeError(f"Supabase cleanup failed: {response_preview(response)}")
 
+        try:
+            deleted_payload = response.json()
+            if isinstance(deleted_payload, list):
+                deleted_rows = len(deleted_payload)
+        except Exception:
+            deleted_rows = None
+
     inserted_rows = 0
+    insert_url = supabase_table_url()
+    prefer_header = "return=minimal"
+
+    if upsert_on:
+        insert_url = f"{insert_url}?on_conflict={quote(upsert_on, safe=',')}"
+        prefer_header = "resolution=merge-duplicates,return=minimal"
+
     for product_chunk in chunks(payloads, 500):
         if not product_chunk:
             continue
 
         response = httpx.post(
-            supabase_table_url(),
+            insert_url,
             headers={
                 **supabase_headers(),
-                "Prefer": "return=minimal",
+                "Prefer": prefer_header,
             },
             json=product_chunk,
             timeout=SUPABASE_TIMEOUT_SECONDS,
@@ -1485,6 +1595,8 @@ def write_products_to_supabase_rest(products, trace=None):
         "schema": schema_name,
         "table": table_name,
         "replace_all": replace_all,
+        "deleted_rows": deleted_rows,
+        "upsert_on": upsert_on,
         "inserted_rows": inserted_rows,
         "insert_columns": insert_columns,
         "skipped_missing_columns": skipped_columns,
@@ -1634,7 +1746,7 @@ notify pgrst, 'reload schema';
 
 
 def ensure_products_flat_view(trace=None):
-    enabled = bool_env("WAWICAN_PRODUCTS_FLAT_VIEW_ENABLED", True)
+    enabled = bool_env("WAWICAN_PRODUCTS_FLAT_VIEW_ENABLED", False)
     schema_name = validate_identifier(products_schema(), "WAWICAN_PRODUCTS_SCHEMA")
     table_name = validate_identifier(products_table(), "WAWICAN_PRODUCTS_TABLE")
     view_name = validate_identifier(products_flat_view(), "WAWICAN_PRODUCTS_FLAT_VIEW")
@@ -1796,7 +1908,8 @@ def scrape_all_available_products(base_url, trace=None):
             else:
                 raise RuntimeError(f"Stopped after WAWICAN_SCRAPE_MAX_PAGES={SCRAPE_MAX_PAGES}")
 
-            products = normalize_products_for_db(raw_products, page.url, scraped_at)
+            normalized_products = normalize_products_for_db(raw_products, page.url, scraped_at)
+            products, dedupe_result = dedupe_products_by_name(normalized_products)
             skipped_non_available_rows = len(
                 [
                     row
@@ -1808,8 +1921,10 @@ def scrape_all_available_products(base_url, trace=None):
                 trace,
                 "normalized_available_products",
                 raw_rows=len(raw_products),
-                products=len(products),
+                available_products=len(normalized_products),
+                unique_products=len(products),
                 skipped_non_available_rows=skipped_non_available_rows,
+                duplicate_available_rows=dedupe_result.get("duplicate_rows"),
             )
             db_result = write_products_to_database(products, trace=trace)
             flat_view_result = ensure_products_flat_view(trace=trace)
@@ -1831,6 +1946,8 @@ def scrape_all_available_products(base_url, trace=None):
                 "filter": filter_result,
                 "pages_scraped": pages,
                 "products_scraped": len(products),
+                "available_products_seen": len(normalized_products),
+                "dedupe": dedupe_result,
                 "raw_rows_seen": len(raw_products),
                 "skipped_non_available_rows": skipped_non_available_rows,
                 "database": db_result,
@@ -2143,8 +2260,9 @@ def health():
         "products_schema": products_schema(),
         "products_table": products_table(),
         "products_flat_view": products_flat_view(),
-        "products_flat_view_enabled": bool_env("WAWICAN_PRODUCTS_FLAT_VIEW_ENABLED", True),
+        "products_flat_view_enabled": bool_env("WAWICAN_PRODUCTS_FLAT_VIEW_ENABLED", False),
         "products_rest_columns": rest_insert_columns() or "*",
+        "products_upsert_on": products_upsert_on(),
         "products_replace_all": bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True),
         "supabase_timeout_seconds": SUPABASE_TIMEOUT_SECONDS,
         "running_jobs": running_jobs,

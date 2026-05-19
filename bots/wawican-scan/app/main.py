@@ -1309,7 +1309,7 @@ def write_products_to_supabase_rest(products, trace=None):
             raise RuntimeError(f"Supabase cleanup failed: {response_preview(response)}")
 
     inserted_rows = 0
-    for product_chunk in chunks([product_payload_for_rest(product) for product in products], 500):
+    for product_chunk in chunks(payloads, 500):
         if not product_chunk:
             continue
 

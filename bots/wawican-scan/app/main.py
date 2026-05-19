@@ -1160,6 +1160,18 @@ def get_pagination_state(page):
         """
         () => {
           const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const isVisible = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
           const parsePageLabel = (label) => {
             const match = normalize(label).match(/(\\d+)\\s*\\/\\s*(\\d+)/);
             if (!match) {
@@ -1174,9 +1186,11 @@ def get_pagination_state(page):
             ? normalize(input.value || input.getAttribute('placeholder') || '')
             : normalize(pagination ? pagination.textContent : '');
           const parsed = parsePageLabel(label);
-          const nextIcon = Array.from(document.querySelectorAll('.q-pagination i'))
-            .find((icon) => normalize(icon.textContent) === 'keyboard_arrow_right');
-          const nextButton = nextIcon ? nextIcon.closest('button') : null;
+          const nextButtons = Array.from(document.querySelectorAll('.q-pagination button')).filter((button) => {
+            const icon = button.querySelector('i');
+            return normalize(icon ? icon.textContent : '') === 'keyboard_arrow_right' && isVisible(button);
+          });
+          const nextButton = nextButtons[0] || null;
           const nextDisabled = !nextButton || nextButton.disabled ||
             nextButton.getAttribute('aria-disabled') === 'true' ||
             nextButton.classList.contains('disabled');
@@ -1187,6 +1201,7 @@ def get_pagination_state(page):
             current_page: parsed.current,
             total_pages: parsed.total,
             has_next: !nextDisabled,
+            visible_next_buttons: nextButtons.length,
             first_row_text: normalize(firstRow ? firstRow.textContent : ''),
           };
         }
@@ -1198,22 +1213,52 @@ def click_next_inventory_page(page, before_state, trace=None):
     trace_step(trace, "click_next_inventory_page", before_state=before_state)
     result = page.evaluate(
         """
-        () => {
+        (before) => {
           const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
-          const nextIcon = Array.from(document.querySelectorAll('.q-pagination i'))
-            .find((icon) => normalize(icon.textContent) === 'keyboard_arrow_right');
-          const nextButton = nextIcon ? nextIcon.closest('button') : null;
+          const isVisible = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
+          const candidates = Array.from(document.querySelectorAll('.q-pagination button')).filter((button) => {
+            const icon = button.querySelector('i');
+            return normalize(icon ? icon.textContent : '') === 'keyboard_arrow_right' && isVisible(button);
+          });
+          const enabledCandidates = candidates.filter((button) => !(
+            button.disabled ||
+            button.getAttribute('aria-disabled') === 'true' ||
+            button.classList.contains('disabled')
+          ));
+          const nextButton = enabledCandidates[0] || null;
 
-          if (!nextButton || nextButton.disabled ||
-              nextButton.getAttribute('aria-disabled') === 'true' ||
-              nextButton.classList.contains('disabled')) {
-            return { ok: true, clicked: false, reason: 'next_button_disabled' };
+          if (!nextButton) {
+            return {
+              ok: true,
+              clicked: false,
+              reason: 'next_button_disabled',
+              visible_next_buttons: candidates.length,
+              enabled_next_buttons: enabledCandidates.length,
+            };
           }
 
           nextButton.click();
-          return { ok: true, clicked: true };
+          return {
+            ok: true,
+            clicked: true,
+            expected_page: before.current_page ? before.current_page + 1 : null,
+            visible_next_buttons: candidates.length,
+            enabled_next_buttons: enabledCandidates.length,
+          };
         }
-        """
+        """,
+        arg=before_state,
     )
 
     if not result.get("ok"):
@@ -1235,12 +1280,17 @@ def click_next_inventory_page(page, before_state, trace=None):
           const current = match ? Number(match[1]) : null;
           const firstRow = document.querySelector('table.q-table tbody tr');
           const firstRowText = normalize(firstRow ? firstRow.textContent : '');
+          const expected = before.current_page ? before.current_page + 1 : null;
 
-          if (before.current_page && current && current !== before.current_page) {
+          if (expected && current === expected) {
             return true;
           }
 
-          return Boolean(before.first_row_text && firstRowText && firstRowText !== before.first_row_text);
+          if (!expected && before.current_page && current && current !== before.current_page) {
+            return true;
+          }
+
+          return Boolean(!expected && before.first_row_text && firstRowText && firstRowText !== before.first_row_text);
         }
         """,
         arg=before_state,

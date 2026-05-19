@@ -616,39 +616,35 @@ def wait_for_availability_filter_menu(page, trace=None):
 
 
 def ensure_available_checkbox_checked(page):
-    page.get_by_text("verfügbar", exact=True).first.wait_for(timeout=FILTER_TIMEOUT_MS)
+    page.locator('[role="checkbox"][aria-label="verfügbar"]').first.wait_for(
+        state="visible",
+        timeout=FILTER_TIMEOUT_MS,
+    )
 
     result = page.evaluate(
         """
         () => {
-          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
-          const all = Array.from(document.querySelectorAll('.q-checkbox, [role="checkbox"], label, div'));
-          const label = all.find((element) => normalize(element.innerText) === 'verfügbar');
+          const checkbox = document.querySelector('[role="checkbox"][aria-label="verfügbar"]');
 
-          if (!label) {
+          if (!checkbox) {
             return { ok: false, error: 'available_checkbox_not_found' };
           }
 
-          const checkbox =
-            label.closest('.q-checkbox') ||
-            label.closest('[role="checkbox"]') ||
-            label.querySelector('.q-checkbox') ||
-            label.querySelector('[role="checkbox"]') ||
-            label;
-
           const nativeInput = checkbox.querySelector('input[type="checkbox"]');
-          const ariaChecked =
-            checkbox.getAttribute('aria-checked') ||
-            (checkbox.querySelector('[aria-checked]') || {}).getAttribute?.('aria-checked');
+          const ariaChecked = checkbox.getAttribute('aria-checked');
           const className = String(checkbox.className || '');
           const checked =
             (nativeInput && nativeInput.checked) ||
             ariaChecked === 'true' ||
             className.includes('--truthy') ||
-            className.includes('q-checkbox__inner--truthy');
+            Boolean(checkbox.querySelector('.q-checkbox__inner--truthy'));
 
           if (!checked) {
-            checkbox.click();
+            const box =
+              checkbox.querySelector('.q-checkbox__inner') ||
+              checkbox.querySelector('.q-checkbox__bg') ||
+              checkbox;
+            box.click();
           }
 
           return { ok: true, was_checked: Boolean(checked) };

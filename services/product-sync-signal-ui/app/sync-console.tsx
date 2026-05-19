@@ -60,6 +60,7 @@ type ProductChangeExport = {
 };
 
 type ProductRunStep = "syncing" | "notifying" | "exporting" | null;
+type WawicanRunStep = "running" | "downloading" | null;
 
 type QuantityChangeExportRow = {
   productName: string;
@@ -110,6 +111,30 @@ type EndOfDayHealthResponse = {
   eod_sync_started_at?: string | null;
 };
 
+type WawicanStockReport = {
+  enabled?: boolean;
+  previous_rows?: number;
+  current_rows?: number;
+  changed_rows?: number;
+  decreased_rows?: number;
+  increased_rows?: number;
+  new_rows?: number;
+  removed_rows?: number;
+  filename?: string;
+  report_url?: string;
+  latest_report_url?: string;
+  sent_to_n8n?: boolean;
+};
+
+type WawicanStockResponse = {
+  ok?: boolean;
+  error?: string;
+  products_scraped?: number;
+  raw_rows_seen?: number;
+  available_products_seen?: number;
+  stock_report?: WawicanStockReport;
+};
+
 type SyncNotification = {
   event: "doktorabc_sync_success" | "doktorabc_sync_failure";
   status: "success" | "failure";
@@ -149,8 +174,11 @@ const configuredEndOfDayEndpoint =
   legacyEndOfDayOrdersEndpoint(process.env.NEXT_PUBLIC_EOD_LOGIN_ENDPOINT || "");
 const fallbackEndpoint = "http://178.104.144.30:8020/jobs/product-prices";
 const fallbackEndOfDayEndpoint = "http://178.104.144.30:8021/jobs/end-of-day/orders/sync";
+const configuredWawicanStockEndpoint = process.env.NEXT_PUBLIC_WAWICAN_STOCK_ENDPOINT || "";
+const fallbackWawicanStockEndpoint = "http://178.104.144.30:8024/jobs/scrape-products";
 const syncEndpoint = configuredEndpoint || fallbackEndpoint;
 const endOfDayEndpoint = configuredEndOfDayEndpoint || fallbackEndOfDayEndpoint;
+const wawicanStockEndpoint = configuredWawicanStockEndpoint || fallbackWawicanStockEndpoint;
 const endOfDayHealthEndpoint = healthEndpointFor(endOfDayEndpoint);
 const staffSteps = [
   {
@@ -363,6 +391,16 @@ function exportState(payload: EndOfDayResponse | null) {
   return "noch nicht";
 }
 
+function downloadRemoteReport(url: string) {
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.target = "_blank";
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
 function DoktorabcLogo() {
   return (
     <h1 className="doktorabc-logo-card" aria-label="DoktorABC Pharmacies">
@@ -417,19 +455,26 @@ export function SyncConsole() {
   const [unlockMessage, setUnlockMessage] = useState("Bedienerpasswort eingeben, um EOD und Produktsync freizuschalten.");
   const [isRunning, setIsRunning] = useState(false);
   const [isEndOfDayRunning, setIsEndOfDayRunning] = useState(false);
+  const [isWawicanRunning, setIsWawicanRunning] = useState(false);
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
   const [endOfDayStatus, setEndOfDayStatus] = useState<"idle" | "success" | "error">("idle");
+  const [wawicanStatus, setWawicanStatus] = useState<"idle" | "success" | "error">("idle");
   const [message, setMessage] = useState("Bereit für eine kontrollierte Produktsynchronisierung.");
   const [endOfDayMessage, setEndOfDayMessage] = useState("Bereit für End-of-Day Bestellungen und Excel-Export.");
+  const [wawicanMessage, setWawicanMessage] = useState("Bereit für Wawican Bestandsänderungen.");
   const [result, setResult] = useState<SyncResponse | null>(null);
   const [endOfDayResult, setEndOfDayResult] = useState<EndOfDayResponse | null>(null);
+  const [wawicanResult, setWawicanResult] = useState<WawicanStockResponse | null>(null);
   const [productExport, setProductExport] = useState<ProductChangeExport | null>(null);
   const [productRunStep, setProductRunStep] = useState<ProductRunStep>(null);
+  const [wawicanRunStep, setWawicanRunStep] = useState<WawicanRunStep>(null);
   const [isProductExporting, setIsProductExporting] = useState(false);
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [finishedAt, setFinishedAt] = useState<Date | null>(null);
   const [endOfDayStartedAt, setEndOfDayStartedAt] = useState<Date | null>(null);
   const [endOfDayFinishedAt, setEndOfDayFinishedAt] = useState<Date | null>(null);
+  const [wawicanStartedAt, setWawicanStartedAt] = useState<Date | null>(null);
+  const [wawicanFinishedAt, setWawicanFinishedAt] = useState<Date | null>(null);
   const [theme, setTheme] = useState<"light" | "night">("light");
 
   useEffect(() => {
@@ -471,7 +516,7 @@ export function SyncConsole() {
     }
   }
 
-  function requireUnlocked(target: "products" | "eod") {
+  function requireUnlocked(target: "products" | "eod" | "wawican") {
     if (isUnlocked) return true;
 
     const messageText = "Bitte zuerst den Zugang freischalten.";
@@ -480,9 +525,12 @@ export function SyncConsole() {
     if (target === "products") {
       setStatus("error");
       setMessage(messageText);
-    } else {
+    } else if (target === "eod") {
       setEndOfDayStatus("error");
       setEndOfDayMessage(messageText);
+    } else {
+      setWawicanStatus("error");
+      setWawicanMessage(messageText);
     }
 
     return false;
@@ -547,8 +595,10 @@ export function SyncConsole() {
       setUnlockMessage("Zugang freigeschaltet.");
       setStatus("idle");
       setEndOfDayStatus("idle");
+      setWawicanStatus("idle");
       setMessage("Bereit für eine kontrollierte Produktsynchronisierung.");
       setEndOfDayMessage("Bereit für End-of-Day Bestellungen und Excel-Export.");
+      setWawicanMessage("Bereit für Wawican Bestandsänderungen.");
     } catch (error) {
       setIsUnlocked(false);
       setUnlockStatus("error");
@@ -782,6 +832,83 @@ export function SyncConsole() {
     }
   }
 
+  async function triggerWawicanStockReport() {
+    if (!requireUnlocked("wawican")) return;
+
+    if (!wawicanStockEndpoint.trim()) {
+      setWawicanStatus("error");
+      setWawicanMessage("Der feste Wawican Bot-Endpunkt ist nicht konfiguriert.");
+      return;
+    }
+
+    setIsWawicanRunning(true);
+    setWawicanRunStep("running");
+    setWawicanStatus("idle");
+    setWawicanMessage("Wawican läuft. Der Bot prüft verfügbare Produkte und erstellt den Mengenreport.");
+    setWawicanResult(null);
+    const runStartedAt = new Date();
+    setWawicanStartedAt(runStartedAt);
+    setWawicanFinishedAt(null);
+
+    try {
+      const response = await fetch(wawicanStockEndpoint.trim(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+      const contentType = response.headers.get("content-type") || "";
+      const payload = contentType.includes("application/json")
+        ? ((await response.json()) as WawicanStockResponse)
+        : ({ ok: false, error: await response.text() } satisfies WawicanStockResponse);
+
+      setWawicanResult(payload);
+
+      if (!response.ok || !payload.ok) {
+        throw new Error(
+          payload.error
+            ? `Bot-Fehler: ${payload.error}`
+            : `HTTP-Fehler ${response.status}: ${response.statusText || "keine Details"}`
+        );
+      }
+
+      const report = payload.stock_report;
+      const changedRows = numberValue(report?.changed_rows);
+      const decreasedRows = numberValue(report?.decreased_rows);
+      const currentRows = numberValue(report?.current_rows ?? payload.products_scraped);
+
+      if (report?.report_url) {
+        setWawicanRunStep("downloading");
+        setWawicanMessage(`Wawican abgeschlossen: ${changedRows} Änderung(en), ${decreasedRows} gesunken. Excel wird geöffnet.`);
+        await wait(80);
+        downloadRemoteReport(report.report_url);
+      }
+
+      setWawicanStatus("success");
+      setWawicanMessage(
+        report?.report_url
+          ? `Wawican abgeschlossen: ${changedRows} Änderung(en), ${decreasedRows} gesunken, ${currentRows} Produkte.`
+          : `Wawican abgeschlossen: ${changedRows} Änderung(en), aber kein Excel-Link wurde zurückgegeben.`
+      );
+      setWawicanFinishedAt(new Date());
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
+      const isFetchFailure = isFetchFailureMessage(errorMessage);
+
+      setWawicanStatus("error");
+      setWawicanMessage(
+        isFetchFailure
+          ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den Wawican Bot unter ${wawicanStockEndpoint} nicht erreichen oder die Antwort nicht lesen.`
+          : `Wawican Anfrage fehlgeschlagen: ${errorMessage}`
+      );
+      setWawicanFinishedAt(new Date());
+    } finally {
+      setIsWawicanRunning(false);
+      setWawicanRunStep(null);
+    }
+  }
+
   const isProductBusy = isRunning || isProductExporting;
   const productActionLabel =
     productRunStep === "notifying"
@@ -791,11 +918,17 @@ export function SyncConsole() {
         : isRunning
           ? "Synchronisierung läuft"
           : "Produkte synchronisieren (DoktorABC)";
-  const anyBotRunning = isProductBusy || isEndOfDayRunning;
+  const wawicanActionLabel =
+    wawicanRunStep === "downloading"
+      ? "Excel wird geöffnet"
+      : isWawicanRunning
+        ? "Wawican läuft"
+        : "Wawican Mengenänderungen prüfen";
+  const anyBotRunning = isProductBusy || isEndOfDayRunning || isWawicanRunning;
   const anyBotError =
-    status === "error" || endOfDayStatus === "error";
+    status === "error" || endOfDayStatus === "error" || wawicanStatus === "error";
   const anyBotSuccess =
-    status === "success" || endOfDayStatus === "success";
+    status === "success" || endOfDayStatus === "success" || wawicanStatus === "success";
 
   if (isSessionChecking) {
     return (
@@ -916,6 +1049,30 @@ export function SyncConsole() {
           >
             {isProductExporting ? <Loader2 size={16} className="spin" /> : <FileSpreadsheet size={16} />}
           </button>
+        </div>
+      ) : null}
+
+      {wawicanResult || isWawicanRunning || wawicanStatus !== "idle" ? (
+        <div className={`wawican-report-note wawican-report-note-${isWawicanRunning ? "running" : wawicanStatus}`}>
+          {isWawicanRunning ? <Loader2 size={18} className="spin" /> : wawicanStatus === "success" ? <CheckCircle2 size={18} /> : wawicanStatus === "error" ? <AlertTriangle size={18} /> : <FileSpreadsheet size={18} />}
+          <div>
+            <span>Wawican Mengenänderungen</span>
+            <strong>{wawicanResult?.stock_report?.filename || "Noch kein Excel-Report"}</strong>
+            <small>
+              {wawicanResult?.stock_report
+                ? `${numberValue(wawicanResult.stock_report.changed_rows)} Änderung(en) · ${numberValue(wawicanResult.stock_report.decreased_rows)} gesunken · ${numberValue(wawicanResult.stock_report.current_rows)} Produkte`
+                : wawicanMessage}
+            </small>
+          </div>
+          {wawicanResult?.stock_report?.report_url ? (
+            <button
+              type="button"
+              onClick={() => downloadRemoteReport(wawicanResult.stock_report?.report_url || "")}
+              aria-label="Wawican Mengenänderungen als XLSX öffnen"
+            >
+              <FileSpreadsheet size={16} />
+            </button>
+          ) : null}
         </div>
       ) : null}
     </aside>
@@ -1055,6 +1212,11 @@ export function SyncConsole() {
                   <button className="trigger-button" type="button" onClick={triggerSync} disabled={isProductBusy}>
                     {isProductBusy ? <Loader2 size={21} className="spin" /> : <RefreshCw size={21} />}
                     <span>{productActionLabel}</span>
+                    <ArrowRight size={20} />
+                  </button>
+                  <button className="trigger-button wawican-button" type="button" onClick={triggerWawicanStockReport} disabled={isWawicanRunning}>
+                    {isWawicanRunning ? <Loader2 size={21} className="spin" /> : <FileSpreadsheet size={21} />}
+                    <span>{wawicanActionLabel}</span>
                     <ArrowRight size={20} />
                   </button>
                 </div>

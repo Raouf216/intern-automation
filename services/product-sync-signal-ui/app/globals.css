@@ -541,6 +541,7 @@ body[data-theme="night"] .confirm-pickup-preview {
 
 .primary-bot-card {
   display: grid;
+  gap: 14px;
   align-content: center;
   padding: 16px;
   background: color-mix(in srgb, var(--surface) 94%, var(--red) 6%);
@@ -607,6 +608,16 @@ body[data-theme="night"] .confirm-pickup-preview {
 }
 
 .pickup-button:not(:disabled):hover {
+  box-shadow: 0 22px 42px rgba(4, 120, 87, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.wawican-button {
+  border-color: rgba(4, 120, 87, 0.32);
+  background: linear-gradient(135deg, var(--green), var(--cyan));
+  box-shadow: 0 18px 32px rgba(4, 120, 87, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.wawican-button:not(:disabled):hover {
   box-shadow: 0 22px 42px rgba(4, 120, 87, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 
@@ -884,6 +895,69 @@ body[data-theme="night"] .message-error {
   color: var(--green);
 }
 
+.wawican-report-note {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  border: 1px solid rgba(14, 116, 144, 0.24);
+  border-radius: 8px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--cyan) 12%);
+  color: var(--cyan);
+}
+
+.wawican-report-note-error {
+  border-color: rgba(180, 35, 49, 0.26);
+  background: color-mix(in srgb, var(--surface) 88%, var(--red) 12%);
+  color: var(--red);
+}
+
+.wawican-report-note-success {
+  border-color: rgba(4, 120, 87, 0.22);
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.wawican-report-note > svg {
+  flex: 0 0 auto;
+}
+
+.wawican-report-note div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.wawican-report-note span,
+.wawican-report-note small {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.wawican-report-note strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.wawican-report-note button {
+  width: 38px;
+  height: 38px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(14, 116, 144, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  color: currentColor;
+  cursor: pointer;
+}
+
+.wawican-report-note button:hover {
+  background: #ffffff;
+}
+
 .product-export-note > svg {
   flex: 0 0 auto;
 }
@@ -928,6 +1002,10 @@ body[data-theme="night"] .message-error {
 }
 
 body[data-theme="night"] .product-export-note button {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+body[data-theme="night"] .wawican-report-note button {
   background: rgba(255, 255, 255, 0.08);
 }
 

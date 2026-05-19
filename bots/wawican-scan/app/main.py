@@ -1,5 +1,6 @@
 import os
 import json
+import mimetypes
 import re
 import threading
 import time
@@ -123,6 +124,13 @@ def safe_artifact_filename(filename):
     return filename
 
 
+def safe_report_filename(filename):
+    if not re.match(r"^[A-Za-z0-9_.-]+\.xlsx$", filename or ""):
+        raise RuntimeError("Invalid report filename.")
+
+    return filename
+
+
 def latest_screenshot_path():
     if not os.path.isdir(ARTIFACTS_DIR):
         return None
@@ -137,6 +145,22 @@ def latest_screenshot_path():
         return None
 
     return max(screenshot_paths, key=os.path.getmtime)
+
+
+def latest_report_path():
+    if not os.path.isdir(ARTIFACTS_DIR):
+        return None
+
+    report_paths = [
+        os.path.join(ARTIFACTS_DIR, filename)
+        for filename in os.listdir(ARTIFACTS_DIR)
+        if filename.lower().endswith(".xlsx")
+    ]
+
+    if not report_paths:
+        return None
+
+    return max(report_paths, key=os.path.getmtime)
 
 
 def utc_now_iso():
@@ -156,6 +180,18 @@ def screenshot_response_links(base_url, screenshot_path):
     return {
         "screenshot_url": screenshot_file_url(base_url, screenshot_path),
         "latest_screenshot_url": f"{base_url}/screenshots/latest",
+    }
+
+
+def report_file_url(base_url, report_path):
+    filename = os.path.basename(report_path)
+    return f"{base_url}/reports/{filename}"
+
+
+def report_response_links(base_url, report_path):
+    return {
+        "report_url": report_file_url(base_url, report_path),
+        "latest_report_url": f"{base_url}/reports/latest",
     }
 
 
@@ -1826,6 +1862,543 @@ def write_products_to_database(products, trace=None):
     return write_products_to_postgres(products, trace=trace)
 
 
+def stock_report_enabled():
+    return bool_env("WAWICAN_STOCK_REPORT_ENABLED", True)
+
+
+def stock_report_n8n_webhook_url():
+    return (os.environ.get("WAWICAN_STOCK_REPORT_N8N_WEBHOOK_URL") or "").strip()
+
+
+def fetch_previous_products_from_supabase_rest(trace=None):
+    import httpx
+
+    select_columns = ",".join(
+        [
+            "product_name",
+            "virtual_stock",
+            "virtual_stock_text",
+            "actual_stock",
+            "actual_stock_text",
+            "availability_status",
+            "available",
+            "cultivar",
+            "thc",
+            "cbd",
+            "price_per_g_text",
+            "scraped_at",
+        ]
+    )
+    trace_step(trace, "fetch_previous_products_supabase_rest", table=products_table())
+    response = httpx.get(
+        supabase_table_url(),
+        headers=supabase_headers(),
+        params={
+            "select": select_columns,
+            "product_name": "not.is.null",
+            "limit": "5000",
+        },
+        timeout=SUPABASE_TIMEOUT_SECONDS,
+    )
+
+    if response.status_code >= 400:
+        raise RuntimeError(f"Supabase previous snapshot fetch failed: {response_preview(response)}")
+
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise RuntimeError("Supabase previous snapshot response was not a list.")
+
+    return payload
+
+
+def fetch_previous_products_from_postgres(trace=None):
+    from psycopg import connect, sql
+
+    schema_name = validate_identifier(products_schema(), "WAWICAN_PRODUCTS_SCHEMA")
+    table_name = validate_identifier(products_table(), "WAWICAN_PRODUCTS_TABLE")
+    trace_step(trace, "fetch_previous_products_postgres", schema=schema_name, table=table_name)
+
+    with connect(postgres_url()) as connection:
+        with connection.cursor() as cursor:
+            columns = get_db_columns(cursor, schema_name, table_name)
+            wanted_columns = [
+                column
+                for column in [
+                    "product_name",
+                    "virtual_stock",
+                    "virtual_stock_text",
+                    "actual_stock",
+                    "actual_stock_text",
+                    "availability_status",
+                    "available",
+                    "cultivar",
+                    "thc",
+                    "cbd",
+                    "price_per_g_text",
+                    "scraped_at",
+                ]
+                if column in columns
+            ]
+
+            if "product_name" not in wanted_columns:
+                return []
+
+            cursor.execute(
+                sql.SQL("select {} from {}.{} where product_name is not null").format(
+                    sql.SQL(", ").join(sql.Identifier(column) for column in wanted_columns),
+                    sql.Identifier(schema_name),
+                    sql.Identifier(table_name),
+                )
+            )
+            rows = cursor.fetchall()
+
+    return [dict(zip(wanted_columns, row)) for row in rows]
+
+
+def fetch_previous_products_snapshot(trace=None):
+    if not stock_report_enabled():
+        return []
+
+    if supabase_rest_configured():
+        return fetch_previous_products_from_supabase_rest(trace=trace)
+
+    if postgres_url_configured():
+        return fetch_previous_products_from_postgres(trace=trace)
+
+    return []
+
+
+def decimal_for_compare(value):
+    if value is None:
+        return None
+
+    if isinstance(value, Decimal):
+        return value
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, (int, float)):
+        try:
+            return Decimal(str(value))
+        except InvalidOperation:
+            return None
+
+    return parse_decimal(value)
+
+
+def quantity_display(value, fallback=None):
+    parsed = decimal_for_compare(value)
+
+    if parsed is None:
+        return normalize_space(fallback if fallback is not None else value)
+
+    if parsed == parsed.to_integral_value():
+        return str(int(parsed))
+
+    return str(parsed).replace(".", ",")
+
+
+def excel_number(value):
+    parsed = decimal_for_compare(value)
+
+    if parsed is None:
+        return None
+
+    if parsed == parsed.to_integral_value():
+        return int(parsed)
+
+    return float(parsed)
+
+
+def compare_stock_snapshots(previous_products, current_products):
+    previous_by_name = {
+        product_name_key(product): product
+        for product in previous_products
+        if product_name_key(product)
+    }
+    current_by_name = {
+        product_name_key(product): product
+        for product in current_products
+        if product_name_key(product)
+    }
+    changes = []
+
+    for key in sorted(current_by_name, key=lambda item: normalize_space(current_by_name[item].get("product_name")).casefold()):
+        current = current_by_name[key]
+        previous = previous_by_name.get(key)
+        current_stock = decimal_for_compare(current.get("virtual_stock"))
+        previous_stock = decimal_for_compare(previous.get("virtual_stock")) if previous else None
+        current_text = quantity_display(current.get("virtual_stock"), current.get("virtual_stock_text"))
+        previous_text = quantity_display(
+            previous.get("virtual_stock") if previous else None,
+            previous.get("virtual_stock_text") if previous else None,
+        )
+        change_type = "new" if previous is None else "changed"
+
+        if previous is not None:
+            if current_stock is not None and previous_stock is not None:
+                if current_stock == previous_stock:
+                    continue
+            elif current_text == previous_text:
+                continue
+
+        difference = None
+        if current_stock is not None and previous_stock is not None:
+            difference = current_stock - previous_stock
+
+        changes.append(
+            {
+                "change_type": change_type,
+                "product_name": current.get("product_name"),
+                "previous_virtual_stock": previous_stock,
+                "current_virtual_stock": current_stock,
+                "previous_virtual_stock_text": previous_text,
+                "current_virtual_stock_text": current_text,
+                "difference": difference,
+                "previous_actual_stock": decimal_for_compare(previous.get("actual_stock")) if previous else None,
+                "current_actual_stock": decimal_for_compare(current.get("actual_stock")),
+                "previous_actual_stock_text": quantity_display(
+                    previous.get("actual_stock") if previous else None,
+                    previous.get("actual_stock_text") if previous else None,
+                ),
+                "current_actual_stock_text": quantity_display(current.get("actual_stock"), current.get("actual_stock_text")),
+                "availability_status": current.get("availability_status"),
+                "cultivar": current.get("cultivar"),
+                "thc": current.get("thc"),
+                "cbd": current.get("cbd"),
+                "price_per_g_text": current.get("price_per_g_text"),
+                "page_number": current.get("page_number"),
+                "row_index": current.get("row_index"),
+                "previous_scraped_at": previous.get("scraped_at") if previous else None,
+                "current_scraped_at": current.get("scraped_at"),
+            }
+        )
+
+    for key in sorted(set(previous_by_name) - set(current_by_name), key=lambda item: normalize_space(previous_by_name[item].get("product_name")).casefold()):
+        previous = previous_by_name[key]
+        previous_stock = decimal_for_compare(previous.get("virtual_stock"))
+        changes.append(
+            {
+                "change_type": "removed",
+                "product_name": previous.get("product_name"),
+                "previous_virtual_stock": previous_stock,
+                "current_virtual_stock": None,
+                "previous_virtual_stock_text": quantity_display(previous.get("virtual_stock"), previous.get("virtual_stock_text")),
+                "current_virtual_stock_text": "",
+                "difference": None,
+                "previous_actual_stock": decimal_for_compare(previous.get("actual_stock")),
+                "current_actual_stock": None,
+                "previous_actual_stock_text": quantity_display(previous.get("actual_stock"), previous.get("actual_stock_text")),
+                "current_actual_stock_text": "",
+                "availability_status": "not in current available scrape",
+                "cultivar": previous.get("cultivar"),
+                "thc": previous.get("thc"),
+                "cbd": previous.get("cbd"),
+                "price_per_g_text": previous.get("price_per_g_text"),
+                "page_number": None,
+                "row_index": None,
+                "previous_scraped_at": previous.get("scraped_at"),
+                "current_scraped_at": None,
+            }
+        )
+
+    decreased = [
+        change
+        for change in changes
+        if isinstance(change.get("difference"), Decimal) and change["difference"] < 0
+    ]
+    increased = [
+        change
+        for change in changes
+        if isinstance(change.get("difference"), Decimal) and change["difference"] > 0
+    ]
+
+    return changes, {
+        "previous_rows": len(previous_products),
+        "current_rows": len(current_products),
+        "changed_rows": len(changes),
+        "decreased_rows": len(decreased),
+        "increased_rows": len(increased),
+        "new_rows": sum(1 for change in changes if change.get("change_type") == "new"),
+        "removed_rows": sum(1 for change in changes if change.get("change_type") == "removed"),
+    }
+
+
+def auto_width_for_sheet(sheet, max_width=60):
+    for column_cells in sheet.columns:
+        column_letter = column_cells[0].column_letter
+        max_length = 0
+
+        for cell in column_cells:
+            value = cell.value
+            if value is None:
+                continue
+            max_length = max(max_length, len(str(value)))
+
+        sheet.column_dimensions[column_letter].width = min(max(max_length + 2, 10), max_width)
+
+
+def create_stock_change_excel_report(changes, current_products, previous_count, scraped_at, timestamp, trace=None):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+    report_path = os.path.join(ARTIFACTS_DIR, f"wawican-stock-changes-{timestamp}.xlsx")
+    workbook = Workbook()
+    summary_sheet = workbook.active
+    summary_sheet.title = "Zusammenfassung"
+    changes_sheet = workbook.create_sheet("Mengenänderungen")
+    current_sheet = workbook.create_sheet("Aktueller Bestand")
+
+    changed_rows = len(changes)
+    decreased_rows = sum(
+        1
+        for change in changes
+        if isinstance(change.get("difference"), Decimal) and change["difference"] < 0
+    )
+    increased_rows = sum(
+        1
+        for change in changes
+        if isinstance(change.get("difference"), Decimal) and change["difference"] > 0
+    )
+    new_rows = sum(1 for change in changes if change.get("change_type") == "new")
+    removed_rows = sum(1 for change in changes if change.get("change_type") == "removed")
+
+    summary_rows = [
+        ["Wawican Mengenänderungen", ""],
+        ["Erstellt am", scraped_at.isoformat()],
+        ["Vorherige Produkte", previous_count],
+        ["Aktuelle Produkte", len(current_products)],
+        ["Zeilen im Report", changed_rows],
+        ["Bestand gesunken", decreased_rows],
+        ["Bestand gestiegen", increased_rows],
+        ["Neue Produkte", new_rows],
+        ["Nicht mehr im verfügbaren Filter", removed_rows],
+        ["Verglichene Spalte", "Virtueller Bestand"],
+    ]
+    summary_sheet.append(summary_rows[0])
+    summary_sheet["A1"].font = Font(size=16, bold=True, color="FFFFFF")
+    summary_sheet["A1"].fill = PatternFill("solid", fgColor="1F4E5F")
+    summary_sheet["B1"].fill = PatternFill("solid", fgColor="1F4E5F")
+    for row in summary_rows[1:]:
+        summary_sheet.append(row)
+    summary_sheet.column_dimensions["A"].width = 34
+    summary_sheet.column_dimensions["B"].width = 34
+
+    headers = [
+        "Produkt",
+        "Typ",
+        "Menge alt",
+        "Menge neu",
+        "Änderung (neu - alt)",
+        "Ist Bestand alt",
+        "Ist Bestand neu",
+        "Verfügbarkeit",
+        "Kultivar",
+        "THC",
+        "CBD",
+        "Preis pro g",
+        "Seite",
+        "Zeile",
+        "Vorheriger Lauf",
+        "Aktueller Lauf",
+    ]
+    changes_sheet.append(headers)
+    if changes:
+        for change in changes:
+            changes_sheet.append(
+                [
+                    change.get("product_name"),
+                    change.get("change_type"),
+                    excel_number(change.get("previous_virtual_stock"))
+                    if change.get("previous_virtual_stock") is not None
+                    else change.get("previous_virtual_stock_text"),
+                    excel_number(change.get("current_virtual_stock"))
+                    if change.get("current_virtual_stock") is not None
+                    else change.get("current_virtual_stock_text"),
+                    excel_number(change.get("difference")) if change.get("difference") is not None else "",
+                    excel_number(change.get("previous_actual_stock"))
+                    if change.get("previous_actual_stock") is not None
+                    else change.get("previous_actual_stock_text"),
+                    excel_number(change.get("current_actual_stock"))
+                    if change.get("current_actual_stock") is not None
+                    else change.get("current_actual_stock_text"),
+                    change.get("availability_status"),
+                    change.get("cultivar"),
+                    change.get("thc"),
+                    change.get("cbd"),
+                    change.get("price_per_g_text"),
+                    change.get("page_number"),
+                    change.get("row_index"),
+                    str(change.get("previous_scraped_at") or ""),
+                    str(change.get("current_scraped_at") or ""),
+                ]
+            )
+    else:
+        changes_sheet.append(["Keine Mengenänderungen seit dem letzten Lauf.", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""])
+
+    current_headers = [
+        "Produkt",
+        "Virtueller Bestand",
+        "Ist Bestand",
+        "Verfügbarkeit",
+        "Kultivar",
+        "THC",
+        "CBD",
+        "Preis pro g",
+        "Seite",
+        "Zeile",
+        "Lauf",
+    ]
+    current_sheet.append(current_headers)
+    for product in sorted(current_products, key=lambda item: normalize_space(item.get("product_name")).casefold()):
+        current_sheet.append(
+            [
+                product.get("product_name"),
+                excel_number(product.get("virtual_stock")) if product.get("virtual_stock") is not None else product.get("virtual_stock_text"),
+                excel_number(product.get("actual_stock")) if product.get("actual_stock") is not None else product.get("actual_stock_text"),
+                product.get("availability_status"),
+                product.get("cultivar"),
+                product.get("thc"),
+                product.get("cbd"),
+                product.get("price_per_g_text"),
+                product.get("page_number"),
+                product.get("row_index"),
+                str(product.get("scraped_at") or ""),
+            ]
+        )
+
+    header_fill = PatternFill("solid", fgColor="1F4E5F")
+    header_font = Font(bold=True, color="FFFFFF")
+    thin_border = Border(bottom=Side(style="thin", color="B7B7B7"))
+    decrease_fill = PatternFill("solid", fgColor="FCE4D6")
+    increase_fill = PatternFill("solid", fgColor="E2F0D9")
+    new_fill = PatternFill("solid", fgColor="DDEBF7")
+    removed_fill = PatternFill("solid", fgColor="E7E6E6")
+
+    for sheet in [changes_sheet, current_sheet]:
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+        for cell in sheet[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+        for row in sheet.iter_rows(min_row=2):
+            for cell in row:
+                cell.border = thin_border
+            if sheet.title == "Mengenänderungen":
+                difference = row[4].value
+                change_type = row[1].value
+                fill = None
+                if isinstance(difference, (int, float)) and difference < 0:
+                    fill = decrease_fill
+                elif isinstance(difference, (int, float)) and difference > 0:
+                    fill = increase_fill
+                elif change_type == "new":
+                    fill = new_fill
+                elif change_type == "removed":
+                    fill = removed_fill
+                if fill:
+                    for cell in row:
+                        cell.fill = fill
+        auto_width_for_sheet(sheet)
+
+    for sheet in [changes_sheet, current_sheet]:
+        for column_index in [3, 4, 5, 6, 7] if sheet.title == "Mengenänderungen" else [2, 3]:
+            column_letter = get_column_letter(column_index)
+            for cell in sheet[column_letter][1:]:
+                if isinstance(cell.value, (int, float)):
+                    cell.number_format = '0.##'
+
+    workbook.save(report_path)
+    trace_step(
+        trace,
+        "created_stock_change_excel_report",
+        path=report_path,
+        changed_rows=changed_rows,
+        current_rows=len(current_products),
+        previous_rows=previous_count,
+    )
+
+    return report_path
+
+
+def send_stock_report_to_n8n(report_path, metadata):
+    webhook_url = stock_report_n8n_webhook_url()
+
+    if not webhook_url:
+        return {
+            "sent_to_n8n": False,
+            "n8n_skipped_reason": "WAWICAN_STOCK_REPORT_N8N_WEBHOOK_URL is not configured",
+        }
+
+    import httpx
+
+    filename = os.path.basename(report_path)
+    content_type = (
+        mimetypes.guess_type(filename)[0]
+        or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    with open(report_path, "rb") as file_handle:
+        response = httpx.post(
+            webhook_url,
+            data={key: "" if value is None else str(value) for key, value in metadata.items()},
+            files={"file": (filename, file_handle, content_type)},
+            timeout=int_env("WAWICAN_STOCK_REPORT_N8N_TIMEOUT_SECONDS", 60),
+        )
+
+    if response.status_code >= 400:
+        raise RuntimeError(f"n8n stock report upload failed: {response_preview(response)}")
+
+    return {
+        "sent_to_n8n": True,
+        "n8n_status_code": response.status_code,
+    }
+
+
+def build_stock_report(previous_products, current_products, scraped_at, timestamp, base_url, trace=None):
+    if not stock_report_enabled():
+        return {
+            "enabled": False,
+            "reason": "WAWICAN_STOCK_REPORT_ENABLED=false",
+        }
+
+    changes, summary = compare_stock_snapshots(previous_products, current_products)
+    report_path = create_stock_change_excel_report(
+        changes,
+        current_products,
+        len(previous_products),
+        scraped_at,
+        timestamp,
+        trace=trace,
+    )
+    n8n_result = send_stock_report_to_n8n(
+        report_path,
+        {
+            "service": SERVICE_NAME,
+            "event": "wawican_stock_change_report",
+            "run_id": timestamp,
+            "changed_rows": summary.get("changed_rows"),
+            "current_rows": summary.get("current_rows"),
+            "previous_rows": summary.get("previous_rows"),
+            "filename": os.path.basename(report_path),
+        },
+    )
+
+    return {
+        "enabled": True,
+        **summary,
+        "filename": os.path.basename(report_path),
+        "path": report_path,
+        **report_response_links(base_url, report_path),
+        **n8n_result,
+    }
+
+
 def products_flat_view_sql_text(schema_name=None, table_name=None, view_name=None):
     schema_name = validate_identifier(schema_name or products_schema(), "WAWICAN_PRODUCTS_SCHEMA")
     table_name = validate_identifier(table_name or products_table(), "WAWICAN_PRODUCTS_TABLE")
@@ -2047,6 +2620,15 @@ def scrape_all_available_products(base_url, trace=None):
                 skipped_non_available_rows=skipped_non_available_rows,
                 duplicate_available_rows=dedupe_result.get("duplicate_rows"),
             )
+            previous_products = fetch_previous_products_snapshot(trace=trace)
+            stock_report_result = build_stock_report(
+                previous_products,
+                products,
+                scraped_at,
+                timestamp,
+                base_url,
+                trace=trace,
+            )
             db_result = write_products_to_database(products, trace=trace)
             flat_view_result = ensure_products_flat_view(trace=trace)
             screenshot_result = capture_screenshot_now(
@@ -2071,6 +2653,7 @@ def scrape_all_available_products(base_url, trace=None):
                 "dedupe": dedupe_result,
                 "raw_rows_seen": len(raw_products),
                 "skipped_non_available_rows": skipped_non_available_rows,
+                "stock_report": stock_report_result,
                 "database": db_result,
                 "flat_view": flat_view_result,
                 **screenshot_result,
@@ -2385,6 +2968,8 @@ def health():
         "products_rest_columns": rest_insert_columns() or "*",
         "products_upsert_on": products_upsert_on(),
         "products_replace_all": bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True),
+        "stock_report_enabled": stock_report_enabled(),
+        "stock_report_n8n_configured": bool(stock_report_n8n_webhook_url()),
         "supabase_timeout_seconds": SUPABASE_TIMEOUT_SECONDS,
         "running_jobs": running_jobs,
     }
@@ -2546,6 +3131,39 @@ def get_screenshot(filename: str):
     return FileResponse(
         screenshot_path,
         media_type="image/png",
+        filename=safe_filename,
+    )
+
+
+@app.get("/reports/latest", name="get_latest_report")
+def get_latest_report():
+    report_path = latest_report_path()
+
+    if not report_path:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "no_report_found"})
+
+    return FileResponse(
+        report_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=os.path.basename(report_path),
+    )
+
+
+@app.get("/reports/{filename}", name="get_report")
+def get_report(filename: str):
+    try:
+        safe_filename = safe_report_filename(filename)
+    except RuntimeError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+    report_path = os.path.join(ARTIFACTS_DIR, safe_filename)
+
+    if not os.path.exists(report_path):
+        return JSONResponse(status_code=404, content={"ok": False, "error": "report_not_found"})
+
+    return FileResponse(
+        report_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=safe_filename,
     )
 

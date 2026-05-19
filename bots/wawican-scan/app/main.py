@@ -28,8 +28,8 @@ WAWICAN_USER_AGENT = (
     os.environ.get("WAWICAN_USER_AGENT", DEFAULT_USER_AGENT).strip()
     or DEFAULT_USER_AGENT
 )
-INVENTORY_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_INVENTORY_READY_TIMEOUT_MS", "180000"))
-LOGIN_SUBMIT_TIMEOUT_MS = int(os.environ.get("WAWICAN_LOGIN_SUBMIT_TIMEOUT_MS", "90000"))
+INVENTORY_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_INVENTORY_READY_TIMEOUT_MS", "60000"))
+POST_LOGIN_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_POST_LOGIN_READY_TIMEOUT_MS", "15000"))
 FILTER_TIMEOUT_MS = int(os.environ.get("WAWICAN_FILTER_TIMEOUT_MS", "60000"))
 MAX_STORED_JOBS = 50
 JOB_LOCK = threading.Lock()
@@ -244,24 +244,17 @@ def wait_for_inventory_page(page, timeout=INVENTORY_READY_TIMEOUT_MS, trace=None
           const selectors = [
             'th',
             '[role="columnheader"]',
-            '.q-table thead *',
-            '.inventory-table-component thead *',
-            '.inventory-table-component [class*="table"] *'
+            'span',
+            'div',
+            'button',
+            'label',
+            '.q-table *',
+            '.inventory-table-component *'
           ];
           const candidates = Array.from(document.querySelectorAll(selectors.join(',')));
-          const match = candidates.find((element) => {
+          return candidates.some((element) => {
             const text = fold(element.textContent);
             if (!text.includes(target)) {
-              return false;
-            }
-
-            const inInventory =
-              element.closest('.inventory-table-component') ||
-              element.closest('table.q-table') ||
-              element.closest('.q-table') ||
-              element.closest('thead');
-
-            if (!inInventory) {
               return false;
             }
 
@@ -276,18 +269,6 @@ def wait_for_inventory_page(page, timeout=INVENTORY_READY_TIMEOUT_MS, trace=None
               style.opacity !== '0'
             );
           });
-
-          if (!match) {
-            return false;
-          }
-
-          const table =
-            match.closest('table') ||
-            document.querySelector('table.q-table') ||
-            document.querySelector('.inventory-table-component');
-          const tableRect = table ? table.getBoundingClientRect() : { width: 0, height: 0 };
-
-          return tableRect.width > 0 && tableRect.height > 0;
         }
         """,
         arg=ready_text(),
@@ -415,20 +396,22 @@ def submit_login_form(page):
         page.keyboard.press("Enter")
 
 
-def wait_after_login_submit(page, trace=None):
-    trace_step(trace, "wait_after_login_submit", timeout_ms=LOGIN_SUBMIT_TIMEOUT_MS)
+def wait_for_inventory_after_login_submit(page, trace=None):
     try:
-        page.wait_for_function(
-            """
-            () => !window.location.pathname.includes('/auth/login')
-            """,
-            timeout=LOGIN_SUBMIT_TIMEOUT_MS,
+        trace_step(trace, "wait_for_inventory_after_submit", timeout_ms=POST_LOGIN_READY_TIMEOUT_MS)
+        wait_for_inventory_page(page, timeout=POST_LOGIN_READY_TIMEOUT_MS, trace=trace)
+        return
+    except Exception as exc:
+        trace_page_state(
+            trace,
+            "inventory_not_visible_after_submit",
+            page,
+            error=f"{type(exc).__name__}: {exc}",
         )
-        trace_step(trace, "login_submit_condition_met")
-    except PlaywrightTimeoutError:
-        trace_step(trace, "login_submit_condition_timeout")
 
-    trace_page_state(trace, "after_login_submit_state", page)
+    trace_step(trace, "goto_inventory_after_login", url=inventory_url())
+    page.goto(inventory_url(), wait_until="domcontentloaded", timeout=30_000)
+    wait_for_inventory_page(page, trace=trace)
 
 
 def save_session_state(context):
@@ -526,16 +509,7 @@ def open_fresh_session(browser, before_login_path=None, trace=None):
 
     trace_step(trace, "submit_login_form")
     submit_login_form(page)
-    wait_after_login_submit(page, trace=trace)
-
-    try:
-        page.wait_for_load_state("domcontentloaded", timeout=10_000)
-    except PlaywrightTimeoutError:
-        pass
-
-    trace_step(trace, "goto_inventory_after_login", url=inventory_url())
-    page.goto(inventory_url(), wait_until="domcontentloaded", timeout=30_000)
-    wait_for_inventory_page(page, trace=trace)
+    wait_for_inventory_after_login_submit(page, trace=trace)
     save_session_state(context)
     trace_step(trace, "session_saved", path=SESSION_STATE_PATH)
 
@@ -873,7 +847,7 @@ def health():
         "screenshot_wait_ms": screenshot_wait_ms(),
         "screenshot_mode": "capture_immediately_when_inventory_ready_visible",
         "inventory_ready_timeout_ms": INVENTORY_READY_TIMEOUT_MS,
-        "login_submit_timeout_ms": LOGIN_SUBMIT_TIMEOUT_MS,
+        "post_login_ready_timeout_ms": POST_LOGIN_READY_TIMEOUT_MS,
         "running_jobs": running_jobs,
     }
 

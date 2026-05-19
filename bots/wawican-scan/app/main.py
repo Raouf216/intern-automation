@@ -28,9 +28,9 @@ WAWICAN_USER_AGENT = (
     os.environ.get("WAWICAN_USER_AGENT", DEFAULT_USER_AGENT).strip()
     or DEFAULT_USER_AGENT
 )
-LOGIN_READY_TIMEOUT_MS = 45_000
-PAGE_READY_TIMEOUT_MS = 30_000
-FILTER_TIMEOUT_MS = 10_000
+LOGIN_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_LOGIN_READY_TIMEOUT_MS", "12000"))
+PAGE_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_PAGE_READY_TIMEOUT_MS", "30000"))
+FILTER_TIMEOUT_MS = int(os.environ.get("WAWICAN_FILTER_TIMEOUT_MS", "10000"))
 MAX_STORED_JOBS = 50
 JOB_LOCK = threading.Lock()
 JOBS = {}
@@ -406,7 +406,7 @@ def open_saved_session(browser, trace=None):
         page.wait_for_load_state("domcontentloaded", timeout=10_000)
         wait_for_inventory_page(page, timeout=12_000, trace=trace)
         trace_step(trace, "saved_session_valid")
-        return context, page, True
+        return context, page, True, True
     except Exception as exc:
         context.close()
         trace_step(trace, "saved_session_invalid", error=f"{type(exc).__name__}: {exc}")
@@ -445,7 +445,7 @@ def open_fresh_session(browser, before_login_path=None, trace=None):
             wait_for_inventory_page(page, timeout=8_000, trace=trace)
             save_session_state(context)
             trace_step(trace, "session_saved", path=SESSION_STATE_PATH)
-            return context, page, False
+            return context, page, False, True
         except Exception as exc:
             trace_step(trace, "inventory_without_login_form_failed", error=f"{type(exc).__name__}: {exc}")
             trace_step(trace, "return_to_login_url", url=login_url())
@@ -469,11 +469,21 @@ def open_fresh_session(browser, before_login_path=None, trace=None):
 
     trace_step(trace, "goto_inventory_after_login", url=inventory_url())
     page.goto(inventory_url(), wait_until="domcontentloaded", timeout=30_000)
-    wait_for_inventory_page(page, timeout=LOGIN_READY_TIMEOUT_MS, trace=trace)
-    save_session_state(context)
-    trace_step(trace, "session_saved", path=SESSION_STATE_PATH)
+    inventory_ready = True
+    try:
+        wait_for_inventory_page(page, timeout=LOGIN_READY_TIMEOUT_MS, trace=trace)
+        save_session_state(context)
+        trace_step(trace, "session_saved", path=SESSION_STATE_PATH)
+    except Exception as exc:
+        inventory_ready = False
+        trace_page_state(
+            trace,
+            "inventory_ready_after_login_failed",
+            page,
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
-    return context, page, False
+    return context, page, False, inventory_ready
 
 
 def open_authenticated_inventory_page(browser, before_login_path=None, trace=None):
@@ -592,7 +602,7 @@ def login_only(base_url, trace=None):
         context = None
 
         try:
-            context, page, reused_session = open_authenticated_inventory_page(
+            context, page, reused_session, inventory_ready = open_authenticated_inventory_page(
                 browser,
                 before_login_path=before_login_path,
                 trace=trace,
@@ -604,6 +614,7 @@ def login_only(base_url, trace=None):
                 "current_url": page.url,
                 "page_title": page.title(),
                 "reused_session": reused_session,
+                "inventory_ready": inventory_ready,
                 "session_state_path": SESSION_STATE_PATH,
                 "session_state_exists": os.path.exists(SESSION_STATE_PATH),
                 "before_login_path": None if reused_session else before_login_path,
@@ -629,7 +640,7 @@ def login_and_filter_available(base_url, trace=None):
         context = None
 
         try:
-            context, page, reused_session = open_authenticated_inventory_page(
+            context, page, reused_session, inventory_ready = open_authenticated_inventory_page(
                 browser,
                 before_login_path=before_login_path,
                 trace=trace,
@@ -642,6 +653,7 @@ def login_and_filter_available(base_url, trace=None):
                 "current_url": page.url,
                 "page_title": page.title(),
                 "reused_session": reused_session,
+                "inventory_ready": inventory_ready,
                 "session_state_path": SESSION_STATE_PATH,
                 "before_login_path": None if reused_session else before_login_path,
                 **filter_result,
@@ -811,6 +823,17 @@ def health():
 
 @app.post("/jobs/login")
 def login_job(request: Request):
+    try:
+        return login_only(base_url_from_request(request))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.post("/jobs/login/start")
+def login_job_start(request: Request):
     return start_background_job(request, "login", login_only)
 
 
@@ -827,6 +850,17 @@ def login_job_sync(request: Request):
 
 @app.post("/jobs/filter-available")
 def filter_available_job(request: Request):
+    try:
+        return login_and_filter_available(base_url_from_request(request))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.post("/jobs/filter-available/start")
+def filter_available_job_start(request: Request):
     return start_background_job(request, "filter-available", login_and_filter_available)
 
 

@@ -1,10 +1,13 @@
 import os
+import json
 import re
 import threading
 import time
 import traceback
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,6 +34,9 @@ WAWICAN_USER_AGENT = (
 INVENTORY_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_INVENTORY_READY_TIMEOUT_MS", "60000"))
 POST_LOGIN_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_POST_LOGIN_READY_TIMEOUT_MS", "15000"))
 FILTER_TIMEOUT_MS = int(os.environ.get("WAWICAN_FILTER_TIMEOUT_MS", "60000"))
+SCRAPE_PAGE_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_SCRAPE_PAGE_READY_TIMEOUT_MS", "30000"))
+SCRAPE_MAX_PAGES = int(os.environ.get("WAWICAN_SCRAPE_MAX_PAGES", "250"))
+SUPABASE_TIMEOUT_SECONDS = int(os.environ.get("WAWICAN_SUPABASE_TIMEOUT_SECONDS", "60"))
 MAX_STORED_JOBS = 50
 JOB_LOCK = threading.Lock()
 JOBS = {}
@@ -673,6 +679,777 @@ def apply_available_filter(page, trace=None):
     }
 
 
+def normalize_space(value):
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def parse_decimal(value):
+    text = normalize_space(value)
+
+    if not text or text.lower() in {"n.a.", "na", "n/a", "-"} or "<" in text:
+        return None
+
+    text = text.replace("€", "").replace(" ", "").replace(".", "").replace(",", ".")
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+
+    if not match:
+        return None
+
+    try:
+        return Decimal(match.group(0))
+    except InvalidOperation:
+        return None
+
+
+def parse_date(value):
+    text = normalize_space(value)
+
+    if not text or text.lower() in {"n.a.", "na", "n/a", "-"}:
+        return None
+
+    match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", text)
+    if not match:
+        return None
+
+    day, month, year = map(int, match.groups())
+    if year < 1900:
+        return None
+
+    try:
+        return datetime(year, month, day).date()
+    except ValueError:
+        return None
+
+
+def postgres_url():
+    value = (
+        os.environ.get("SUPABASE_DB_URL")
+        or os.environ.get("DATABASE_URL")
+        or os.environ.get("POSTGRES_URL")
+        or ""
+    ).strip()
+
+    if not value:
+        raise RuntimeError(
+            "Missing SUPABASE_DB_URL. Use the Supabase direct Postgres or pooler URL "
+            "with sslmode=require."
+        )
+
+    if value.startswith(("postgresql://", "postgres://")) and "sslmode=" not in value:
+        separator = "&" if "?" in value else "?"
+        value = f"{value}{separator}sslmode=require"
+
+    return value
+
+
+def products_schema():
+    return (
+        os.environ.get("WAWICAN_PRODUCTS_SCHEMA")
+        or os.environ.get("SUPABASE_SCHEMA")
+        or "private"
+    ).strip() or "private"
+
+
+def products_table():
+    return (os.environ.get("WAWICAN_PRODUCTS_TABLE") or "wawican_products").strip() or "wawican_products"
+
+
+def supabase_url():
+    return (os.environ.get("SUPABASE_URL") or "").strip().rstrip("/")
+
+
+def supabase_service_role_key():
+    return (os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+
+
+def supabase_rest_configured():
+    return bool(supabase_url() and supabase_service_role_key())
+
+
+def supabase_table_url():
+    return f"{supabase_url()}/rest/v1/{quote(products_table(), safe='')}"
+
+
+def supabase_headers():
+    service_role_key = required_env("SUPABASE_SERVICE_ROLE_KEY")
+    schema_name = products_schema()
+
+    return {
+        "apikey": service_role_key,
+        "Authorization": f"Bearer {service_role_key}",
+        "Accept-Profile": schema_name,
+        "Content-Profile": schema_name,
+        "Content-Type": "application/json",
+    }
+
+
+def response_preview(response):
+    body = response.text
+
+    if len(body) > 1000:
+        body = f"{body[:1000]}..."
+
+    return {
+        "status_code": response.status_code,
+        "ok": response.status_code < 400,
+        "body": body,
+    }
+
+
+def validate_identifier(value, label):
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value or ""):
+        raise RuntimeError(f"Invalid {label}: {value!r}")
+
+    return value
+
+
+def scrape_current_inventory_page(page, page_number=None, trace=None):
+    trace_step(trace, "wait_for_inventory_table", timeout_ms=SCRAPE_PAGE_READY_TIMEOUT_MS)
+    page.locator("table.q-table tbody").first.wait_for(
+        state="visible",
+        timeout=SCRAPE_PAGE_READY_TIMEOUT_MS,
+    )
+
+    result = page.evaluate(
+        """
+        () => {
+          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const fold = (value) => normalize(value)
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .toLowerCase();
+          const removeNoise = (element) => {
+            const clone = element.cloneNode(true);
+            clone.querySelectorAll(
+              'button, svg, img, .q-focus-helper, .q-tooltip, .q-menu, .q-position-engine'
+            ).forEach((node) => node.remove());
+            return normalize(clone.textContent);
+          };
+          const switchValue = (cell) => {
+            const switchElement = cell.querySelector('[role="switch"]');
+            if (!switchElement) {
+              return null;
+            }
+
+            return switchElement.getAttribute('aria-checked') === 'true';
+          };
+          const mapHeader = (header) => {
+            const key = fold(header);
+            if (key.includes('blute')) return 'product_name';
+            if (key === 'preis pro g') return 'price_per_g_text';
+            if (key.includes('netto ek')) return 'net_purchase_price_per_g_text';
+            if (key.includes('verfugbarkeit')) return 'availability_status';
+            if (key.includes('ist bestand')) return 'actual_stock_text';
+            if (key.includes('virtueller bestand')) return 'virtual_stock_text';
+            if (key.includes('preisberechnung')) return 'price_calculation_enabled';
+            if (key.includes('immer verfugbar')) return 'always_available';
+            if (key.includes('restmenge')) return 'remaining_quantity_text';
+            if (key.includes('kultivar')) return 'cultivar';
+            if (key.includes('genetik')) return 'genetics';
+            if (key.includes('dominanz')) return 'dominance';
+            if (key === 'thc') return 'thc';
+            if (key === 'cbd') return 'cbd';
+            if (key.includes('reservierung beim lieferanten')) return 'supplier_reserved_quantity_text';
+            if (key.includes('verfall')) return 'expiry_date_text';
+            if (key.includes('nicht anzeigen')) return 'hidden';
+            return key.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+          };
+
+          const table = document.querySelector('table.q-table');
+          if (!table) {
+            return { ok: false, error: 'inventory_table_not_found' };
+          }
+
+          const headers = Array.from(table.querySelectorAll('thead th')).map((header) => ({
+            label: removeNoise(header),
+            field: mapHeader(removeNoise(header)),
+          }));
+          const rows = Array.from(table.querySelectorAll('tbody tr')).map((row, rowIndex) => {
+            const record = {
+              row_index: rowIndex + 1,
+              raw_cells: [],
+            };
+
+            Array.from(row.querySelectorAll('td')).forEach((cell, cellIndex) => {
+              const header = headers[cellIndex] || {
+                label: `column_${cellIndex + 1}`,
+                field: `column_${cellIndex + 1}`,
+              };
+              const text = removeNoise(cell);
+              const iconTexts = Array.from(cell.querySelectorAll('i')).map((icon) => normalize(icon.textContent));
+              const toggle = switchValue(cell);
+              const rawCell = {
+                index: cellIndex + 1,
+                header: header.label,
+                field: header.field,
+                text,
+                icon_texts: iconTexts,
+                switch_value: toggle,
+              };
+
+              record.raw_cells.push(rawCell);
+
+              if (header.field === 'availability_status') {
+                const hasPositive = Boolean(cell.querySelector('.text-positive'));
+                const hasNegative = Boolean(
+                  cell.querySelector('.text-negative, .text-red, .text-red-7, .text-red-8')
+                );
+                record.available = hasPositive ? true : (hasNegative ? false : null);
+                record.availability_status = hasPositive ? 'verfügbar' : (hasNegative ? 'nicht verfügbar' : text);
+                return;
+              }
+
+              if (
+                header.field === 'price_calculation_enabled' ||
+                header.field === 'always_available' ||
+                header.field === 'hidden'
+              ) {
+                record[header.field] = toggle;
+                return;
+              }
+
+              record[header.field] = text;
+            });
+
+            return record;
+          });
+
+          return {
+            ok: true,
+            headers,
+            row_count: rows.length,
+            rows,
+          };
+        }
+        """
+    )
+
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or "inventory_scrape_failed")
+
+    trace_step(
+        trace,
+        "scraped_inventory_page",
+        page_number=page_number,
+        row_count=result.get("row_count", 0),
+    )
+
+    return result
+
+
+def get_pagination_state(page):
+    return page.evaluate(
+        """
+        () => {
+          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const parsePageLabel = (label) => {
+            const match = normalize(label).match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+            if (!match) {
+              return { current: null, total: null };
+            }
+
+            return { current: Number(match[1]), total: Number(match[2]) };
+          };
+          const pagination = document.querySelector('.q-pagination');
+          const input = pagination ? pagination.querySelector('input[type="number"], input') : null;
+          const label = input
+            ? normalize(input.value || input.getAttribute('placeholder') || '')
+            : normalize(pagination ? pagination.textContent : '');
+          const parsed = parsePageLabel(label);
+          const nextIcon = Array.from(document.querySelectorAll('.q-pagination i'))
+            .find((icon) => normalize(icon.textContent) === 'keyboard_arrow_right');
+          const nextButton = nextIcon ? nextIcon.closest('button') : null;
+          const nextDisabled = !nextButton || nextButton.disabled ||
+            nextButton.getAttribute('aria-disabled') === 'true' ||
+            nextButton.classList.contains('disabled');
+          const firstRow = document.querySelector('table.q-table tbody tr');
+
+          return {
+            label,
+            current_page: parsed.current,
+            total_pages: parsed.total,
+            has_next: !nextDisabled,
+            first_row_text: normalize(firstRow ? firstRow.textContent : ''),
+          };
+        }
+        """
+    )
+
+
+def click_next_inventory_page(page, before_state, trace=None):
+    trace_step(trace, "click_next_inventory_page", before_state=before_state)
+    result = page.evaluate(
+        """
+        () => {
+          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const nextIcon = Array.from(document.querySelectorAll('.q-pagination i'))
+            .find((icon) => normalize(icon.textContent) === 'keyboard_arrow_right');
+          const nextButton = nextIcon ? nextIcon.closest('button') : null;
+
+          if (!nextButton || nextButton.disabled ||
+              nextButton.getAttribute('aria-disabled') === 'true' ||
+              nextButton.classList.contains('disabled')) {
+            return { ok: true, clicked: false, reason: 'next_button_disabled' };
+          }
+
+          nextButton.click();
+          return { ok: true, clicked: true };
+        }
+        """
+    )
+
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or "next_page_click_failed")
+
+    if not result.get("clicked"):
+        return result
+
+    page.wait_for_function(
+        """
+        (before) => {
+          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const pagination = document.querySelector('.q-pagination');
+          const input = pagination ? pagination.querySelector('input[type="number"], input') : null;
+          const label = input
+            ? normalize(input.value || input.getAttribute('placeholder') || '')
+            : normalize(pagination ? pagination.textContent : '');
+          const match = label.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+          const current = match ? Number(match[1]) : null;
+          const firstRow = document.querySelector('table.q-table tbody tr');
+          const firstRowText = normalize(firstRow ? firstRow.textContent : '');
+
+          if (before.current_page && current && current !== before.current_page) {
+            return true;
+          }
+
+          return Boolean(before.first_row_text && firstRowText && firstRowText !== before.first_row_text);
+        }
+        """,
+        arg=before_state,
+        timeout=SCRAPE_PAGE_READY_TIMEOUT_MS,
+    )
+    wait_for_inventory_page(page, timeout=SCRAPE_PAGE_READY_TIMEOUT_MS, trace=trace)
+
+    return result
+
+
+def normalize_scraped_product(raw_product, page_number, source_url, scraped_at):
+    product = {
+        "product_name": normalize_space(raw_product.get("product_name")),
+        "price_per_g_text": normalize_space(raw_product.get("price_per_g_text")),
+        "price_per_g": parse_decimal(raw_product.get("price_per_g_text")),
+        "net_purchase_price_per_g_text": normalize_space(raw_product.get("net_purchase_price_per_g_text")),
+        "net_purchase_price_per_g": parse_decimal(raw_product.get("net_purchase_price_per_g_text")),
+        "availability_status": normalize_space(raw_product.get("availability_status")),
+        "available": raw_product.get("available"),
+        "actual_stock_text": normalize_space(raw_product.get("actual_stock_text")),
+        "actual_stock": parse_decimal(raw_product.get("actual_stock_text")),
+        "virtual_stock_text": normalize_space(raw_product.get("virtual_stock_text")),
+        "virtual_stock": parse_decimal(raw_product.get("virtual_stock_text")),
+        "price_calculation_enabled": raw_product.get("price_calculation_enabled"),
+        "always_available": raw_product.get("always_available"),
+        "remaining_quantity_text": normalize_space(raw_product.get("remaining_quantity_text")),
+        "remaining_quantity": parse_decimal(raw_product.get("remaining_quantity_text")),
+        "cultivar": normalize_space(raw_product.get("cultivar")),
+        "genetics": normalize_space(raw_product.get("genetics")),
+        "dominance": normalize_space(raw_product.get("dominance")),
+        "thc": normalize_space(raw_product.get("thc")),
+        "cbd": normalize_space(raw_product.get("cbd")),
+        "supplier_reserved_quantity_text": normalize_space(raw_product.get("supplier_reserved_quantity_text")),
+        "supplier_reserved_quantity": parse_decimal(raw_product.get("supplier_reserved_quantity_text")),
+        "expiry_date_text": normalize_space(raw_product.get("expiry_date_text")),
+        "expiry_date": parse_date(raw_product.get("expiry_date_text")),
+        "expires_at": parse_date(raw_product.get("expiry_date_text")),
+        "hidden": raw_product.get("hidden"),
+        "do_not_show": raw_product.get("hidden"),
+        "page_number": page_number,
+        "row_index": raw_product.get("row_index"),
+        "source_url": source_url,
+        "scraped_at": scraped_at,
+        "raw_data": raw_product,
+    }
+
+    return product
+
+
+def normalize_products_for_db(raw_products, source_url, scraped_at):
+    return [
+        normalize_scraped_product(raw_product, raw_product.get("page_number"), source_url, scraped_at)
+        for raw_product in raw_products
+        if normalize_space(raw_product.get("product_name"))
+    ]
+
+
+def get_db_columns(cursor, schema_name, table_name):
+    cursor.execute(
+        """
+        select column_name, data_type, udt_name
+        from information_schema.columns
+        where table_schema = %s
+          and table_name = %s
+        order by ordinal_position
+        """,
+        (schema_name, table_name),
+    )
+    columns = cursor.fetchall()
+
+    if not columns:
+        raise RuntimeError(f"Table {schema_name}.{table_name} was not found or has no columns.")
+
+    return {
+        row[0]: {
+            "data_type": row[1],
+            "udt_name": row[2],
+        }
+        for row in columns
+    }
+
+
+def value_for_column(column_name, column_info, product, jsonb_wrapper):
+    value = product.get(column_name)
+    data_type = column_info.get("data_type")
+    udt_name = column_info.get("udt_name")
+
+    if value is None:
+        return None
+
+    if data_type in {"json", "jsonb"} or udt_name in {"json", "jsonb"}:
+        return jsonb_wrapper(value)
+
+    if data_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on", "verfügbar", "verfugbar"}
+        return bool(value)
+
+    if data_type in {"integer", "bigint", "smallint"}:
+        parsed = parse_decimal(value)
+        return int(parsed) if parsed is not None else None
+
+    if data_type in {"numeric", "decimal", "real", "double precision"}:
+        return parse_decimal(value) if not isinstance(value, Decimal) else value
+
+    if data_type == "date":
+        return parse_date(value) if isinstance(value, str) else value
+
+    if data_type.startswith("timestamp"):
+        return value
+
+    if data_type in {"text", "character varying", "character"}:
+        if isinstance(value, (datetime,)):
+            return value.isoformat()
+        if hasattr(value, "isoformat") and not isinstance(value, str):
+            return value.isoformat()
+        return str(value)
+
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, Decimal):
+        return str(value)
+
+    return value
+
+
+def json_ready(value):
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if hasattr(value, "isoformat") and not isinstance(value, str):
+        return value.isoformat()
+
+    if isinstance(value, list):
+        return [json_ready(item) for item in value]
+
+    if isinstance(value, dict):
+        return {key: json_ready(item) for key, item in value.items()}
+
+    return value
+
+
+def product_payload_for_rest(product):
+    return {
+        key: json_ready(value)
+        for key, value in product.items()
+        if value is not None
+    }
+
+
+def chunks(items, size):
+    for index in range(0, len(items), size):
+        yield items[index : index + size]
+
+
+def write_products_to_supabase_rest(products, trace=None):
+    replace_all = bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True)
+    dry_run = bool_env("WAWICAN_PRODUCTS_DRY_RUN", False)
+    schema_name = validate_identifier(products_schema(), "WAWICAN_PRODUCTS_SCHEMA")
+    table_name = validate_identifier(products_table(), "WAWICAN_PRODUCTS_TABLE")
+
+    if dry_run:
+        return {
+            "enabled": False,
+            "dry_run": True,
+            "schema": schema_name,
+            "table": table_name,
+            "inserted_rows": 0,
+            "scraped_rows": len(products),
+        }
+
+    import httpx
+
+    trace_step(
+        trace,
+        "write_products_to_supabase_rest",
+        schema=schema_name,
+        table=table_name,
+        rows=len(products),
+        replace_all=replace_all,
+    )
+
+    if replace_all:
+        response = httpx.delete(
+            supabase_table_url(),
+            headers={
+                **supabase_headers(),
+                "Prefer": "return=minimal",
+            },
+            params={
+                "product_name": "not.is.null",
+            },
+            timeout=SUPABASE_TIMEOUT_SECONDS,
+        )
+
+        if response.status_code >= 400:
+            raise RuntimeError(f"Supabase cleanup failed: {response_preview(response)}")
+
+    inserted_rows = 0
+    for product_chunk in chunks([product_payload_for_rest(product) for product in products], 500):
+        if not product_chunk:
+            continue
+
+        response = httpx.post(
+            supabase_table_url(),
+            headers={
+                **supabase_headers(),
+                "Prefer": "return=minimal",
+            },
+            json=product_chunk,
+            timeout=SUPABASE_TIMEOUT_SECONDS,
+        )
+
+        if response.status_code >= 400:
+            raise RuntimeError(f"Supabase insert failed: {response_preview(response)}")
+
+        inserted_rows += len(product_chunk)
+
+    return {
+        "enabled": True,
+        "method": "supabase_rest",
+        "schema": schema_name,
+        "table": table_name,
+        "replace_all": replace_all,
+        "inserted_rows": inserted_rows,
+        "supabase_url": supabase_url(),
+    }
+
+
+def write_products_to_postgres(products, trace=None):
+    replace_all = bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True)
+    dry_run = bool_env("WAWICAN_PRODUCTS_DRY_RUN", False)
+    schema_name = validate_identifier(products_schema(), "WAWICAN_PRODUCTS_SCHEMA")
+    table_name = validate_identifier(products_table(), "WAWICAN_PRODUCTS_TABLE")
+
+    if dry_run:
+        return {
+            "enabled": False,
+            "dry_run": True,
+            "schema": schema_name,
+            "table": table_name,
+            "inserted_rows": 0,
+            "scraped_rows": len(products),
+        }
+
+    from psycopg import connect, sql
+    from psycopg.types.json import Jsonb
+
+    trace_step(
+        trace,
+        "write_products_to_postgres",
+        schema=schema_name,
+        table=table_name,
+        rows=len(products),
+        replace_all=replace_all,
+    )
+
+    with connect(postgres_url()) as connection:
+        with connection.cursor() as cursor:
+            columns = get_db_columns(cursor, schema_name, table_name)
+
+            if not products:
+                if replace_all:
+                    cursor.execute(
+                        sql.SQL("delete from {}.{}").format(
+                            sql.Identifier(schema_name),
+                            sql.Identifier(table_name),
+                        )
+                    )
+
+                return {
+                    "enabled": True,
+                    "dry_run": False,
+                    "schema": schema_name,
+                    "table": table_name,
+                    "replace_all": replace_all,
+                    "inserted_rows": 0,
+                    "insert_columns": [],
+                }
+
+            insert_columns = [column for column in columns if any(column in product for product in products)]
+
+            if not insert_columns:
+                raise RuntimeError(
+                    f"No matching columns found in {schema_name}.{table_name}. "
+                    "Add product_name/raw_data columns or run the setup SQL."
+                )
+
+            if replace_all:
+                cursor.execute(
+                    sql.SQL("delete from {}.{}").format(
+                        sql.Identifier(schema_name),
+                        sql.Identifier(table_name),
+                    )
+                )
+
+            insert_statement = sql.SQL("insert into {}.{} ({}) values ({})").format(
+                sql.Identifier(schema_name),
+                sql.Identifier(table_name),
+                sql.SQL(", ").join(sql.Identifier(column) for column in insert_columns),
+                sql.SQL(", ").join(sql.Placeholder() for _ in insert_columns),
+            )
+            values = [
+                [
+                    value_for_column(column, columns[column], product, Jsonb)
+                    for column in insert_columns
+                ]
+                for product in products
+            ]
+
+            if values:
+                cursor.executemany(insert_statement, values)
+
+    return {
+        "enabled": True,
+        "method": "postgres",
+        "dry_run": False,
+        "schema": schema_name,
+        "table": table_name,
+        "replace_all": replace_all,
+        "inserted_rows": len(products),
+        "insert_columns": insert_columns,
+    }
+
+
+def write_products_to_database(products, trace=None):
+    if supabase_rest_configured():
+        return write_products_to_supabase_rest(products, trace=trace)
+
+    return write_products_to_postgres(products, trace=trace)
+
+
+def scrape_all_available_products(base_url, trace=None):
+    os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    before_login_path = os.path.join(ARTIFACTS_DIR, f"wawican-scrape-before-login-{timestamp}.png")
+    screenshot_path = os.path.join(ARTIFACTS_DIR, f"wawican-scrape-products-{timestamp}.png")
+    scraped_at = datetime.now(timezone.utc)
+
+    trace_step(trace, "start_browser", headless=bool_env("WAWICAN_HEADLESS", True))
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=bool_env("WAWICAN_HEADLESS", True))
+        context = None
+
+        try:
+            context, page, reused_session, inventory_ready = open_authenticated_inventory_page(
+                browser,
+                before_login_path=before_login_path,
+                trace=trace,
+            )
+            filter_result = apply_available_filter(page, trace=trace)
+            page.keyboard.press("Escape")
+            wait_for_inventory_page(page, trace=trace)
+
+            raw_products = []
+            pages = []
+
+            for page_loop_index in range(1, SCRAPE_MAX_PAGES + 1):
+                pagination = get_pagination_state(page)
+                page_number = pagination.get("current_page") or page_loop_index
+                page_result = scrape_current_inventory_page(
+                    page,
+                    page_number=page_number,
+                    trace=trace,
+                )
+                page_rows = page_result.get("rows", [])
+
+                for row in page_rows:
+                    row["page_number"] = page_number
+                    raw_products.append(row)
+
+                pages.append(
+                    {
+                        "page": page_number,
+                        "label": pagination.get("label"),
+                        "rows": len(page_rows),
+                    }
+                )
+
+                pagination = get_pagination_state(page)
+                current_page = pagination.get("current_page")
+                total_pages = pagination.get("total_pages")
+                has_next = pagination.get("has_next")
+
+                if not has_next or (current_page and total_pages and current_page >= total_pages):
+                    break
+
+                click_next_inventory_page(page, pagination, trace=trace)
+            else:
+                raise RuntimeError(f"Stopped after WAWICAN_SCRAPE_MAX_PAGES={SCRAPE_MAX_PAGES}")
+
+            products = normalize_products_for_db(raw_products, page.url, scraped_at)
+            db_result = write_products_to_database(products, trace=trace)
+            screenshot_result = capture_screenshot_now(
+                page,
+                screenshot_path,
+                trace=trace,
+                trigger="scrape_finished",
+            )
+
+            return {
+                "ok": True,
+                "current_url": page.url,
+                "page_title": page.title(),
+                "reused_session": reused_session,
+                "inventory_ready": inventory_ready,
+                "session_state_path": SESSION_STATE_PATH,
+                "before_login_path": None if reused_session else before_login_path,
+                "filter": filter_result,
+                "pages_scraped": pages,
+                "products_scraped": len(products),
+                "database": db_result,
+                **screenshot_result,
+                **screenshot_response_links(base_url, screenshot_path),
+            }
+        finally:
+            if context:
+                context.close()
+            browser.close()
+
+
 def open_availability_filter_menu(page, trace=None):
     wait_for_inventory_page(page, trace=trace)
     trace_step(trace, "click_availability_filter")
@@ -958,6 +1735,20 @@ def health():
         "screenshot_mode": "capture_immediately_when_inventory_ready_visible",
         "inventory_ready_timeout_ms": INVENTORY_READY_TIMEOUT_MS,
         "post_login_ready_timeout_ms": POST_LOGIN_READY_TIMEOUT_MS,
+        "scrape_max_pages": SCRAPE_MAX_PAGES,
+        "supabase_rest_configured": supabase_rest_configured(),
+        "database_url_configured": supabase_rest_configured() or bool(
+            (
+                os.environ.get("SUPABASE_DB_URL")
+                or os.environ.get("DATABASE_URL")
+                or os.environ.get("POSTGRES_URL")
+                or ""
+            ).strip()
+        ),
+        "products_schema": products_schema(),
+        "products_table": products_table(),
+        "products_replace_all": bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True),
+        "supabase_timeout_seconds": SUPABASE_TIMEOUT_SECONDS,
         "running_jobs": running_jobs,
     }
 
@@ -1040,6 +1831,33 @@ def open_availability_filter_job_start(request: Request):
 def open_availability_filter_job_sync(request: Request):
     try:
         return login_and_open_availability_filter(base_url_from_request(request))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.post("/jobs/scrape-products")
+def scrape_products_job(request: Request):
+    try:
+        return scrape_all_available_products(base_url_from_request(request))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.post("/jobs/scrape-products/start")
+def scrape_products_job_start(request: Request):
+    return start_background_job(request, "scrape-products", scrape_all_available_products)
+
+
+@app.post("/jobs/scrape-products/run")
+def scrape_products_job_sync(request: Request):
+    try:
+        return scrape_all_available_products(base_url_from_request(request))
     except Exception as exc:
         return JSONResponse(
             status_code=500,

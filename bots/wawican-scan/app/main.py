@@ -1178,6 +1178,13 @@ def get_pagination_state(page):
         """
         () => {
           const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const cleanCellText = (element) => {
+            if (!element) return '';
+            const clone = element.cloneNode(true);
+            clone.querySelectorAll('button, svg, img, .q-focus-helper, .q-tooltip, .q-menu, .q-position-engine')
+              .forEach((node) => node.remove());
+            return normalize(clone.textContent);
+          };
           const isVisible = (element) => {
             if (!element) return false;
             const rect = element.getBoundingClientRect();
@@ -1212,7 +1219,10 @@ def get_pagination_state(page):
           const nextDisabled = !nextButton || nextButton.disabled ||
             nextButton.getAttribute('aria-disabled') === 'true' ||
             nextButton.classList.contains('disabled');
-          const firstRow = document.querySelector('table.q-table tbody tr');
+          const visibleRows = Array.from(document.querySelectorAll('table.q-table tbody tr')).filter(isVisible);
+          const visibleProductNames = visibleRows.map((row) => (
+            cleanCellText(row.querySelector('td.product-name-body') || row.querySelector('td'))
+          )).filter(Boolean);
 
           return {
             label,
@@ -1220,7 +1230,10 @@ def get_pagination_state(page):
             total_pages: parsed.total,
             has_next: !nextDisabled,
             visible_next_buttons: nextButtons.length,
-            first_row_text: normalize(firstRow ? firstRow.textContent : ''),
+            visible_row_count: visibleRows.length,
+            first_row_text: visibleProductNames[0] || '',
+            last_row_text: visibleProductNames[visibleProductNames.length - 1] || '',
+            visible_product_signature: visibleProductNames.join('||'),
           };
         }
         """
@@ -1289,6 +1302,25 @@ def click_next_inventory_page(page, before_state, trace=None):
         """
         (before) => {
           const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const cleanCellText = (element) => {
+            if (!element) return '';
+            const clone = element.cloneNode(true);
+            clone.querySelectorAll('button, svg, img, .q-focus-helper, .q-tooltip, .q-menu, .q-position-engine')
+              .forEach((node) => node.remove());
+            return normalize(clone.textContent);
+          };
+          const isVisible = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
           const pagination = document.querySelector('.q-pagination');
           const input = pagination ? pagination.querySelector('input[type="number"], input') : null;
           const label = input
@@ -1296,19 +1328,38 @@ def click_next_inventory_page(page, before_state, trace=None):
             : normalize(pagination ? pagination.textContent : '');
           const match = label.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
           const current = match ? Number(match[1]) : null;
-          const firstRow = document.querySelector('table.q-table tbody tr');
-          const firstRowText = normalize(firstRow ? firstRow.textContent : '');
+          const visibleRows = Array.from(document.querySelectorAll('table.q-table tbody tr')).filter(isVisible);
+          const visibleProductNames = visibleRows.map((row) => (
+            cleanCellText(row.querySelector('td.product-name-body') || row.querySelector('td'))
+          )).filter(Boolean);
+          const signature = visibleProductNames.join('||');
+          const firstRowText = visibleProductNames[0] || '';
           const expected = before.current_page ? before.current_page + 1 : null;
+          const pageChanged = expected
+            ? current === expected
+            : Boolean(before.current_page && current && current !== before.current_page);
+          const signatureChanged = Boolean(
+            signature &&
+            before.visible_product_signature &&
+            signature !== before.visible_product_signature
+          );
 
-          if (expected && current === expected) {
-            return true;
+          if (!pageChanged || !signatureChanged || visibleProductNames.length === 0) {
+            window.__wawicanTableReadyProbe = null;
+            return false;
           }
 
-          if (!expected && before.current_page && current && current !== before.current_page) {
-            return true;
+          const probeKey = `${current}|${visibleProductNames.length}|${signature}`;
+          const previousProbe = window.__wawicanTableReadyProbe || {};
+
+          if (previousProbe.key === probeKey) {
+            previousProbe.hits = (previousProbe.hits || 1) + 1;
+            window.__wawicanTableReadyProbe = previousProbe;
+          } else {
+            window.__wawicanTableReadyProbe = { key: probeKey, hits: 1 };
           }
 
-          return Boolean(!expected && before.first_row_text && firstRowText && firstRowText !== before.first_row_text);
+          return window.__wawicanTableReadyProbe.hits >= 2;
         }
         """,
         arg=before_state,
@@ -1960,6 +2011,8 @@ def scrape_all_available_products(base_url, trace=None):
                         "rows": len(page_rows),
                         "available_rows": availability_summary.get("available_count"),
                         "unavailable_rows": availability_summary.get("unavailable_count"),
+                        "first_product": normalize_space(page_rows[0].get("product_name")) if page_rows else None,
+                        "last_product": normalize_space(page_rows[-1].get("product_name")) if page_rows else None,
                     }
                 )
 

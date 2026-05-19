@@ -391,14 +391,63 @@ function exportState(payload: EndOfDayResponse | null) {
   return "noch nicht";
 }
 
-function downloadRemoteReport(url: string) {
+function filenameFromContentDisposition(value: string | null) {
+  if (!value) return null;
+
+  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
+
+  const filenameMatch = value.match(/filename="?([^";]+)"?/i);
+  return filenameMatch?.[1] || null;
+}
+
+async function downloadRemoteReport(url: string, fallbackFilename?: string) {
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(`Excel-Download fehlgeschlagen: HTTP ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const filename =
+    fallbackFilename ||
+    filenameFromContentDisposition(response.headers.get("content-disposition")) ||
+    url.split("/").pop() ||
+    "wawican-mengenaenderungen.xlsx";
+  const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.target = "_blank";
-  anchor.rel = "noopener";
+  anchor.href = objectUrl;
+  anchor.download = filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
+function browserSafeReportUrl(report: WawicanStockReport | undefined, endpoint: string) {
+  if (report?.filename) {
+    try {
+      const endpointUrl = new URL(endpoint);
+      return new URL(`/reports/${encodeURIComponent(report.filename)}`, endpointUrl.origin).toString();
+    } catch {
+      // Fall back to the bot-provided URL below.
+    }
+  }
+
+  if (!report?.report_url) return "";
+
+  try {
+    const reportUrl = new URL(report.report_url);
+    const endpointUrl = new URL(endpoint);
+
+    if (endpointUrl.protocol === "https:" && reportUrl.protocol === "http:" && reportUrl.hostname === endpointUrl.hostname) {
+      reportUrl.protocol = "https:";
+    }
+
+    return reportUrl.toString();
+  } catch {
+    return report.report_url;
+  }
 }
 
 function DoktorabcLogo() {
@@ -878,16 +927,17 @@ export function SyncConsole() {
       const decreasedRows = numberValue(report?.decreased_rows);
       const currentRows = numberValue(report?.current_rows ?? payload.products_scraped);
 
-      if (report?.report_url) {
+      const reportDownloadUrl = browserSafeReportUrl(report, wawicanStockEndpoint.trim());
+
+      if (reportDownloadUrl) {
         setWawicanRunStep("downloading");
-        setWawicanMessage(`Wawican abgeschlossen: ${changedRows} Änderung(en), ${decreasedRows} gesunken. Excel wird geöffnet.`);
-        await wait(80);
-        downloadRemoteReport(report.report_url);
+        setWawicanMessage(`Wawican abgeschlossen: ${changedRows} Änderung(en), ${decreasedRows} gesunken. Excel wird heruntergeladen.`);
+        await downloadRemoteReport(reportDownloadUrl, report?.filename);
       }
 
       setWawicanStatus("success");
       setWawicanMessage(
-        report?.report_url
+        reportDownloadUrl
           ? `Wawican abgeschlossen: ${changedRows} Änderung(en), ${decreasedRows} gesunken, ${currentRows} Produkte.`
           : `Wawican abgeschlossen: ${changedRows} Änderung(en), aber kein Excel-Link wurde zurückgegeben.`
       );
@@ -920,7 +970,7 @@ export function SyncConsole() {
           : "Produkte synchronisieren (DoktorABC)";
   const wawicanActionLabel =
     wawicanRunStep === "downloading"
-      ? "Excel wird geöffnet"
+      ? "Excel wird heruntergeladen"
       : isWawicanRunning
         ? "Wawican läuft"
         : "Wawican Mengenänderungen prüfen";
@@ -1067,8 +1117,18 @@ export function SyncConsole() {
           {wawicanResult?.stock_report?.report_url ? (
             <button
               type="button"
-              onClick={() => downloadRemoteReport(wawicanResult.stock_report?.report_url || "")}
-              aria-label="Wawican Mengenänderungen als XLSX öffnen"
+              onClick={() => {
+                const report = wawicanResult.stock_report;
+                const reportDownloadUrl = browserSafeReportUrl(report, wawicanStockEndpoint.trim());
+                if (!reportDownloadUrl) return;
+
+                void downloadRemoteReport(reportDownloadUrl, report?.filename).catch((error) => {
+                  const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
+                  setWawicanStatus("error");
+                  setWawicanMessage(`Excel-Download fehlgeschlagen: ${errorMessage}`);
+                });
+              }}
+              aria-label="Wawican Mengenänderungen als XLSX herunterladen"
             >
               <FileSpreadsheet size={16} />
             </button>

@@ -44,6 +44,9 @@ services:
       - WAWICAN_SESSION_STATE_PATH=${WAWICAN_SESSION_STATE_PATH:-/app/artifacts/wawican-storage-state.json}
     volumes:
       - "${WAWICAN_SCAN_ARTIFACTS_DIR:-../../web-scraper-artifacts/wawican-scan}:/app/artifacts"
+    networks:
+      - default
+      - supabase_network
     healthcheck:
       test:
         [
@@ -56,3 +59,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+networks:
+  supabase_network:
+    external: true
+    name: analyticsengine-supabase-b2lvjw_default

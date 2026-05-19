@@ -612,13 +612,29 @@ body[data-theme="night"] .confirm-pickup-preview {
 }
 
 .wawican-button {
-  border-color: rgba(4, 120, 87, 0.32);
-  background: linear-gradient(135deg, var(--green), var(--cyan));
-  box-shadow: 0 18px 32px rgba(4, 120, 87, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 111, 60, 0.44);
+  background: linear-gradient(135deg, #ff7a3d, #ff5b33);
+  box-shadow: 0 18px 32px rgba(255, 91, 51, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .wawican-button:not(:disabled):hover {
-  box-shadow: 0 22px 42px rgba(4, 120, 87, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  box-shadow: 0 22px 42px rgba(255, 91, 51, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.wawican-mark {
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 7px;
+  background: #ff5b33;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 950;
+  line-height: 1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 8px 18px rgba(150, 41, 20, 0.18);
 }
 
 .manual-pickup-card {

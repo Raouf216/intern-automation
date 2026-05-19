@@ -459,6 +459,14 @@ function DoktorabcLogo() {
   );
 }
 
+function WawicanMark() {
+  return (
+    <span className="wawican-mark" aria-hidden="true">
+      W
+    </span>
+  );
+}
+
 async function sendFinalSyncNotification(notification: SyncNotification) {
   try {
     const response = await fetch("/api/sync-notification", {
@@ -1275,7 +1283,7 @@ export function SyncConsole() {
                     <ArrowRight size={20} />
                   </button>
                   <button className="trigger-button wawican-button" type="button" onClick={triggerWawicanStockReport} disabled={isWawicanRunning}>
-                    {isWawicanRunning ? <Loader2 size={21} className="spin" /> : <FileSpreadsheet size={21} />}
+                    {isWawicanRunning ? <Loader2 size={21} className="spin" /> : <WawicanMark />}
                     <span>{wawicanActionLabel}</span>
                     <ArrowRight size={20} />
                   </button>

@@ -1,0 +1,45 @@
+services:
+  wawican-scan:
+    container_name: wawican-scan
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${WAWICAN_SCAN_PORT:-8023}:8000"
+    environment:
+      - PORT=8000
+      - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Europe/Berlin}
+      - WAWICAN_LOGIN_URL=${WAWICAN_LOGIN_URL:-}
+      - WAWICAN_INVENTORY_URL=${WAWICAN_INVENTORY_URL:-}
+      - WAWICAN_USERNAME=${WAWICAN_USERNAME:-}
+      - WAWICAN_PASSWORD=${WAWICAN_PASSWORD:-}
+      - WAWICAN_HEADLESS=${WAWICAN_HEADLESS:-true}
+      - WAWICAN_USER_AGENT=${WAWICAN_USER_AGENT:-Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36}
+      - WAWICAN_READY_TEXT=${WAWICAN_READY_TEXT:-Verfügbarkeit}
+      - WAWICAN_SCREENSHOT_WAIT_MS=${WAWICAN_SCREENSHOT_WAIT_MS:-3000}
+      - WAWICAN_USERNAME_SELECTOR=${WAWICAN_USERNAME_SELECTOR:-}
+      - WAWICAN_PASSWORD_SELECTOR=${WAWICAN_PASSWORD_SELECTOR:-}
+      - WAWICAN_LOGIN_BUTTON_SELECTOR=${WAWICAN_LOGIN_BUTTON_SELECTOR:-}
+      - WAWICAN_LOGIN_EXTRA_CLICK_TEXT=${WAWICAN_LOGIN_EXTRA_CLICK_TEXT:-}
+      - WAWICAN_SCAN_CORS_ORIGINS=${WAWICAN_SCAN_CORS_ORIGINS:-http://localhost:8040,http://127.0.0.1:8040,http://178.104.144.30:8040}
+      - ARTIFACTS_DIR=/app/artifacts
+      - WAWICAN_SESSION_STATE_PATH=${WAWICAN_SESSION_STATE_PATH:-/app/artifacts/wawican-storage-state.json}
+    volumes:
+      - "${WAWICAN_SCAN_ARTIFACTS_DIR:-../../web-scraper-artifacts/wawican-scan}:/app/artifacts"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

@@ -158,14 +158,14 @@ def trace_step(trace, name, **fields):
         trace(name, **fields)
 
 
-def capture_screenshot_now(page, path, trace=None):
+def capture_screenshot_now(page, path, trace=None, trigger="inventory_ready_visible"):
     trace_step(trace, "capture_screenshot", path=path)
     page.screenshot(path=path, full_page=True)
 
     return {
         "screenshot_path": path,
         "screenshot_wait_ms": 0,
-        "screenshot_trigger": "inventory_ready_visible",
+        "screenshot_trigger": trigger,
     }
 
 
@@ -530,8 +530,21 @@ def click_availability_filter_button(page):
         """
         () => {
           const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const isVisible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
           const headers = Array.from(document.querySelectorAll('th'));
-          const header = headers.find((element) => normalize(element.innerText).includes('Verfügbarkeit'));
+          const header = headers.find((element) => (
+            normalize(element.innerText).includes('Verfügbarkeit') && isVisible(element)
+          ));
 
           if (!header) {
             return { ok: false, error: 'availability_header_not_found' };
@@ -546,7 +559,7 @@ def click_availability_filter_button(page):
           }
 
           button.click();
-          return { ok: true };
+          return { ok: true, header_text: normalize(header.innerText) };
         }
         """
     )
@@ -555,6 +568,51 @@ def click_availability_filter_button(page):
         raise RuntimeError(result.get("error") or "availability_filter_button_failed")
 
     return result
+
+
+def wait_for_availability_filter_menu(page, trace=None):
+    trace_step(trace, "wait_for_availability_filter_menu", timeout_ms=FILTER_TIMEOUT_MS)
+    page.wait_for_function(
+        """
+        () => {
+          const fold = (value) => (value || '')
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+          const candidates = Array.from(document.querySelectorAll(
+            '.q-menu *, .q-position-engine *, .q-checkbox, [role="checkbox"], label, span, div'
+          ));
+
+          return candidates.some((element) => {
+            if (element.closest('th')) {
+              return false;
+            }
+
+            if (fold(element.textContent) !== 'verfugbar') {
+              return false;
+            }
+
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          });
+        }
+        """,
+        timeout=FILTER_TIMEOUT_MS,
+    )
+    wait_for_next_render_frame(page)
+    trace_page_state(trace, "availability_filter_menu_visible", page)
+
+    return {"ok": True, "menu_item": "verfügbar"}
 
 
 def ensure_available_checkbox_checked(page):
@@ -608,6 +666,7 @@ def apply_available_filter(page, trace=None):
     wait_for_inventory_page(page, trace=trace)
     trace_step(trace, "click_availability_filter")
     click_result = click_availability_filter_button(page)
+    wait_for_availability_filter_menu(page, trace=trace)
     trace_step(trace, "ensure_available_checkbox_checked")
     checkbox_result = ensure_available_checkbox_checked(page)
 
@@ -615,6 +674,18 @@ def apply_available_filter(page, trace=None):
         "filter_button": click_result,
         "available_checkbox": checkbox_result,
         "visible_rows": page.locator("tbody tr").count(),
+    }
+
+
+def open_availability_filter_menu(page, trace=None):
+    wait_for_inventory_page(page, trace=trace)
+    trace_step(trace, "click_availability_filter")
+    click_result = click_availability_filter_button(page)
+    menu_result = wait_for_availability_filter_menu(page, trace=trace)
+
+    return {
+        "filter_button": click_result,
+        "filter_menu": menu_result,
     }
 
 
@@ -675,6 +746,49 @@ def login_and_filter_available(base_url, trace=None):
             )
             filter_result = apply_available_filter(page, trace=trace)
             screenshot_result = capture_screenshot_now(page, screenshot_path, trace=trace)
+
+            return {
+                "ok": True,
+                "current_url": page.url,
+                "page_title": page.title(),
+                "reused_session": reused_session,
+                "inventory_ready": inventory_ready,
+                "session_state_path": SESSION_STATE_PATH,
+                "before_login_path": None if reused_session else before_login_path,
+                **filter_result,
+                **screenshot_result,
+                **screenshot_response_links(base_url, screenshot_path),
+            }
+        finally:
+            if context:
+                context.close()
+            browser.close()
+
+
+def login_and_open_availability_filter(base_url, trace=None):
+    os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    before_login_path = os.path.join(ARTIFACTS_DIR, f"wawican-open-filter-before-login-{timestamp}.png")
+    screenshot_path = os.path.join(ARTIFACTS_DIR, f"wawican-open-availability-filter-{timestamp}.png")
+
+    trace_step(trace, "start_browser", headless=bool_env("WAWICAN_HEADLESS", True))
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=bool_env("WAWICAN_HEADLESS", True))
+        context = None
+
+        try:
+            context, page, reused_session, inventory_ready = open_authenticated_inventory_page(
+                browser,
+                before_login_path=before_login_path,
+                trace=trace,
+            )
+            filter_result = open_availability_filter_menu(page, trace=trace)
+            screenshot_result = capture_screenshot_now(
+                page,
+                screenshot_path,
+                trace=trace,
+                trigger="availability_filter_menu_visible",
+            )
 
             return {
                 "ok": True,
@@ -899,6 +1013,37 @@ def filter_available_job_start(request: Request):
 def filter_available_job_sync(request: Request):
     try:
         return login_and_filter_available(base_url_from_request(request))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.post("/jobs/open-availability-filter")
+def open_availability_filter_job(request: Request):
+    try:
+        return login_and_open_availability_filter(base_url_from_request(request))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.post("/jobs/open-availability-filter/start")
+def open_availability_filter_job_start(request: Request):
+    return start_background_job(
+        request,
+        "open-availability-filter",
+        login_and_open_availability_filter,
+    )
+
+
+@app.post("/jobs/open-availability-filter/run")
+def open_availability_filter_job_sync(request: Request):
+    try:
+        return login_and_open_availability_filter(base_url_from_request(request))
     except Exception as exc:
         return JSONResponse(
             status_code=500,

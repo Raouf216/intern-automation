@@ -1172,11 +1172,7 @@ def json_ready(value):
 
 
 def product_payload_for_rest(product):
-    return {
-        key: json_ready(value)
-        for key, value in product.items()
-        if value is not None
-    }
+    return {key: json_ready(value) for key, value in product.items()}
 
 
 def chunks(items, size):

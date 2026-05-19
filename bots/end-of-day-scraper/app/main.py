@@ -2498,26 +2498,63 @@ async () => {
       .map((element) => normalize(element.innerText))
       .filter(Boolean);
   };
-  const readPznsAfterClick = async (trigger) => {
-    if (!trigger) return [];
-    trigger.scrollIntoView({ block: "center", inline: "center" });
-    trigger.click();
-    await delay(__PZN_POPUP_WAIT_MS__);
-
-    const popupSelectors = '[role="dialog"],[role="tooltip"],[data-radix-popper-content-wrapper]';
-    const popupText = Array.from(document.querySelectorAll(popupSelectors))
-      .filter(visible)
-      .map((element) => element.innerText || "")
-      .join("\\n");
-    let codes = unique(popupText.match(/\\b\\d{7,8}[A-Z]*\\b/gi) || []);
-
-    if (!codes.length) {
-      codes = unique((document.body.innerText || "").match(/\\b\\d{7,8}[A-Z]*\\b/gi) || []);
+  const pznCodesFromText = (value) => unique((value.match(/\\b\\d{7,8}[A-Z]*\\b/gi) || []).map((code) => code.toUpperCase()));
+  const expectedPznCount = (trigger) => {
+    const match = normalize(trigger?.innerText || trigger?.textContent).match(/^\\s*(\\d+)\\s*PZNs?\\s*$/i);
+    const count = match ? Number(match[1]) : null;
+    return Number.isFinite(count) ? count : null;
+  };
+  const waitFor = async (predicate, timeoutMs, pollMs = 25) => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const value = predicate();
+      if (value) return value;
+      await delay(pollMs);
     }
+    return predicate();
+  };
+  const popupSelectors = '[role="dialog"],[role="tooltip"],[data-radix-popper-content-wrapper]';
+  const visiblePopups = () => Array.from(document.querySelectorAll(popupSelectors)).filter(visible);
+  const controlledPopupForTrigger = (trigger) => {
+    const controlId = trigger?.getAttribute("aria-controls");
+    if (!controlId) return null;
 
+    const controlled = document.getElementById(controlId);
+    if (visible(controlled)) return controlled;
+
+    const wrapper = controlled?.closest('[data-radix-popper-content-wrapper]');
+    return visible(wrapper) ? wrapper : null;
+  };
+  const closeOpenPznPopups = async () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     document.body.click();
+    await waitFor(() => visiblePopups().length === 0, Math.max(__PZN_CLOSE_WAIT_MS__, 300));
+  };
+  const readPznsAfterClick = async (trigger) => {
+    if (!trigger) return [];
+    const expectedCount = expectedPznCount(trigger);
+
+    await closeOpenPznPopups();
+    trigger.scrollIntoView({ block: "center", inline: "center" });
+    trigger.click();
+
+    const popup = await waitFor(() => {
+      const candidate = controlledPopupForTrigger(trigger);
+      if (!candidate) return null;
+
+      if (expectedCount === null) return candidate;
+
+      const codes = pznCodesFromText(candidate.innerText || "");
+      return codes.length >= expectedCount ? candidate : null;
+    }, Math.max(__PZN_POPUP_WAIT_MS__, 1000));
+    const codes = popup ? pznCodesFromText(popup.innerText || "") : [];
+
+    await closeOpenPznPopups();
     await delay(__PZN_CLOSE_WAIT_MS__);
+
+    if (expectedCount !== null && codes.length !== expectedCount) {
+      return [];
+    }
 
     return codes;
   };
@@ -2531,8 +2568,8 @@ async () => {
       const quantity = badges.find((badge) => /^\\d+(?:[,.]\\d+)?\\s*gramm$/i.test(badge)) || "";
       const priceBadge = badges.find((badge) => /^Price:\\s*[\\d.,]+\\s*\\u20ac$/i.test(badge)) || "";
       const priceMatch = priceBadge.match(/[\\d.,]+/);
-      const pznTrigger = Array.from(card.querySelectorAll('[aria-haspopup],button,[type="button"],div'))
-        .find((element) => /\\b\\d+\\s*PZN\\b/i.test(normalize(element.innerText)));
+      const pznTrigger = Array.from(card.querySelectorAll('[aria-controls][aria-haspopup], [aria-controls][type="button"], [aria-controls]'))
+        .find((element) => /^\\d+\\s*PZNs?$/i.test(normalize(element.innerText || element.textContent)));
       const pzns = await readPznsAfterClick(pznTrigger);
 
       products.push({

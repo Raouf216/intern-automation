@@ -128,6 +128,16 @@ class AuthRegressionTest(unittest.TestCase):
             candidates.index(target_url),
         )
 
+    def test_pzn_scrape_is_bound_to_controlled_popup(self):
+        script = self.eod.SCRAPE_EOD_ORDERS_JS
+
+        self.assertIn('getAttribute("aria-controls")', script)
+        self.assertIn("document.getElementById(controlId)", script)
+        self.assertIn("[aria-controls][aria-haspopup]", script)
+        self.assertIn("visiblePopups().length === 0", script)
+        self.assertNotIn("document.body.innerText", script)
+        self.assertNotIn("card.querySelectorAll('[aria-haspopup],button,[type=\"button\"],div')", script)
+
 
 if __name__ == "__main__":
     unittest.main()

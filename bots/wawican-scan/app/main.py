@@ -1036,6 +1036,18 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
             .normalize('NFD')
             .replace(/[\\u0300-\\u036f]/g, '')
             .toLowerCase();
+          const isVisible = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
           const removeNoise = (element) => {
             const clone = element.cloneNode(true);
             clone.querySelectorAll(
@@ -1082,7 +1094,9 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
             label: removeNoise(header),
             field: mapHeader(removeNoise(header)),
           }));
-          const rows = Array.from(table.querySelectorAll('tbody tr')).map((row, rowIndex) => {
+          const domRows = Array.from(table.querySelectorAll('tbody tr'));
+          const visibleRows = domRows.filter(isVisible);
+          const rows = visibleRows.map((row, rowIndex) => {
             const record = {
               row_index: rowIndex + 1,
               raw_cells: [],
@@ -1136,6 +1150,8 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
             ok: true,
             headers,
             row_count: rows.length,
+            dom_row_count: domRows.length,
+            visible_row_count: visibleRows.length,
             rows,
           };
         }
@@ -1150,6 +1166,8 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
         "scraped_inventory_page",
         page_number=page_number,
         row_count=result.get("row_count", 0),
+        dom_row_count=result.get("dom_row_count", 0),
+        visible_row_count=result.get("visible_row_count", 0),
     )
 
     return result

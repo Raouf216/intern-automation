@@ -1,6 +1,9 @@
 import os
 import re
+import threading
 import time
+import traceback
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request
@@ -28,6 +31,9 @@ WAWICAN_USER_AGENT = (
 LOGIN_READY_TIMEOUT_MS = 45_000
 PAGE_READY_TIMEOUT_MS = 30_000
 FILTER_TIMEOUT_MS = 10_000
+MAX_STORED_JOBS = 50
+JOB_LOCK = threading.Lock()
+JOBS = {}
 
 
 app = FastAPI(title=SERVICE_NAME)
@@ -127,24 +133,39 @@ def latest_screenshot_path():
     return max(screenshot_paths, key=os.path.getmtime)
 
 
-def screenshot_file_url(request, screenshot_path):
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def base_url_from_request(request):
+    return str(request.base_url).rstrip("/")
+
+
+def screenshot_file_url(base_url, screenshot_path):
     filename = os.path.basename(screenshot_path)
-    return str(request.url_for("get_screenshot", filename=filename))
+    return f"{base_url}/screenshots/{filename}"
 
 
-def screenshot_response_links(request, screenshot_path):
+def screenshot_response_links(base_url, screenshot_path):
     return {
-        "screenshot_url": screenshot_file_url(request, screenshot_path),
-        "latest_screenshot_url": str(request.url_for("get_latest_screenshot")),
+        "screenshot_url": screenshot_file_url(base_url, screenshot_path),
+        "latest_screenshot_url": f"{base_url}/screenshots/latest",
     }
 
 
-def capture_screenshot_after_wait(page, path):
+def trace_step(trace, name, **fields):
+    if trace:
+        trace(name, **fields)
+
+
+def capture_screenshot_after_wait(page, path, trace=None):
     wait_ms = screenshot_wait_ms()
 
+    trace_step(trace, "wait_before_screenshot", wait_ms=wait_ms)
     if wait_ms > 0:
         page.wait_for_timeout(wait_ms)
 
+    trace_step(trace, "capture_screenshot", path=path)
     page.screenshot(path=path, full_page=True)
 
     return {
@@ -169,7 +190,8 @@ def first_visible_locator(page, selectors, timeout=5_000):
     return None
 
 
-def wait_for_inventory_page(page, timeout=PAGE_READY_TIMEOUT_MS):
+def wait_for_inventory_page(page, timeout=PAGE_READY_TIMEOUT_MS, trace=None):
+    trace_step(trace, "wait_for_inventory_page", timeout_ms=timeout, ready_text=ready_text())
     signals = [
         lambda: page.get_by_text(ready_text(), exact=False).first.wait_for(timeout=timeout),
         lambda: page.locator(".inventory-table-component").first.wait_for(state="visible", timeout=timeout),
@@ -315,10 +337,12 @@ def save_session_state(context):
             os.remove(temp_path)
 
 
-def open_saved_session(browser):
+def open_saved_session(browser, trace=None):
     if not os.path.exists(SESSION_STATE_PATH):
+        trace_step(trace, "saved_session_missing", path=SESSION_STATE_PATH)
         return None
 
+    trace_step(trace, "open_saved_session", path=SESSION_STATE_PATH)
     print("trying saved Wawican session ...", flush=True)
 
     try:
@@ -333,39 +357,53 @@ def open_saved_session(browser):
     page = context.new_page()
 
     try:
+        trace_step(trace, "goto_inventory_with_saved_session", url=inventory_url())
         page.goto(inventory_url(), wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_load_state("domcontentloaded", timeout=10_000)
-        wait_for_inventory_page(page, timeout=12_000)
+        wait_for_inventory_page(page, timeout=12_000, trace=trace)
+        trace_step(trace, "saved_session_valid")
         return context, page, True
     except Exception as exc:
         context.close()
+        trace_step(trace, "saved_session_invalid", error=f"{type(exc).__name__}: {exc}")
         print(f"saved Wawican session is expired or invalid: {type(exc).__name__}: {exc}", flush=True)
         return None
 
 
-def open_fresh_session(browser, before_login_path=None):
+def open_fresh_session(browser, before_login_path=None, trace=None):
+    trace_step(trace, "open_fresh_session")
     print("trying fresh Wawican login ...", flush=True)
 
     context = browser.new_context(**browser_context_options())
     page = context.new_page()
 
+    trace_step(trace, "goto_login_url", url=login_url())
     page.goto(login_url(), wait_until="domcontentloaded", timeout=30_000)
     page.wait_for_load_state("domcontentloaded", timeout=10_000)
 
-    if not login_form_is_visible(page):
+    login_form_visible = login_form_is_visible(page)
+    trace_step(trace, "login_form_visibility_checked", visible=login_form_visible)
+
+    if not login_form_visible:
         try:
+            trace_step(trace, "try_inventory_without_login_form", url=inventory_url())
             page.goto(inventory_url(), wait_until="domcontentloaded", timeout=30_000)
-            wait_for_inventory_page(page, timeout=8_000)
+            wait_for_inventory_page(page, timeout=8_000, trace=trace)
             save_session_state(context)
+            trace_step(trace, "session_saved", path=SESSION_STATE_PATH)
             return context, page, False
         except Exception:
+            trace_step(trace, "return_to_login_url", url=login_url())
             page.goto(login_url(), wait_until="domcontentloaded", timeout=30_000)
 
+    trace_step(trace, "fill_login_form")
     fill_login_form(page)
 
     if before_login_path:
+        trace_step(trace, "capture_before_login_screenshot", path=before_login_path)
         page.screenshot(path=before_login_path, full_page=True)
 
+    trace_step(trace, "submit_login_form")
     submit_login_form(page)
 
     try:
@@ -373,20 +411,22 @@ def open_fresh_session(browser, before_login_path=None):
     except PlaywrightTimeoutError:
         pass
 
+    trace_step(trace, "goto_inventory_after_login", url=inventory_url())
     page.goto(inventory_url(), wait_until="domcontentloaded", timeout=30_000)
-    wait_for_inventory_page(page, timeout=LOGIN_READY_TIMEOUT_MS)
+    wait_for_inventory_page(page, timeout=LOGIN_READY_TIMEOUT_MS, trace=trace)
     save_session_state(context)
+    trace_step(trace, "session_saved", path=SESSION_STATE_PATH)
 
     return context, page, False
 
 
-def open_authenticated_inventory_page(browser, before_login_path=None):
-    saved_session = open_saved_session(browser)
+def open_authenticated_inventory_page(browser, before_login_path=None, trace=None):
+    saved_session = open_saved_session(browser, trace=trace)
 
     if saved_session is not None:
         return saved_session
 
-    return open_fresh_session(browser, before_login_path=before_login_path)
+    return open_fresh_session(browser, before_login_path=before_login_path, trace=trace)
 
 
 def click_availability_filter_button(page):
@@ -468,10 +508,12 @@ def ensure_available_checkbox_checked(page):
     return result
 
 
-def apply_available_filter(page):
-    wait_for_inventory_page(page)
+def apply_available_filter(page, trace=None):
+    wait_for_inventory_page(page, trace=trace)
+    trace_step(trace, "click_availability_filter")
     click_result = click_availability_filter_button(page)
     page.wait_for_timeout(300)
+    trace_step(trace, "ensure_available_checkbox_checked")
     checkbox_result = ensure_available_checkbox_checked(page)
     page.wait_for_timeout(1_000)
 
@@ -482,12 +524,13 @@ def apply_available_filter(page):
     }
 
 
-def login_only(request):
+def login_only(base_url, trace=None):
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     before_login_path = os.path.join(ARTIFACTS_DIR, f"wawican-before-login-{timestamp}.png")
     after_login_path = os.path.join(ARTIFACTS_DIR, f"wawican-after-login-{timestamp}.png")
 
+    trace_step(trace, "start_browser", headless=bool_env("WAWICAN_HEADLESS", True))
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=bool_env("WAWICAN_HEADLESS", True))
         context = None
@@ -496,8 +539,9 @@ def login_only(request):
             context, page, reused_session = open_authenticated_inventory_page(
                 browser,
                 before_login_path=before_login_path,
+                trace=trace,
             )
-            screenshot_result = capture_screenshot_after_wait(page, after_login_path)
+            screenshot_result = capture_screenshot_after_wait(page, after_login_path, trace=trace)
 
             return {
                 "ok": True,
@@ -509,7 +553,7 @@ def login_only(request):
                 "before_login_path": None if reused_session else before_login_path,
                 "after_login_path": after_login_path,
                 **screenshot_result,
-                **screenshot_response_links(request, after_login_path),
+                **screenshot_response_links(base_url, after_login_path),
             }
         finally:
             if context:
@@ -517,12 +561,13 @@ def login_only(request):
             browser.close()
 
 
-def login_and_filter_available(request):
+def login_and_filter_available(base_url, trace=None):
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     before_login_path = os.path.join(ARTIFACTS_DIR, f"wawican-filter-before-login-{timestamp}.png")
     screenshot_path = os.path.join(ARTIFACTS_DIR, f"wawican-filter-available-{timestamp}.png")
 
+    trace_step(trace, "start_browser", headless=bool_env("WAWICAN_HEADLESS", True))
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=bool_env("WAWICAN_HEADLESS", True))
         context = None
@@ -531,9 +576,10 @@ def login_and_filter_available(request):
             context, page, reused_session = open_authenticated_inventory_page(
                 browser,
                 before_login_path=before_login_path,
+                trace=trace,
             )
-            filter_result = apply_available_filter(page)
-            screenshot_result = capture_screenshot_after_wait(page, screenshot_path)
+            filter_result = apply_available_filter(page, trace=trace)
+            screenshot_result = capture_screenshot_after_wait(page, screenshot_path, trace=trace)
 
             return {
                 "ok": True,
@@ -544,7 +590,7 @@ def login_and_filter_available(request):
                 "before_login_path": None if reused_session else before_login_path,
                 **filter_result,
                 **screenshot_result,
-                **screenshot_response_links(request, screenshot_path),
+                **screenshot_response_links(base_url, screenshot_path),
             }
         finally:
             if context:
@@ -552,8 +598,148 @@ def login_and_filter_available(request):
             browser.close()
 
 
+def json_safe(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+
+    return str(value)
+
+
+def prune_jobs_locked():
+    if len(JOBS) <= MAX_STORED_JOBS:
+        return
+
+    sorted_job_ids = sorted(
+        JOBS,
+        key=lambda job_id: JOBS[job_id].get("created_at", ""),
+    )
+    for job_id in sorted_job_ids[: len(JOBS) - MAX_STORED_JOBS]:
+        JOBS.pop(job_id, None)
+
+
+def create_job(name):
+    job_id = uuid.uuid4().hex
+    job = {
+        "ok": True,
+        "job_id": job_id,
+        "name": name,
+        "status": "queued",
+        "created_at": utc_now_iso(),
+        "started_at": None,
+        "finished_at": None,
+        "last_step": None,
+        "steps": [],
+    }
+
+    with JOB_LOCK:
+        JOBS[job_id] = job
+        prune_jobs_locked()
+
+    return job
+
+
+def append_job_step(job_id, name, **fields):
+    step = {
+        "name": name,
+        "at": utc_now_iso(),
+        **{key: json_safe(value) for key, value in fields.items()},
+    }
+
+    with JOB_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return
+
+        job.setdefault("steps", []).append(step)
+        job["last_step"] = name
+
+
+def update_job(job_id, **fields):
+    with JOB_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return
+
+        job.update({key: json_safe(value) for key, value in fields.items()})
+
+
+def get_job_snapshot(job_id):
+    with JOB_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return None
+
+        return json_safe(job)
+
+
+def list_job_snapshots():
+    with JOB_LOCK:
+        jobs = sorted(
+            JOBS.values(),
+            key=lambda job: job.get("created_at", ""),
+            reverse=True,
+        )
+        return [json_safe(job) for job in jobs]
+
+
+def run_background_job(job_id, base_url, work):
+    update_job(job_id, status="running", started_at=utc_now_iso())
+    append_job_step(job_id, "job_started")
+
+    try:
+        result = work(base_url, trace=lambda name, **fields: append_job_step(job_id, name, **fields))
+        update_job(
+            job_id,
+            status="done",
+            finished_at=utc_now_iso(),
+            result=result,
+        )
+        append_job_step(job_id, "job_done")
+    except Exception as exc:
+        update_job(
+            job_id,
+            ok=False,
+            status="error",
+            finished_at=utc_now_iso(),
+            error=f"{type(exc).__name__}: {exc}",
+            traceback=traceback.format_exc().splitlines()[-12:],
+        )
+        append_job_step(job_id, "job_error", error=f"{type(exc).__name__}: {exc}")
+
+
+def start_background_job(request, name, work):
+    base_url = base_url_from_request(request)
+    job = create_job(name)
+    thread = threading.Thread(
+        target=run_background_job,
+        args=(job["job_id"], base_url, work),
+        daemon=True,
+        name=f"{SERVICE_NAME}-{job['job_id'][:8]}",
+    )
+    thread.start()
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "ok": True,
+            "job_id": job["job_id"],
+            "status": "queued",
+            "status_url": f"{base_url}/jobs/{job['job_id']}",
+        },
+    )
+
+
 @app.get("/health")
 def health():
+    with JOB_LOCK:
+        running_jobs = sum(1 for job in JOBS.values() if job.get("status") in {"queued", "running"})
+
     return {
         "ok": True,
         "service": SERVICE_NAME,
@@ -563,13 +749,19 @@ def health():
         "session_state_path": SESSION_STATE_PATH,
         "session_state_exists": os.path.exists(SESSION_STATE_PATH),
         "screenshot_wait_ms": screenshot_wait_ms(),
+        "running_jobs": running_jobs,
     }
 
 
 @app.post("/jobs/login")
 def login_job(request: Request):
+    return start_background_job(request, "login", login_only)
+
+
+@app.post("/jobs/login/run")
+def login_job_sync(request: Request):
     try:
-        return login_only(request)
+        return login_only(base_url_from_request(request))
     except Exception as exc:
         return JSONResponse(
             status_code=500,
@@ -579,13 +771,33 @@ def login_job(request: Request):
 
 @app.post("/jobs/filter-available")
 def filter_available_job(request: Request):
+    return start_background_job(request, "filter-available", login_and_filter_available)
+
+
+@app.post("/jobs/filter-available/run")
+def filter_available_job_sync(request: Request):
     try:
-        return login_and_filter_available(request)
+        return login_and_filter_available(base_url_from_request(request))
     except Exception as exc:
         return JSONResponse(
             status_code=500,
             content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
         )
+
+
+@app.get("/jobs")
+def list_jobs():
+    return {"ok": True, "jobs": list_job_snapshots()}
+
+
+@app.get("/jobs/{job_id}", name="get_job")
+def get_job(job_id: str):
+    job = get_job_snapshot(job_id)
+
+    if not job:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "job_not_found"})
+
+    return job
 
 
 @app.get("/screenshots/latest", name="get_latest_screenshot")

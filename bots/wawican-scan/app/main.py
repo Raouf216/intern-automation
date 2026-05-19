@@ -796,6 +796,21 @@ def response_preview(response):
     }
 
 
+def missing_column_from_postgrest_response(response):
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+
+    message = str(payload.get("message") or response.text or "")
+    match = re.search(r"Could not find the '([^']+)' column", message)
+
+    if match:
+        return match.group(1)
+
+    return None
+
+
 def validate_identifier(value, label):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value or ""):
         raise RuntimeError(f"Invalid {label}: {value!r}")
@@ -1180,6 +1195,38 @@ def chunks(items, size):
         yield items[index : index + size]
 
 
+def validate_rest_payload_columns(column_names, trace=None):
+    import httpx
+
+    accepted_columns = list(column_names)
+    skipped_columns = []
+
+    while accepted_columns:
+        response = httpx.get(
+            supabase_table_url(),
+            headers=supabase_headers(),
+            params={
+                "select": ",".join(accepted_columns),
+                "limit": "0",
+            },
+            timeout=SUPABASE_TIMEOUT_SECONDS,
+        )
+
+        if response.status_code < 400:
+            return accepted_columns, skipped_columns
+
+        missing_column = missing_column_from_postgrest_response(response)
+        if missing_column and missing_column in accepted_columns:
+            accepted_columns.remove(missing_column)
+            skipped_columns.append(missing_column)
+            trace_step(trace, "skip_missing_supabase_column", column=missing_column)
+            continue
+
+        raise RuntimeError(f"Supabase schema check failed: {response_preview(response)}")
+
+    return accepted_columns, skipped_columns
+
+
 def write_products_to_supabase_rest(products, trace=None):
     replace_all = bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True)
     dry_run = bool_env("WAWICAN_PRODUCTS_DRY_RUN", False)
@@ -1206,6 +1253,20 @@ def write_products_to_supabase_rest(products, trace=None):
         rows=len(products),
         replace_all=replace_all,
     )
+
+    payloads = [product_payload_for_rest(product) for product in products]
+    insert_columns = []
+    skipped_columns = []
+
+    if payloads:
+        insert_columns, skipped_columns = validate_rest_payload_columns(
+            list(payloads[0].keys()),
+            trace=trace,
+        )
+        payloads = [
+            {column: payload.get(column) for column in insert_columns}
+            for payload in payloads
+        ]
 
     if replace_all:
         response = httpx.delete(
@@ -1250,6 +1311,8 @@ def write_products_to_supabase_rest(products, trace=None):
         "table": table_name,
         "replace_all": replace_all,
         "inserted_rows": inserted_rows,
+        "insert_columns": insert_columns,
+        "skipped_missing_columns": skipped_columns,
         "supabase_url": supabase_url(),
     }
 

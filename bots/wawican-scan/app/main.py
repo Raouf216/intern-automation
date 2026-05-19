@@ -28,10 +28,9 @@ WAWICAN_USER_AGENT = (
     os.environ.get("WAWICAN_USER_AGENT", DEFAULT_USER_AGENT).strip()
     or DEFAULT_USER_AGENT
 )
-LOGIN_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_LOGIN_READY_TIMEOUT_MS", "12000"))
-PAGE_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_PAGE_READY_TIMEOUT_MS", "30000"))
-FILTER_TIMEOUT_MS = int(os.environ.get("WAWICAN_FILTER_TIMEOUT_MS", "10000"))
-AFTER_LOGIN_WAIT_MS = int(os.environ.get("WAWICAN_AFTER_LOGIN_WAIT_MS", "3000"))
+INVENTORY_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_INVENTORY_READY_TIMEOUT_MS", "180000"))
+LOGIN_SUBMIT_TIMEOUT_MS = int(os.environ.get("WAWICAN_LOGIN_SUBMIT_TIMEOUT_MS", "90000"))
+FILTER_TIMEOUT_MS = int(os.environ.get("WAWICAN_FILTER_TIMEOUT_MS", "60000"))
 MAX_STORED_JOBS = 50
 JOB_LOCK = threading.Lock()
 JOBS = {}
@@ -108,7 +107,7 @@ def browser_context_options():
 
 
 def screenshot_wait_ms():
-    return int_env("WAWICAN_SCREENSHOT_WAIT_MS", 3_000)
+    return 0
 
 
 def safe_artifact_filename(filename):
@@ -159,19 +158,14 @@ def trace_step(trace, name, **fields):
         trace(name, **fields)
 
 
-def capture_screenshot_after_wait(page, path, trace=None):
-    wait_ms = screenshot_wait_ms()
-
-    trace_step(trace, "wait_before_screenshot", wait_ms=wait_ms)
-    if wait_ms > 0:
-        page.wait_for_timeout(wait_ms)
-
+def capture_screenshot_now(page, path, trace=None):
     trace_step(trace, "capture_screenshot", path=path)
     page.screenshot(path=path, full_page=True)
 
     return {
         "screenshot_path": path,
-        "screenshot_wait_ms": wait_ms,
+        "screenshot_wait_ms": 0,
+        "screenshot_trigger": "inventory_ready_visible",
     }
 
 
@@ -225,30 +219,53 @@ def first_visible_locator(page, selectors, timeout=5_000):
     return None
 
 
-def wait_for_inventory_page(page, timeout=PAGE_READY_TIMEOUT_MS, trace=None):
-    trace_step(trace, "wait_for_inventory_page", timeout_ms=timeout, ready_text=ready_text())
-    signals = [
-        lambda: page.get_by_text(ready_text(), exact=False).first.wait_for(timeout=timeout),
-        lambda: page.locator(".inventory-table-component").first.wait_for(state="visible", timeout=timeout),
-        lambda: page.locator("table.q-table").first.wait_for(state="visible", timeout=timeout),
-        lambda: page.locator("th", has_text=re.compile(r"Verf.gbarkeit", re.I)).first.wait_for(
-            state="visible",
-            timeout=timeout,
-        ),
-    ]
-
-    errors = []
-    for wait_signal in signals:
-        try:
-            wait_signal()
-            return True
-        except Exception as exc:
-            errors.append(f"{type(exc).__name__}: {exc}")
-
-    raise RuntimeError(
-        f"Inventory page did not become ready. Expected text: {ready_text()!r}. "
-        f"Last wait errors: {errors[-2:]}"
+def wait_for_next_render_frame(page):
+    page.evaluate(
+        """
+        () => new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        })
+        """
     )
+
+
+def wait_for_inventory_page(page, timeout=INVENTORY_READY_TIMEOUT_MS, trace=None):
+    trace_step(trace, "wait_for_inventory_page", timeout_ms=timeout, ready_text=ready_text())
+    page.wait_for_function(
+        """
+        (targetText) => {
+          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+          const target = normalize(targetText);
+          const headers = Array.from(document.querySelectorAll('th, [role="columnheader"]'));
+          const header = headers.find((element) => normalize(element.innerText).includes(target));
+
+          if (!header) {
+            return false;
+          }
+
+          const rect = header.getBoundingClientRect();
+          const style = window.getComputedStyle(header);
+          const table = header.closest('table') || document.querySelector('table.q-table');
+          const tableRect = table ? table.getBoundingClientRect() : { width: 0, height: 0 };
+
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            tableRect.width > 0 &&
+            tableRect.height > 0 &&
+            style.visibility !== 'hidden' &&
+            style.display !== 'none' &&
+            style.opacity !== '0'
+          );
+        }
+        """,
+        arg=ready_text(),
+        timeout=timeout,
+    )
+    wait_for_next_render_frame(page)
+    trace_page_state(trace, "inventory_ready_visible", page)
+
+    return True
 
 
 def login_form_is_visible(page):
@@ -368,17 +385,17 @@ def submit_login_form(page):
 
 
 def wait_after_login_submit(page, trace=None):
-    wait_ms = AFTER_LOGIN_WAIT_MS
-
-    if wait_ms > 0:
-        trace_step(trace, "wait_after_login_submit", wait_ms=wait_ms)
-        page.wait_for_timeout(wait_ms)
-
+    trace_step(trace, "wait_after_login_submit", timeout_ms=LOGIN_SUBMIT_TIMEOUT_MS)
     try:
-        page.wait_for_load_state("networkidle", timeout=10_000)
-        trace_step(trace, "login_network_idle")
+        page.wait_for_function(
+            """
+            () => !window.location.pathname.includes('/auth/login')
+            """,
+            timeout=LOGIN_SUBMIT_TIMEOUT_MS,
+        )
+        trace_step(trace, "login_submit_condition_met")
     except PlaywrightTimeoutError:
-        trace_step(trace, "login_network_idle_timeout")
+        trace_step(trace, "login_submit_condition_timeout")
 
     trace_page_state(trace, "after_login_submit_state", page)
 
@@ -421,7 +438,7 @@ def open_saved_session(browser, trace=None):
         trace_step(trace, "goto_inventory_with_saved_session", url=inventory_url())
         page.goto(inventory_url(), wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_load_state("domcontentloaded", timeout=10_000)
-        wait_for_inventory_page(page, timeout=12_000, trace=trace)
+        wait_for_inventory_page(page, trace=trace)
         trace_step(trace, "saved_session_valid")
         return context, page, True, True
     except Exception as exc:
@@ -459,7 +476,7 @@ def open_fresh_session(browser, before_login_path=None, trace=None):
             trace_step(trace, "try_inventory_without_login_form", url=inventory_url())
             page.goto(inventory_url(), wait_until="domcontentloaded", timeout=30_000)
             trace_page_state(trace, "inventory_without_login_form_loaded", page)
-            wait_for_inventory_page(page, timeout=8_000, trace=trace)
+            wait_for_inventory_page(page, trace=trace)
             save_session_state(context)
             trace_step(trace, "session_saved", path=SESSION_STATE_PATH)
             return context, page, False, True
@@ -487,21 +504,11 @@ def open_fresh_session(browser, before_login_path=None, trace=None):
 
     trace_step(trace, "goto_inventory_after_login", url=inventory_url())
     page.goto(inventory_url(), wait_until="domcontentloaded", timeout=30_000)
-    inventory_ready = True
-    try:
-        wait_for_inventory_page(page, timeout=LOGIN_READY_TIMEOUT_MS, trace=trace)
-        save_session_state(context)
-        trace_step(trace, "session_saved", path=SESSION_STATE_PATH)
-    except Exception as exc:
-        inventory_ready = False
-        trace_page_state(
-            trace,
-            "inventory_ready_after_login_failed",
-            page,
-            error=f"{type(exc).__name__}: {exc}",
-        )
+    wait_for_inventory_page(page, trace=trace)
+    save_session_state(context)
+    trace_step(trace, "session_saved", path=SESSION_STATE_PATH)
 
-    return context, page, False, inventory_ready
+    return context, page, False, True
 
 
 def open_authenticated_inventory_page(browser, before_login_path=None, trace=None):
@@ -596,10 +603,8 @@ def apply_available_filter(page, trace=None):
     wait_for_inventory_page(page, trace=trace)
     trace_step(trace, "click_availability_filter")
     click_result = click_availability_filter_button(page)
-    page.wait_for_timeout(300)
     trace_step(trace, "ensure_available_checkbox_checked")
     checkbox_result = ensure_available_checkbox_checked(page)
-    page.wait_for_timeout(1_000)
 
     return {
         "filter_button": click_result,
@@ -625,7 +630,7 @@ def login_only(base_url, trace=None):
                 before_login_path=before_login_path,
                 trace=trace,
             )
-            screenshot_result = capture_screenshot_after_wait(page, after_login_path, trace=trace)
+            screenshot_result = capture_screenshot_now(page, after_login_path, trace=trace)
 
             return {
                 "ok": True,
@@ -664,7 +669,7 @@ def login_and_filter_available(base_url, trace=None):
                 trace=trace,
             )
             filter_result = apply_available_filter(page, trace=trace)
-            screenshot_result = capture_screenshot_after_wait(page, screenshot_path, trace=trace)
+            screenshot_result = capture_screenshot_now(page, screenshot_path, trace=trace)
 
             return {
                 "ok": True,
@@ -835,6 +840,9 @@ def health():
         "session_state_path": SESSION_STATE_PATH,
         "session_state_exists": os.path.exists(SESSION_STATE_PATH),
         "screenshot_wait_ms": screenshot_wait_ms(),
+        "screenshot_mode": "capture_immediately_when_inventory_ready_visible",
+        "inventory_ready_timeout_ms": INVENTORY_READY_TIMEOUT_MS,
+        "login_submit_timeout_ms": LOGIN_SUBMIT_TIMEOUT_MS,
         "running_jobs": running_jobs,
     }
 

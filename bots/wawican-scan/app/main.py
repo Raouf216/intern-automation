@@ -31,6 +31,7 @@ WAWICAN_USER_AGENT = (
 LOGIN_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_LOGIN_READY_TIMEOUT_MS", "12000"))
 PAGE_READY_TIMEOUT_MS = int(os.environ.get("WAWICAN_PAGE_READY_TIMEOUT_MS", "30000"))
 FILTER_TIMEOUT_MS = int(os.environ.get("WAWICAN_FILTER_TIMEOUT_MS", "10000"))
+AFTER_LOGIN_WAIT_MS = int(os.environ.get("WAWICAN_AFTER_LOGIN_WAIT_MS", "3000"))
 MAX_STORED_JOBS = 50
 JOB_LOCK = threading.Lock()
 JOBS = {}
@@ -366,6 +367,22 @@ def submit_login_form(page):
         page.keyboard.press("Enter")
 
 
+def wait_after_login_submit(page, trace=None):
+    wait_ms = AFTER_LOGIN_WAIT_MS
+
+    if wait_ms > 0:
+        trace_step(trace, "wait_after_login_submit", wait_ms=wait_ms)
+        page.wait_for_timeout(wait_ms)
+
+    try:
+        page.wait_for_load_state("networkidle", timeout=10_000)
+        trace_step(trace, "login_network_idle")
+    except PlaywrightTimeoutError:
+        trace_step(trace, "login_network_idle_timeout")
+
+    trace_page_state(trace, "after_login_submit_state", page)
+
+
 def save_session_state(context):
     session_state_dir = os.path.dirname(SESSION_STATE_PATH)
 
@@ -461,6 +478,7 @@ def open_fresh_session(browser, before_login_path=None, trace=None):
 
     trace_step(trace, "submit_login_form")
     submit_login_form(page)
+    wait_after_login_submit(page, trace=trace)
 
     try:
         page.wait_for_load_state("domcontentloaded", timeout=10_000)

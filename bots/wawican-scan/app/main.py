@@ -721,7 +721,7 @@ def parse_date(value):
         return None
 
 
-def postgres_url():
+def postgres_url_value():
     value = (
         os.environ.get("SUPABASE_DB_URL")
         or os.environ.get("DATABASE_URL")
@@ -729,15 +729,25 @@ def postgres_url():
         or ""
     ).strip()
 
+    if value and value.startswith(("postgresql://", "postgres://")) and "sslmode=" not in value:
+        separator = "&" if "?" in value else "?"
+        value = f"{value}{separator}sslmode=require"
+
+    return value
+
+
+def postgres_url_configured():
+    return bool(postgres_url_value())
+
+
+def postgres_url():
+    value = postgres_url_value()
+
     if not value:
         raise RuntimeError(
             "Missing SUPABASE_DB_URL. Use the Supabase direct Postgres or pooler URL "
             "with sslmode=require."
         )
-
-    if value.startswith(("postgresql://", "postgres://")) and "sslmode=" not in value:
-        separator = "&" if "?" in value else "?"
-        value = f"{value}{separator}sslmode=require"
 
     return value
 
@@ -752,6 +762,13 @@ def products_schema():
 
 def products_table():
     return (os.environ.get("WAWICAN_PRODUCTS_TABLE") or "wawican_products").strip() or "wawican_products"
+
+
+def products_flat_view():
+    return (
+        os.environ.get("WAWICAN_PRODUCTS_FLAT_VIEW")
+        or f"{products_table()}_flat"
+    ).strip() or "wawican_products_flat"
 
 
 def rest_insert_columns():
@@ -1444,6 +1461,140 @@ def write_products_to_database(products, trace=None):
     return write_products_to_postgres(products, trace=trace)
 
 
+def products_flat_view_sql_text(schema_name=None, table_name=None, view_name=None):
+    schema_name = validate_identifier(schema_name or products_schema(), "WAWICAN_PRODUCTS_SCHEMA")
+    table_name = validate_identifier(table_name or products_table(), "WAWICAN_PRODUCTS_TABLE")
+    view_name = validate_identifier(view_name or products_flat_view(), "WAWICAN_PRODUCTS_FLAT_VIEW")
+
+    return f"""
+create or replace view {schema_name}.{view_name} as
+select
+  product_name,
+  raw_data->>'price_per_g_text' as price_per_g,
+  raw_data->>'net_purchase_price_per_g_text' as net_purchase_price_per_g,
+  raw_data->>'availability_status' as availability_status,
+  raw_data->>'actual_stock_text' as actual_stock,
+  raw_data->>'virtual_stock_text' as virtual_stock,
+  raw_data->>'price_calculation_enabled' as price_calculation_enabled,
+  raw_data->>'always_available' as always_available,
+  raw_data->>'remaining_quantity_text' as remaining_quantity,
+  raw_data->>'cultivar' as cultivar,
+  raw_data->>'genetics' as genetics,
+  raw_data->>'dominance' as dominance,
+  raw_data->>'thc' as thc,
+  raw_data->>'cbd' as cbd,
+  raw_data->>'supplier_reserved_quantity_text' as supplier_reserved_quantity,
+  raw_data->>'expiry_date_text' as expiry_date,
+  raw_data->>'hidden' as hidden,
+  raw_data->>'page_number' as page_number,
+  raw_data->>'row_index' as row_index,
+  raw_data->'raw_cells' as raw_cells,
+  scraped_at,
+  raw_data
+from {schema_name}.{table_name};
+
+revoke all on {schema_name}.{view_name} from public, anon, authenticated;
+grant select on {schema_name}.{view_name} to service_role;
+notify pgrst, 'reload schema';
+""".strip()
+
+
+def ensure_products_flat_view(trace=None):
+    enabled = bool_env("WAWICAN_PRODUCTS_FLAT_VIEW_ENABLED", True)
+    schema_name = validate_identifier(products_schema(), "WAWICAN_PRODUCTS_SCHEMA")
+    table_name = validate_identifier(products_table(), "WAWICAN_PRODUCTS_TABLE")
+    view_name = validate_identifier(products_flat_view(), "WAWICAN_PRODUCTS_FLAT_VIEW")
+
+    if not enabled:
+        return {
+            "enabled": False,
+            "created": False,
+            "schema": schema_name,
+            "view": view_name,
+        }
+
+    sql_text = products_flat_view_sql_text(schema_name, table_name, view_name)
+
+    if not postgres_url_configured():
+        return {
+            "enabled": True,
+            "created": False,
+            "reason": "SUPABASE_DB_URL is required to create database views automatically. Supabase REST cannot run create view.",
+            "schema": schema_name,
+            "view": view_name,
+            "sql": sql_text,
+        }
+
+    from psycopg import connect, sql
+
+    trace_step(
+        trace,
+        "ensure_products_flat_view",
+        schema=schema_name,
+        table=table_name,
+        view=view_name,
+    )
+
+    with connect(postgres_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql.SQL(
+                    """
+                    create or replace view {}.{} as
+                    select
+                      product_name,
+                      raw_data->>'price_per_g_text' as price_per_g,
+                      raw_data->>'net_purchase_price_per_g_text' as net_purchase_price_per_g,
+                      raw_data->>'availability_status' as availability_status,
+                      raw_data->>'actual_stock_text' as actual_stock,
+                      raw_data->>'virtual_stock_text' as virtual_stock,
+                      raw_data->>'price_calculation_enabled' as price_calculation_enabled,
+                      raw_data->>'always_available' as always_available,
+                      raw_data->>'remaining_quantity_text' as remaining_quantity,
+                      raw_data->>'cultivar' as cultivar,
+                      raw_data->>'genetics' as genetics,
+                      raw_data->>'dominance' as dominance,
+                      raw_data->>'thc' as thc,
+                      raw_data->>'cbd' as cbd,
+                      raw_data->>'supplier_reserved_quantity_text' as supplier_reserved_quantity,
+                      raw_data->>'expiry_date_text' as expiry_date,
+                      raw_data->>'hidden' as hidden,
+                      raw_data->>'page_number' as page_number,
+                      raw_data->>'row_index' as row_index,
+                      raw_data->'raw_cells' as raw_cells,
+                      scraped_at,
+                      raw_data
+                    from {}.{}
+                    """
+                ).format(
+                    sql.Identifier(schema_name),
+                    sql.Identifier(view_name),
+                    sql.Identifier(schema_name),
+                    sql.Identifier(table_name),
+                )
+            )
+            cursor.execute(
+                sql.SQL("revoke all on {}.{} from public, anon, authenticated").format(
+                    sql.Identifier(schema_name),
+                    sql.Identifier(view_name),
+                )
+            )
+            cursor.execute(
+                sql.SQL("grant select on {}.{} to service_role").format(
+                    sql.Identifier(schema_name),
+                    sql.Identifier(view_name),
+                )
+            )
+            cursor.execute("notify pgrst, 'reload schema'")
+
+    return {
+        "enabled": True,
+        "created": True,
+        "schema": schema_name,
+        "view": view_name,
+    }
+
+
 def scrape_all_available_products(base_url, trace=None):
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -1505,6 +1656,7 @@ def scrape_all_available_products(base_url, trace=None):
 
             products = normalize_products_for_db(raw_products, page.url, scraped_at)
             db_result = write_products_to_database(products, trace=trace)
+            flat_view_result = ensure_products_flat_view(trace=trace)
             screenshot_result = capture_screenshot_now(
                 page,
                 screenshot_path,
@@ -1524,6 +1676,7 @@ def scrape_all_available_products(base_url, trace=None):
                 "pages_scraped": pages,
                 "products_scraped": len(products),
                 "database": db_result,
+                "flat_view": flat_view_result,
                 **screenshot_result,
                 **screenshot_response_links(base_url, screenshot_path),
             }
@@ -1828,8 +1981,11 @@ def health():
                 or ""
             ).strip()
         ),
+        "postgres_url_configured": postgres_url_configured(),
         "products_schema": products_schema(),
         "products_table": products_table(),
+        "products_flat_view": products_flat_view(),
+        "products_flat_view_enabled": bool_env("WAWICAN_PRODUCTS_FLAT_VIEW_ENABLED", True),
         "products_rest_columns": rest_insert_columns() or "*",
         "products_replace_all": bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True),
         "supabase_timeout_seconds": SUPABASE_TIMEOUT_SECONDS,

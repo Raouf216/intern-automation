@@ -174,6 +174,40 @@ def capture_screenshot_after_wait(page, path, trace=None):
     }
 
 
+def page_text_excerpt(page, limit=500):
+    try:
+        text = page.locator("body").inner_text(timeout=2_000)
+    except Exception:
+        return ""
+
+    text = re.sub(r"\s+", " ", text or "").strip()
+    return text[:limit]
+
+
+def trace_page_state(trace, name, page, **fields):
+    try:
+        title = page.title()
+    except Exception:
+        title = ""
+
+    trace_step(
+        trace,
+        name,
+        current_url=page.url,
+        page_title=title,
+        body_excerpt=page_text_excerpt(page),
+        **fields,
+    )
+
+
+def capture_debug_screenshot(page, path, trace, step_name):
+    try:
+        page.screenshot(path=path, full_page=True)
+        trace_step(trace, step_name, path=path, current_url=page.url)
+    except Exception as exc:
+        trace_step(trace, f"{step_name}_failed", error=f"{type(exc).__name__}: {exc}")
+
+
 def first_visible_locator(page, selectors, timeout=5_000):
     for selector in selectors:
         selector = (selector or "").strip()
@@ -224,6 +258,9 @@ def login_form_is_visible(page):
         page,
         [
             username_selector,
+            '[data-testid="login-email-input"]',
+            'input[aria-label*="E-Mail" i]',
+            'input[aria-label*="Mail" i]',
             'input[placeholder*="Email" i]',
             'input[placeholder*="E-Mail" i]',
             'input[placeholder*="Benutzer" i]',
@@ -238,6 +275,8 @@ def login_form_is_visible(page):
         page,
         [
             password_selector,
+            '[data-testid="login-password-input"]',
+            'input[aria-label*="Passwort" i]',
             'input[placeholder*="Password" i]',
             'input[placeholder*="Passwort" i]',
             'input[type="password"]',
@@ -260,6 +299,9 @@ def fill_login_form(page):
         page,
         [
             username_selector,
+            '[data-testid="login-email-input"]',
+            'input[aria-label*="E-Mail" i]',
+            'input[aria-label*="Mail" i]',
             'input[placeholder*="Email" i]',
             'input[placeholder*="E-Mail" i]',
             'input[placeholder*="Benutzer" i]',
@@ -274,6 +316,8 @@ def fill_login_form(page):
         page,
         [
             password_selector,
+            '[data-testid="login-password-input"]',
+            'input[aria-label*="Passwort" i]',
             'input[placeholder*="Password" i]',
             'input[placeholder*="Passwort" i]',
             'input[type="password"]',
@@ -380,21 +424,33 @@ def open_fresh_session(browser, before_login_path=None, trace=None):
     trace_step(trace, "goto_login_url", url=login_url())
     page.goto(login_url(), wait_until="domcontentloaded", timeout=30_000)
     page.wait_for_load_state("domcontentloaded", timeout=10_000)
+    trace_page_state(trace, "login_page_loaded", page)
 
     login_form_visible = login_form_is_visible(page)
     trace_step(trace, "login_form_visibility_checked", visible=login_form_visible)
 
     if not login_form_visible:
+        if before_login_path:
+            capture_debug_screenshot(
+                page,
+                before_login_path,
+                trace,
+                "login_form_not_detected_screenshot",
+            )
+
         try:
             trace_step(trace, "try_inventory_without_login_form", url=inventory_url())
             page.goto(inventory_url(), wait_until="domcontentloaded", timeout=30_000)
+            trace_page_state(trace, "inventory_without_login_form_loaded", page)
             wait_for_inventory_page(page, timeout=8_000, trace=trace)
             save_session_state(context)
             trace_step(trace, "session_saved", path=SESSION_STATE_PATH)
             return context, page, False
-        except Exception:
+        except Exception as exc:
+            trace_step(trace, "inventory_without_login_form_failed", error=f"{type(exc).__name__}: {exc}")
             trace_step(trace, "return_to_login_url", url=login_url())
             page.goto(login_url(), wait_until="domcontentloaded", timeout=30_000)
+            trace_page_state(trace, "login_page_reloaded", page)
 
     trace_step(trace, "fill_login_form")
     fill_login_form(page)

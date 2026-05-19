@@ -234,29 +234,60 @@ def wait_for_inventory_page(page, timeout=INVENTORY_READY_TIMEOUT_MS, trace=None
     page.wait_for_function(
         """
         (targetText) => {
-          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-          const target = normalize(targetText);
-          const headers = Array.from(document.querySelectorAll('th, [role="columnheader"]'));
-          const header = headers.find((element) => normalize(element.innerText).includes(target));
+          const fold = (value) => (value || '')
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+          const target = fold(targetText);
+          const selectors = [
+            'th',
+            '[role="columnheader"]',
+            '.q-table thead *',
+            '.inventory-table-component thead *',
+            '.inventory-table-component [class*="table"] *'
+          ];
+          const candidates = Array.from(document.querySelectorAll(selectors.join(',')));
+          const match = candidates.find((element) => {
+            const text = fold(element.textContent);
+            if (!text.includes(target)) {
+              return false;
+            }
 
-          if (!header) {
+            const inInventory =
+              element.closest('.inventory-table-component') ||
+              element.closest('table.q-table') ||
+              element.closest('.q-table') ||
+              element.closest('thead');
+
+            if (!inInventory) {
+              return false;
+            }
+
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          });
+
+          if (!match) {
             return false;
           }
 
-          const rect = header.getBoundingClientRect();
-          const style = window.getComputedStyle(header);
-          const table = header.closest('table') || document.querySelector('table.q-table');
+          const table =
+            match.closest('table') ||
+            document.querySelector('table.q-table') ||
+            document.querySelector('.inventory-table-component');
           const tableRect = table ? table.getBoundingClientRect() : { width: 0, height: 0 };
 
-          return (
-            rect.width > 0 &&
-            rect.height > 0 &&
-            tableRect.width > 0 &&
-            tableRect.height > 0 &&
-            style.visibility !== 'hidden' &&
-            style.display !== 'none' &&
-            style.opacity !== '0'
-          );
+          return tableRect.width > 0 && tableRect.height > 0;
         }
         """,
         arg=ready_text(),

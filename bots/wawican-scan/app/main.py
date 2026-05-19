@@ -754,6 +754,18 @@ def products_table():
     return (os.environ.get("WAWICAN_PRODUCTS_TABLE") or "wawican_products").strip() or "wawican_products"
 
 
+def rest_insert_columns():
+    value = (os.environ.get("WAWICAN_PRODUCTS_REST_COLUMNS") or "").strip()
+
+    if not value:
+        return ["product_name", "raw_data", "scraped_at"]
+
+    if value == "*":
+        return None
+
+    return [column.strip() for column in value.split(",") if column.strip()]
+
+
 def supabase_url():
     return (os.environ.get("SUPABASE_URL") or "").strip().rstrip("/")
 
@@ -804,6 +816,11 @@ def missing_column_from_postgrest_response(response):
 
     message = str(payload.get("message") or response.text or "")
     match = re.search(r"Could not find the '([^']+)' column", message)
+
+    if match:
+        return match.group(1)
+
+    match = re.search(r"column\s+\w+\.([A-Za-z_][A-Za-z0-9_]*)\s+does not exist", message)
 
     if match:
         return match.group(1)
@@ -1259,6 +1276,13 @@ def write_products_to_supabase_rest(products, trace=None):
     skipped_columns = []
 
     if payloads:
+        configured_columns = rest_insert_columns()
+        if configured_columns is not None:
+            payloads = [
+                {column: payload.get(column) for column in configured_columns}
+                for payload in payloads
+            ]
+
         insert_columns, skipped_columns = validate_rest_payload_columns(
             list(payloads[0].keys()),
             trace=trace,
@@ -1806,6 +1830,7 @@ def health():
         ),
         "products_schema": products_schema(),
         "products_table": products_table(),
+        "products_rest_columns": rest_insert_columns() or "*",
         "products_replace_all": bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True),
         "supabase_timeout_seconds": SUPABASE_TIMEOUT_SECONDS,
         "running_jobs": running_jobs,

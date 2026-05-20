@@ -587,6 +587,36 @@ def parse_date(value):
         return None
 
 
+def infer_product_name(raw_product):
+    direct_name = normalize_space(raw_product.get("product_name"))
+    if direct_name:
+        return direct_name
+
+    for raw_cell in raw_product.get("raw_cells") or []:
+        field = normalize_space(raw_cell.get("field")).casefold()
+        header = normalize_space(raw_cell.get("header")).casefold()
+        text = normalize_space(raw_cell.get("text"))
+
+        if text and (field == "product_name" or header == "name"):
+            return text
+
+    row_text = normalize_space(raw_product.get("row_text"))
+    if not row_text:
+        return ""
+
+    quantity_pattern = r"\s+\d+(?:[.,]\d+)?\s*g\b"
+    price_pattern = r"\s+\d+(?:[.,]\d+)?\s*€\s*/\s*g\b"
+    split_pattern = rf"({quantity_pattern}|{price_pattern})"
+    match = re.search(split_pattern, row_text, flags=re.IGNORECASE)
+
+    if not match:
+        return ""
+
+    candidate = normalize_space(row_text[: match.start()])
+    candidate = re.sub(r"^\s*(?:true|false)\s+", "", candidate, flags=re.IGNORECASE).strip()
+    return candidate
+
+
 def json_ready(value):
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
@@ -928,14 +958,12 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
             'Verkauf',
             'Verfallsdatum',
           ];
-          const rectIsVisible = (rect, scroller = null) => {
+          const rectIsHorizontallyVisible = (rect, scroller = null) => {
             if (
               !rect ||
               rect.width <= 0 ||
               rect.height <= 0 ||
-              rect.bottom <= 0 ||
               rect.right <= 0 ||
-              rect.top >= window.innerHeight ||
               rect.left >= window.innerWidth
             ) {
               return false;
@@ -964,12 +992,12 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
                   center: rect.left + (rect.width / 2),
                 };
               })
-              .filter((header) => rectIsVisible({ ...header, height: 1, top: 1, bottom: 2 }, scroller))
+              .filter((header) => rectIsHorizontallyVisible({ ...header, height: 1 }, scroller))
           );
           const bestHeaderForCell = (cell, headers, scroller) => {
             const rect = cell.getBoundingClientRect();
 
-            if (!rectIsVisible(rect, scroller) || headers.length === 0) {
+            if (!rectIsHorizontallyVisible(rect, scroller) || headers.length === 0) {
               return null;
             }
 
@@ -1016,6 +1044,7 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
             const rows = currentTableInfo.rows.map((row, rowIndex) => {
               const record = {
                 row_index: rowIndex + 1,
+                row_text: normalize(row.innerText),
                 raw_cells: [],
               };
 
@@ -1256,6 +1285,7 @@ def click_next_inventory_page(page, before_state, trace=None):
 
 
 def normalize_scraped_product(raw_product, page_number, source_url, scraped_at):
+    product_name = infer_product_name(raw_product)
     available_text = normalize_space(raw_product.get("available_text"))
     available_grams = parse_decimal(available_text)
     stock_text = normalize_space(raw_product.get("stock_text"))
@@ -1272,7 +1302,7 @@ def normalize_scraped_product(raw_product, page_number, source_url, scraped_at):
     }
 
     return {
-        "product_name": normalize_space(raw_product.get("product_name")),
+        "product_name": product_name,
         "available_text": available_text,
         "available_grams": available_grams,
         "available_quantity_text": available_text,
@@ -1989,15 +2019,43 @@ def scrape_inventory_products(base_url, trace=None):
             else:
                 raise RuntimeError(f"Stopped after CANNAFLOW_SCRAPE_MAX_PAGES={SCRAPE_MAX_PAGES}")
 
+            missing_product_name_rows = [
+                {
+                    "page_number": raw_row.get("page_number"),
+                    "row_index": raw_row.get("row_index"),
+                    "row_text": normalize_space(raw_row.get("row_text"))[:300],
+                    "raw_cells": raw_row.get("raw_cells", [])[:6],
+                }
+                for raw_row in raw_rows
+                if not infer_product_name(raw_row)
+            ]
             normalized_products = [
                 normalize_scraped_product(raw_row, raw_row.get("page_number"), raw_row.get("source_url") or page.url, scraped_at)
                 for raw_row in raw_rows
-                if normalize_space(raw_row.get("product_name"))
+                if infer_product_name(raw_row)
             ]
             products, dedupe = dedupe_products_by_name(normalized_products)
 
             if raw_rows and not products:
                 raise RuntimeError("Scrape found table rows, but no product names were extracted.")
+
+            expected_total_rows = max(
+                [page_info.get("total_rows") or 0 for page_info in pages_scraped] or [0]
+            )
+            if missing_product_name_rows or (expected_total_rows and len(normalized_products) < expected_total_rows):
+                debug_path = os.path.join(ARTIFACTS_DIR, f"cannaflow-incomplete-scrape-{timestamp}.png")
+                page.screenshot(path=debug_path, full_page=True)
+                raise BotStepError(
+                    "Cannaflow scrape incomplete; refusing to replace Supabase rows.",
+                    raw_rows_seen=len(raw_rows),
+                    products_with_name=len(normalized_products),
+                    expected_total_rows=expected_total_rows,
+                    missing_product_name_rows=len(missing_product_name_rows),
+                    missing_product_name_samples=missing_product_name_rows[:5],
+                    debug_screenshot_path=debug_path,
+                    screenshot_url=f"{base_url}/screenshots/{os.path.basename(debug_path)}",
+                    latest_screenshot_url=f"{base_url}/screenshots/latest",
+                )
 
             previous_products = fetch_previous_products_snapshot(trace=trace)
             database_result = write_products_to_supabase_rest(products, trace=trace)

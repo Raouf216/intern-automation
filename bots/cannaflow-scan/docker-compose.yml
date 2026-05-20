@@ -1,0 +1,40 @@
+services:
+  cannaflow-scan:
+    container_name: cannaflow-scan
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${CANNAFLOW_SCAN_PORT:-8025}:8000"
+    environment:
+      - PORT=8000
+      - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Europe/Berlin}
+      - CANNAFLOW_LOGIN_URL=${CANNAFLOW_LOGIN_URL:-https://erp.cannaflow.de/auth/login}
+      - CANNAFLOW_INVENTORY_URL=${CANNAFLOW_INVENTORY_URL:-https://erp.cannaflow.de/inventory}
+      - CANNAFLOW_USERNAME=${CANNAFLOW_USERNAME:-}
+      - CANNAFLOW_PASSWORD=${CANNAFLOW_PASSWORD:-}
+      - CANNAFLOW_HEADLESS=${CANNAFLOW_HEADLESS:-true}
+      - CANNAFLOW_READY_TEXT=${CANNAFLOW_READY_TEXT:-Produkte}
+      - CANNAFLOW_AFTER_LOGIN_WAIT_MS=${CANNAFLOW_AFTER_LOGIN_WAIT_MS:-5000}
+      - CANNAFLOW_READY_TIMEOUT_MS=${CANNAFLOW_READY_TIMEOUT_MS:-60000}
+      - CANNAFLOW_USER_AGENT=${CANNAFLOW_USER_AGENT:-Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36}
+      - CANNAFLOW_SCAN_CORS_ORIGINS=${CANNAFLOW_SCAN_CORS_ORIGINS:-http://localhost:8040,http://127.0.0.1:8040,http://178.104.144.30:8040}
+      - ARTIFACTS_DIR=/app/artifacts
+      - CANNAFLOW_SESSION_STATE_PATH=${CANNAFLOW_SESSION_STATE_PATH:-/app/artifacts/cannaflow-storage-state.json}
+    volumes:
+      - "${CANNAFLOW_SCAN_ARTIFACTS_DIR:-../../web-scraper-artifacts/cannaflow-scan}:/app/artifacts"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

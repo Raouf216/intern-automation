@@ -845,7 +845,7 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
     wait_for_inventory_rows_ready(page, trace=trace)
     result = page.evaluate(
         """
-        () => {
+        async () => {
           const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
           const fold = (value) => normalize(value)
             .normalize('NFD')
@@ -887,76 +887,217 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
             if (key.includes('verfallsdatum') || key.includes('verfall')) return 'expiry_date_text';
             return slug(header) || `column_${index + 1}`;
           };
-
-          const tableInfo = Array.from(document.querySelectorAll('table'))
+          const tableInfo = () => Array.from(document.querySelectorAll('table'))
             .map((candidate) => ({
               element: candidate,
               rows: Array.from(candidate.querySelectorAll('tbody tr'))
                 .filter((row) => row.querySelectorAll('td').length > 0),
             }))
             .sort((left, right) => right.rows.length - left.rows.length)[0];
+          const waitForPaint = () => new Promise((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(resolve));
+          });
+          const isHorizontallyScrollable = (element) => (
+            element &&
+            element.scrollWidth > element.clientWidth + 20 &&
+            window.getComputedStyle(element).overflowX !== 'hidden'
+          );
+          const scrollerForTable = (table) => {
+            let element = table ? table.parentElement : null;
 
-          if (!tableInfo || !tableInfo.element || tableInfo.rows.length === 0) {
+            while (element && element !== document.body) {
+              if (isHorizontallyScrollable(element)) {
+                return element;
+              }
+
+              element = element.parentElement;
+            }
+
+            return Array.from(document.querySelectorAll('div'))
+              .filter(isHorizontallyScrollable)
+              .sort((left, right) => (right.scrollWidth - right.clientWidth) - (left.scrollWidth - left.clientWidth))[0] || null;
+          };
+          const visibleInsideScroller = (element, scroller) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+
+            if (rect.width <= 0 || rect.height <= 0) {
+              return false;
+            }
+
+            if (!scroller) {
+              return true;
+            }
+
+            const scrollerRect = scroller.getBoundingClientRect();
+            return rect.right > scrollerRect.left + 1 && rect.left < scrollerRect.right - 1;
+          };
+          const fallbackHeaders = [
+            'Name',
+            'Verfügbar',
+            'Bestand',
+            'VK-Preis (brutto)',
+            'Art',
+            'Kultivar',
+            'Hersteller',
+            'Verkauf',
+            'Verfallsdatum',
+          ];
+          const collectSnapshot = (scroller) => {
+            const currentTableInfo = tableInfo();
+
+            if (!currentTableInfo || !currentTableInfo.element || currentTableInfo.rows.length === 0) {
+              return { ok: false, error: 'inventory_table_not_found' };
+            }
+
+            const table = currentTableInfo.element;
+            const firstRowCellCount = currentTableInfo.rows[0]
+              ? currentTableInfo.rows[0].querySelectorAll('td').length
+              : 0;
+            const headerElements = Array.from(table.querySelectorAll('thead th'));
+            const visibleHeaderElements = headerElements.filter((header) => visibleInsideScroller(header, scroller));
+            const usableHeaderElements = (
+              visibleHeaderElements.length > 0 &&
+              visibleHeaderElements.length <= firstRowCellCount
+            )
+              ? visibleHeaderElements
+              : headerElements;
+            let headers = usableHeaderElements.map((header, index) => ({
+              label: cleanText(header) || `column_${index + 1}`,
+              field: mapHeader(cleanText(header), index),
+            }));
+
+            if (headers.length === 0) {
+              headers = fallbackHeaders.map((label, index) => ({ label, field: mapHeader(label, index) }));
+            }
+
+            const rows = currentTableInfo.rows.map((row, rowIndex) => {
+              const record = {
+                row_index: rowIndex + 1,
+                raw_cells: [],
+              };
+
+              Array.from(row.querySelectorAll('td')).forEach((cell, cellIndex) => {
+                const header = headers[cellIndex] || {
+                  label: `column_${cellIndex + 1}`,
+                  field: `column_${cellIndex + 1}`,
+                };
+                const text = cleanText(cell);
+                const toggle = switchValue(cell);
+
+                record.raw_cells.push({
+                  index: cellIndex + 1,
+                  header: header.label,
+                  field: header.field,
+                  text,
+                  switch_value: toggle,
+                });
+
+                if (header.field === 'sale_enabled') {
+                  record.sale_enabled = toggle;
+                  return;
+                }
+
+                record[header.field] = text;
+              });
+
+              return record;
+            });
+
+            return {
+              ok: true,
+              headers,
+              row_count: rows.length,
+              rows,
+            };
+          };
+          const initialTableInfo = tableInfo();
+
+          if (!initialTableInfo || !initialTableInfo.element || initialTableInfo.rows.length === 0) {
             return { ok: false, error: 'inventory_table_not_found' };
           }
 
-          const table = tableInfo.element;
-          let headers = Array.from(table.querySelectorAll('thead th')).map((header, index) => ({
-            label: cleanText(header) || `column_${index + 1}`,
-            field: mapHeader(cleanText(header), index),
-          }));
+          const scroller = scrollerForTable(initialTableInfo.element);
+          const maxScroll = scroller ? Math.max(0, scroller.scrollWidth - scroller.clientWidth) : 0;
+          const positions = maxScroll > 0
+            ? Array.from(new Set([0, 0.25, 0.5, 0.75, 1].map((factor) => Math.round(maxScroll * factor))))
+            : [0];
+          const snapshots = [];
 
-          if (headers.length === 0) {
-            headers = [
-              'Name',
-              'Verfügbar',
-              'Bestand',
-              'VK-Preis (brutto)',
-              'Art',
-              'Kultivar',
-              'Hersteller',
-              'Verkauf',
-              'Verfallsdatum',
-            ].map((label, index) => ({ label, field: mapHeader(label, index) }));
+          for (const position of positions) {
+            if (scroller) {
+              scroller.scrollLeft = position;
+              await waitForPaint();
+            }
+
+            const snapshot = collectSnapshot(scroller);
+
+            if (snapshot.ok) {
+              snapshots.push({ position, ...snapshot });
+            }
           }
 
-          const rows = tableInfo.rows.map((row, rowIndex) => {
-            const record = {
-              row_index: rowIndex + 1,
-              raw_cells: [],
-            };
+          if (scroller) {
+            scroller.scrollLeft = 0;
+            await waitForPaint();
+          }
 
-            Array.from(row.querySelectorAll('td')).forEach((cell, cellIndex) => {
-              const header = headers[cellIndex] || {
-                label: `column_${cellIndex + 1}`,
-                field: `column_${cellIndex + 1}`,
-              };
-              const text = cleanText(cell);
-              const toggle = switchValue(cell);
+          if (snapshots.length === 0) {
+            return { ok: false, error: 'inventory_table_not_found' };
+          }
 
-              record.raw_cells.push({
-                index: cellIndex + 1,
-                header: header.label,
-                field: header.field,
-                text,
-                switch_value: toggle,
-              });
+          const headerMap = new Map();
+          const rowsByIndex = new Map();
 
-              if (header.field === 'sale_enabled') {
-                record.sale_enabled = toggle;
-                return;
+          snapshots.forEach((snapshot) => {
+            snapshot.headers.forEach((header) => {
+              if (!headerMap.has(header.field)) {
+                headerMap.set(header.field, header);
               }
-
-              record[header.field] = text;
             });
 
-            return record;
+            snapshot.rows.forEach((row) => {
+              const key = row.row_index;
+              const existing = rowsByIndex.get(key) || {
+                row_index: row.row_index,
+                raw_cells: [],
+              };
+
+              Object.entries(row).forEach(([field, value]) => {
+                if (field === 'raw_cells') {
+                  value.forEach((rawCell) => {
+                    const rawKey = `${rawCell.field}|${rawCell.text}|${rawCell.switch_value}`;
+                    const alreadySeen = existing.raw_cells.some((cell) => (
+                      `${cell.field}|${cell.text}|${cell.switch_value}` === rawKey
+                    ));
+
+                    if (!alreadySeen) {
+                      existing.raw_cells.push(rawCell);
+                    }
+                  });
+                  return;
+                }
+
+                if (value !== null && value !== undefined && value !== '') {
+                  existing[field] = value;
+                } else if (!(field in existing)) {
+                  existing[field] = value;
+                }
+              });
+
+              rowsByIndex.set(key, existing);
+            });
           });
+
+          const headers = Array.from(headerMap.values());
+          const rows = Array.from(rowsByIndex.values()).sort((left, right) => left.row_index - right.row_index);
 
           return {
             ok: true,
             headers,
             row_count: rows.length,
+            horizontal_scroll_max: maxScroll,
+            horizontal_positions_checked: positions,
             rows,
           };
         }
@@ -971,6 +1112,8 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
         "scraped_inventory_page",
         page_number=page_number,
         row_count=result.get("row_count", 0),
+        horizontal_scroll_max=result.get("horizontal_scroll_max", 0),
+        horizontal_positions_checked=result.get("horizontal_positions_checked", []),
     )
     return result
 
@@ -1094,6 +1237,12 @@ def normalize_scraped_product(raw_product, page_number, source_url, scraped_at):
         "sale_enabled": raw_product.get("sale_enabled"),
         "expiry_date_text": expiry_date_text,
         "expiry_date": expiry_date,
+        "expiration_date_text": expiry_date_text,
+        "expiration_date": expiry_date,
+        "expires_at_text": expiry_date_text,
+        "expires_at": expiry_date,
+        "expires_on_text": expiry_date_text,
+        "expires_on": expiry_date,
         "page_number": page_number,
         "row_index": raw_product.get("row_index"),
         "source_url": source_url,
@@ -1293,6 +1442,12 @@ def fetch_previous_products_snapshot(trace=None):
         "sale_enabled",
         "expiry_date_text",
         "expiry_date",
+        "expiration_date_text",
+        "expiration_date",
+        "expires_at_text",
+        "expires_at",
+        "expires_on_text",
+        "expires_on",
         "scraped_at",
         "raw_data",
     ]
@@ -1361,6 +1516,23 @@ def fetch_previous_products_snapshot(trace=None):
             row.get("gross_price_per_g"),
             json_ready(parse_decimal(sale_price_text)),
         )
+        expiry_date_text = first_present(
+            row.get("expiry_date_text"),
+            row.get("expiration_date_text"),
+            row.get("expires_at_text"),
+            row.get("expires_on_text"),
+            raw_data.get("expiry_date_text"),
+            raw_data.get("expiration_date_text"),
+            raw_data.get("expires_at_text"),
+            raw_data.get("expires_on_text"),
+        )
+        expiry_date = first_present(
+            row.get("expiry_date"),
+            row.get("expiration_date"),
+            row.get("expires_at"),
+            row.get("expires_on"),
+            json_ready(parse_date(expiry_date_text)),
+        )
 
         products.append(
             {
@@ -1375,8 +1547,8 @@ def fetch_previous_products_snapshot(trace=None):
                 "cultivar": row.get("cultivar") or raw_data.get("cultivar"),
                 "manufacturer": row.get("manufacturer") or raw_data.get("manufacturer"),
                 "sale_enabled": row.get("sale_enabled"),
-                "expiry_date_text": row.get("expiry_date_text") or raw_data.get("expiry_date_text"),
-                "expiry_date": row.get("expiry_date"),
+                "expiry_date_text": expiry_date_text,
+                "expiry_date": expiry_date,
                 "scraped_at": row.get("scraped_at"),
             }
         )

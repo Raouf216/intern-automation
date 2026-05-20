@@ -1223,12 +1223,18 @@ def fetch_previous_products_snapshot(trace=None):
         products.append(
             {
                 "product_name": row.get("product_name") or raw_data.get("product_name"),
-                "available_grams": row.get("available_grams"),
+                "available_grams": row.get("available_grams")
+                if row.get("available_grams") is not None
+                else json_ready(parse_decimal(raw_data.get("available_text"))),
                 "available_text": row.get("available_text") or raw_data.get("available_text"),
-                "stock_grams": row.get("stock_grams"),
+                "stock_grams": row.get("stock_grams")
+                if row.get("stock_grams") is not None
+                else json_ready(parse_decimal(raw_data.get("stock_text"))),
                 "stock_text": row.get("stock_text") or raw_data.get("stock_text"),
                 "sale_price_text": row.get("sale_price_text") or raw_data.get("sale_price_text"),
-                "sale_price_per_g": row.get("sale_price_per_g"),
+                "sale_price_per_g": row.get("sale_price_per_g")
+                if row.get("sale_price_per_g") is not None
+                else json_ready(parse_decimal(raw_data.get("sale_price_text"))),
                 "product_type": row.get("product_type") or raw_data.get("product_type"),
                 "cultivar": row.get("cultivar") or raw_data.get("cultivar"),
                 "manufacturer": row.get("manufacturer") or raw_data.get("manufacturer"),

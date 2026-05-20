@@ -3,10 +3,10 @@ import os
 import re
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,7 +30,16 @@ DEFAULT_USER_AGENT = (
 SCRAPE_PAGE_READY_TIMEOUT_MS = int(os.environ.get("CANNAFLOW_SCRAPE_PAGE_READY_TIMEOUT_MS", "30000"))
 SCRAPE_MAX_PAGES = int(os.environ.get("CANNAFLOW_SCRAPE_MAX_PAGES", "50"))
 SUPABASE_TIMEOUT_SECONDS = int(os.environ.get("CANNAFLOW_SUPABASE_TIMEOUT_SECONDS", "60"))
-GERMAN_TIMEZONE = ZoneInfo(os.environ.get("TZ", "Europe/Berlin") or "Europe/Berlin")
+
+
+def load_german_timezone():
+    try:
+        return ZoneInfo(os.environ.get("TZ", "Europe/Berlin") or "Europe/Berlin")
+    except ZoneInfoNotFoundError:
+        return timezone(timedelta(hours=1), "Europe/Berlin")
+
+
+GERMAN_TIMEZONE = load_german_timezone()
 
 app = FastAPI(title=SERVICE_NAME)
 

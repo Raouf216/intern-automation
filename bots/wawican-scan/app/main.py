@@ -6,10 +6,10 @@ import threading
 import time
 import traceback
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,7 +42,16 @@ SUPABASE_TIMEOUT_SECONDS = int(os.environ.get("WAWICAN_SUPABASE_TIMEOUT_SECONDS"
 MAX_STORED_JOBS = 50
 JOB_LOCK = threading.Lock()
 JOBS = {}
-GERMAN_TIMEZONE = ZoneInfo(os.environ.get("TZ", "Europe/Berlin") or "Europe/Berlin")
+
+
+def load_german_timezone():
+    try:
+        return ZoneInfo(os.environ.get("TZ", "Europe/Berlin") or "Europe/Berlin")
+    except ZoneInfoNotFoundError:
+        return timezone(timedelta(hours=1), "Europe/Berlin")
+
+
+GERMAN_TIMEZONE = load_german_timezone()
 
 
 app = FastAPI(title=SERVICE_NAME)

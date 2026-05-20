@@ -2195,13 +2195,24 @@ def german_excel_datetime_range(previous_value, current_value):
     return ""
 
 
+def german_filename_timestamp(value):
+    date_value = parse_datetime_for_excel(value)
+    if not date_value:
+        date_value = datetime.now(timezone.utc).astimezone(GERMAN_TIMEZONE)
+
+    return date_value.strftime("%Y-%m-%d_%H-%M-%S")
+
+
 def create_stock_change_excel_report(changes, current_products, previous_count, scraped_at, timestamp, trace=None):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
-    report_path = os.path.join(ARTIFACTS_DIR, f"wawican-stock-changes-{timestamp}.xlsx")
+    report_path = os.path.join(
+        ARTIFACTS_DIR,
+        f"wawican-mengenaenderungen_{german_filename_timestamp(scraped_at)}.xlsx",
+    )
     workbook = Workbook()
     summary_sheet = workbook.active
     summary_sheet.title = "Zusammenfassung"

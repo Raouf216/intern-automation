@@ -348,7 +348,7 @@ function downloadProductChangesExcel(payload: SyncResponse, generatedAt = new Da
 
   if (!rows.length) return null;
 
-  const filename = `doktorabc-mengen-aenderungen_${germanyFilenameTimestamp(generatedAt)}.xlsx`;
+  const filename = `doktorabc-mengenaenderungen_${germanyFilenameTimestamp(generatedAt)}.xlsx`;
   const worksheet = xlsxUtils.aoa_to_sheet([
     ["DoktorABC Mengenänderungen"],
     ["Erstellt am", germanyReadableTimestamp(generatedAt)],
@@ -1108,6 +1108,17 @@ export function SyncConsole() {
     status === "error" || endOfDayStatus === "error" || wawicanStatus === "error" || cannaflowStatus === "error";
   const anyBotSuccess =
     status === "success" || endOfDayStatus === "success" || wawicanStatus === "success" || cannaflowStatus === "success";
+  const hasStockReportStack = Boolean(
+    productExport ||
+      isProductBusy ||
+      status !== "idle" ||
+      wawicanResult ||
+      isWawicanRunning ||
+      wawicanStatus !== "idle" ||
+      cannaflowResult ||
+      isCannaflowRunning ||
+      cannaflowStatus !== "idle"
+  );
 
   if (isSessionChecking) {
     return (
@@ -1210,92 +1221,100 @@ export function SyncConsole() {
         </div>
       </div>
 
-      {productExport ? (
-        <div className="product-export-note">
-          <FileSpreadsheet size={18} />
-          <div>
-            <span>XLSX für Mengenänderungen erstellt</span>
-            <strong>{productExport.filename}</strong>
-            <small>
-              {productExport.rowCount} Mengenänderungen · {exportDisplayTime(productExport.generatedAt)}
-            </small>
+      {hasStockReportStack ? (
+        <div className="stock-report-stack" aria-label="Mengenänderungen Reports">
+        {productExport || isProductBusy || status !== "idle" ? (
+          <div className={`product-export-note product-export-note-${isProductBusy ? "running" : status}`}>
+            {isProductBusy ? <Loader2 size={18} className="spin" /> : status === "error" ? <AlertTriangle size={18} /> : <FileSpreadsheet size={18} />}
+            <div>
+              <span>DoktorABC Mengenänderungen</span>
+              <strong>{productExport?.filename || "Noch kein Excel-Report"}</strong>
+              <small>
+                {productExport
+                  ? `${productExport.rowCount} Mengenänderungen · ${exportDisplayTime(productExport.generatedAt)}`
+                  : message}
+              </small>
+            </div>
+            {productExport ? (
+              <button
+                type="button"
+                onClick={reExportProductChanges}
+                disabled={isProductExporting}
+                aria-label="DoktorABC Mengenänderungen erneut als XLSX exportieren"
+              >
+                {isProductExporting ? <Loader2 size={16} className="spin" /> : <FileSpreadsheet size={16} />}
+              </button>
+            ) : null}
           </div>
-          <button
-            type="button"
-            onClick={reExportProductChanges}
-            disabled={isProductExporting}
-            aria-label="Mengenänderungen erneut als XLSX exportieren"
-          >
-            {isProductExporting ? <Loader2 size={16} className="spin" /> : <FileSpreadsheet size={16} />}
-          </button>
-        </div>
-      ) : null}
+        ) : null}
 
-      {wawicanResult || isWawicanRunning || wawicanStatus !== "idle" ? (
-        <div className={`wawican-report-note wawican-report-note-${isWawicanRunning ? "running" : wawicanStatus}`}>
-          {isWawicanRunning ? <Loader2 size={18} className="spin" /> : wawicanStatus === "error" ? <AlertTriangle size={18} /> : <FileSpreadsheet size={18} />}
-          <div>
-            <span>Wawican Mengenänderungen</span>
-            <strong>{wawicanResult?.stock_report?.filename || "Noch kein Excel-Report"}</strong>
-            <small>
-              {wawicanResult?.stock_report
-                ? `${numberValue(wawicanResult.stock_report.changed_rows)} Änderung(en) · ${numberValue(wawicanResult.stock_report.decreased_rows)} gesunken · ${numberValue(wawicanResult.stock_report.current_rows)} Produkte`
-                : wawicanMessage}
-            </small>
+        {wawicanResult || isWawicanRunning || wawicanStatus !== "idle" ? (
+          <div className={`wawican-report-note wawican-report-note-${isWawicanRunning ? "running" : wawicanStatus}`}>
+            {isWawicanRunning ? <Loader2 size={18} className="spin" /> : wawicanStatus === "error" ? <AlertTriangle size={18} /> : <FileSpreadsheet size={18} />}
+            <div>
+              <span>Wawican Mengenänderungen</span>
+              <strong>{wawicanResult?.stock_report?.filename || "Noch kein Excel-Report"}</strong>
+              <small>
+                {wawicanResult?.stock_report
+                  ? `${numberValue(wawicanResult.stock_report.changed_rows)} Änderung(en) · ${numberValue(wawicanResult.stock_report.decreased_rows)} gesunken · ${numberValue(wawicanResult.stock_report.current_rows)} Produkte`
+                  : wawicanMessage}
+              </small>
+            </div>
+            {wawicanResult?.stock_report?.report_url ? (
+              <button
+                type="button"
+                onClick={() => {
+                  const report = wawicanResult.stock_report;
+                  const reportDownloadUrl = browserSafeReportUrl(report, wawicanStockEndpoint.trim());
+                  if (!reportDownloadUrl) return;
+
+                  void downloadRemoteReport(reportDownloadUrl, report?.filename).catch((error) => {
+                    const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
+                    setWawicanStatus("error");
+                    setWawicanMessage(`Excel-Download fehlgeschlagen: ${errorMessage}`);
+                  });
+                }}
+                aria-label="Wawican Mengenänderungen als XLSX herunterladen"
+              >
+                <FileSpreadsheet size={16} />
+              </button>
+            ) : null}
           </div>
-          {wawicanResult?.stock_report?.report_url ? (
-            <button
-              type="button"
-              onClick={() => {
-                const report = wawicanResult.stock_report;
-                const reportDownloadUrl = browserSafeReportUrl(report, wawicanStockEndpoint.trim());
-                if (!reportDownloadUrl) return;
+        ) : null}
 
-                void downloadRemoteReport(reportDownloadUrl, report?.filename).catch((error) => {
-                  const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
-                  setWawicanStatus("error");
-                  setWawicanMessage(`Excel-Download fehlgeschlagen: ${errorMessage}`);
-                });
-              }}
-              aria-label="Wawican Mengenänderungen als XLSX herunterladen"
-            >
-              <FileSpreadsheet size={16} />
-            </button>
-          ) : null}
-        </div>
-      ) : null}
+        {cannaflowResult || isCannaflowRunning || cannaflowStatus !== "idle" ? (
+          <div className={`wawican-report-note cannaflow-report-note cannaflow-report-note-${isCannaflowRunning ? "running" : cannaflowStatus}`}>
+            {isCannaflowRunning ? <Loader2 size={18} className="spin" /> : cannaflowStatus === "error" ? <AlertTriangle size={18} /> : <FileSpreadsheet size={18} />}
+            <div>
+              <span>Cannaflow Mengenänderungen</span>
+              <strong>{cannaflowResult?.stock_report?.filename || "Noch kein Excel-Report"}</strong>
+              <small>
+                {cannaflowResult?.stock_report
+                  ? `${numberValue(cannaflowResult.stock_report.changed_rows)} Änderung(en) · ${numberValue(cannaflowResult.stock_report.decreased_rows)} gesunken · ${numberValue(cannaflowResult.stock_report.current_rows)} Produkte`
+                  : cannaflowMessage}
+              </small>
+            </div>
+            {cannaflowResult?.stock_report?.report_url ? (
+              <button
+                type="button"
+                onClick={() => {
+                  const report = cannaflowResult.stock_report;
+                  const reportDownloadUrl = browserSafeReportUrl(report, cannaflowStockEndpoint.trim());
+                  if (!reportDownloadUrl) return;
 
-      {cannaflowResult || isCannaflowRunning || cannaflowStatus !== "idle" ? (
-        <div className={`wawican-report-note cannaflow-report-note cannaflow-report-note-${isCannaflowRunning ? "running" : cannaflowStatus}`}>
-          {isCannaflowRunning ? <Loader2 size={18} className="spin" /> : cannaflowStatus === "error" ? <AlertTriangle size={18} /> : <FileSpreadsheet size={18} />}
-          <div>
-            <span>Cannaflow Mengenänderungen</span>
-            <strong>{cannaflowResult?.stock_report?.filename || "Noch kein Excel-Report"}</strong>
-            <small>
-              {cannaflowResult?.stock_report
-                ? `${numberValue(cannaflowResult.stock_report.changed_rows)} Änderung(en) · ${numberValue(cannaflowResult.stock_report.decreased_rows)} gesunken · ${numberValue(cannaflowResult.stock_report.current_rows)} Produkte`
-                : cannaflowMessage}
-            </small>
+                  void downloadRemoteReport(reportDownloadUrl, report?.filename).catch((error) => {
+                    const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
+                    setCannaflowStatus("error");
+                    setCannaflowMessage(`Excel-Download fehlgeschlagen: ${errorMessage}`);
+                  });
+                }}
+                aria-label="Cannaflow Mengenänderungen als XLSX herunterladen"
+              >
+                <FileSpreadsheet size={16} />
+              </button>
+            ) : null}
           </div>
-          {cannaflowResult?.stock_report?.report_url ? (
-            <button
-              type="button"
-              onClick={() => {
-                const report = cannaflowResult.stock_report;
-                const reportDownloadUrl = browserSafeReportUrl(report, cannaflowStockEndpoint.trim());
-                if (!reportDownloadUrl) return;
-
-                void downloadRemoteReport(reportDownloadUrl, report?.filename).catch((error) => {
-                  const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
-                  setCannaflowStatus("error");
-                  setCannaflowMessage(`Excel-Download fehlgeschlagen: ${errorMessage}`);
-                });
-              }}
-              aria-label="Cannaflow Mengenänderungen als XLSX herunterladen"
-            >
-              <FileSpreadsheet size={16} />
-            </button>
-          ) : null}
+        ) : null}
         </div>
       ) : null}
     </aside>

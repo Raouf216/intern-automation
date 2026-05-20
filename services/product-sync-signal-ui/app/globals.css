@@ -528,7 +528,7 @@ body[data-theme="night"] .confirm-pickup-preview {
 
 .bot-action-row {
   display: grid;
-  grid-template-columns: minmax(320px, 0.82fr) minmax(360px, 1fr);
+  grid-template-columns: minmax(320px, 0.82fr) minmax(420px, 1fr);
   align-items: stretch;
   gap: 18px;
 }
@@ -550,6 +550,8 @@ body[data-theme="night"] .confirm-pickup-preview {
 .action-status-panel {
   display: grid;
   gap: 14px;
+  align-content: start;
+  min-width: 0;
   padding: 16px;
 }
 
@@ -939,8 +941,15 @@ body[data-theme="night"] .message-error {
   color: var(--green);
 }
 
-.wawican-report-note {
-  margin-top: 10px;
+.stock-report-stack {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.stock-report-stack .product-export-note,
+.stock-report-stack .wawican-report-note {
+  margin-top: 0;
 }
 
 .wawican-report-note-error {
@@ -950,6 +959,26 @@ body[data-theme="night"] .message-error {
 }
 
 .wawican-report-note-success {
+  border-color: rgba(4, 120, 87, 0.22);
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.product-export-note-running,
+.wawican-report-note-running,
+.cannaflow-report-note-running {
+  border-color: rgba(4, 120, 87, 0.22);
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.product-export-note-error {
+  border-color: rgba(180, 35, 49, 0.26);
+  background: color-mix(in srgb, var(--surface) 88%, var(--red) 12%);
+  color: var(--red);
+}
+
+.product-export-note-success {
   border-color: rgba(4, 120, 87, 0.22);
   background: var(--green-soft);
   color: var(--green);

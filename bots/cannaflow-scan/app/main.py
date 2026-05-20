@@ -917,21 +917,6 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
               .filter(isHorizontallyScrollable)
               .sort((left, right) => (right.scrollWidth - right.clientWidth) - (left.scrollWidth - left.clientWidth))[0] || null;
           };
-          const visibleInsideScroller = (element, scroller) => {
-            if (!element) return false;
-            const rect = element.getBoundingClientRect();
-
-            if (rect.width <= 0 || rect.height <= 0) {
-              return false;
-            }
-
-            if (!scroller) {
-              return true;
-            }
-
-            const scrollerRect = scroller.getBoundingClientRect();
-            return rect.right > scrollerRect.left + 1 && rect.left < scrollerRect.right - 1;
-          };
           const fallbackHeaders = [
             'Name',
             'Verfügbar',
@@ -943,6 +928,76 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
             'Verkauf',
             'Verfallsdatum',
           ];
+          const rectIsVisible = (rect, scroller = null) => {
+            if (
+              !rect ||
+              rect.width <= 0 ||
+              rect.height <= 0 ||
+              rect.bottom <= 0 ||
+              rect.right <= 0 ||
+              rect.top >= window.innerHeight ||
+              rect.left >= window.innerWidth
+            ) {
+              return false;
+            }
+
+            if (!scroller) {
+              return true;
+            }
+
+            const clip = scroller.getBoundingClientRect();
+            return rect.right > clip.left + 1 && rect.left < clip.right - 1;
+          };
+          const visibleHeadersForTable = (table, scroller) => (
+            Array.from(table.querySelectorAll('thead th'))
+              .map((header, index) => {
+                const rect = header.getBoundingClientRect();
+                const label = cleanText(header) || `column_${index + 1}`;
+
+                return {
+                  label,
+                  field: mapHeader(label, index),
+                  index,
+                  left: rect.left,
+                  right: rect.right,
+                  width: rect.width,
+                  center: rect.left + (rect.width / 2),
+                };
+              })
+              .filter((header) => rectIsVisible({ ...header, height: 1, top: 1, bottom: 2 }, scroller))
+          );
+          const bestHeaderForCell = (cell, headers, scroller) => {
+            const rect = cell.getBoundingClientRect();
+
+            if (!rectIsVisible(rect, scroller) || headers.length === 0) {
+              return null;
+            }
+
+            const center = rect.left + (rect.width / 2);
+            const byOverlap = headers
+              .map((header) => ({
+                header,
+                overlap: Math.max(0, Math.min(rect.right, header.right) - Math.max(rect.left, header.left)),
+                distance: Math.abs(center - header.center),
+              }))
+              .sort((left, right) => right.overlap - left.overlap || left.distance - right.distance);
+            const best = byOverlap[0];
+
+            if (!best) {
+              return null;
+            }
+
+            if (best.overlap > 2) {
+              return best.header;
+            }
+
+            const nearest = byOverlap.sort((left, right) => left.distance - right.distance)[0];
+            if (nearest && nearest.distance <= Math.max(60, rect.width / 2)) {
+              return nearest.header;
+            }
+
+            return null;
+          };
           const collectSnapshot = (scroller) => {
             const currentTableInfo = tableInfo();
 
@@ -951,26 +1006,13 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
             }
 
             const table = currentTableInfo.element;
-            const firstRowCellCount = currentTableInfo.rows[0]
-              ? currentTableInfo.rows[0].querySelectorAll('td').length
-              : 0;
-            const headerElements = Array.from(table.querySelectorAll('thead th'));
-            const visibleHeaderElements = headerElements.filter((header) => visibleInsideScroller(header, scroller));
-            const usableHeaderElements = (
-              visibleHeaderElements.length > 0 &&
-              visibleHeaderElements.length <= firstRowCellCount
-            )
-              ? visibleHeaderElements
-              : headerElements;
-            let headers = usableHeaderElements.map((header, index) => ({
-              label: cleanText(header) || `column_${index + 1}`,
-              field: mapHeader(cleanText(header), index),
-            }));
+            let headers = visibleHeadersForTable(table, scroller);
 
             if (headers.length === 0) {
               headers = fallbackHeaders.map((label, index) => ({ label, field: mapHeader(label, index) }));
             }
 
+            const headersHaveGeometry = headers.some((header) => Number.isFinite(header.left));
             const rows = currentTableInfo.rows.map((row, rowIndex) => {
               const record = {
                 row_index: rowIndex + 1,
@@ -978,10 +1020,14 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
               };
 
               Array.from(row.querySelectorAll('td')).forEach((cell, cellIndex) => {
-                const header = headers[cellIndex] || {
-                  label: `column_${cellIndex + 1}`,
-                  field: `column_${cellIndex + 1}`,
-                };
+                const header = headersHaveGeometry
+                  ? bestHeaderForCell(cell, headers, scroller)
+                  : headers[cellIndex];
+
+                if (!header) {
+                  return;
+                }
+
                 const text = cleanText(cell);
                 const toggle = switchValue(cell);
 
@@ -1078,7 +1124,15 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
                   return;
                 }
 
-                if (value !== null && value !== undefined && value !== '') {
+                const existingValue = existing[field];
+                const existingHasValue = existingValue !== null && existingValue !== undefined && existingValue !== '';
+                const nextHasValue = value !== null && value !== undefined && value !== '';
+                const existingLooksLikeDate = /^\\d{1,2}\\.\\d{1,2}\\.\\d{4}$/.test(normalize(existingValue));
+                const nextLooksLikeDate = /^\\d{1,2}\\.\\d{1,2}\\.\\d{4}$/.test(normalize(value));
+
+                if (field === 'expiry_date_text' && nextLooksLikeDate && !existingLooksLikeDate) {
+                  existing[field] = value;
+                } else if (nextHasValue && !existingHasValue) {
                   existing[field] = value;
                 } else if (!(field in existing)) {
                   existing[field] = value;

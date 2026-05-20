@@ -791,7 +791,12 @@ def open_context_with_saved_session(browser, trace=None):
         return None, None, False
 
     trace_step(trace, "open_saved_session", path=SESSION_STATE_PATH)
-    context = browser.new_context(storage_state=SESSION_STATE_PATH, **browser_context_options())
+    try:
+        context = browser.new_context(storage_state=SESSION_STATE_PATH, **browser_context_options())
+    except Exception as exc:
+        trace_step(trace, "saved_session_open_failed", error=f"{type(exc).__name__}: {exc}", path=SESSION_STATE_PATH)
+        return None, None, False
+
     page = context.new_page()
 
     try:
@@ -828,8 +833,18 @@ def open_fresh_session(browser, trace=None):
         wait_for_authenticated_shell(page, trace=trace)
 
     click_inventory(page, trace=trace)
-    os.makedirs(os.path.dirname(SESSION_STATE_PATH), exist_ok=True)
-    context.storage_state(path=SESSION_STATE_PATH)
+    session_state_dir = os.path.dirname(SESSION_STATE_PATH)
+    if session_state_dir:
+        os.makedirs(session_state_dir, exist_ok=True)
+
+    temp_session_path = f"{SESSION_STATE_PATH}.{os.getpid()}.tmp"
+    try:
+        context.storage_state(path=temp_session_path)
+        os.replace(temp_session_path, SESSION_STATE_PATH)
+    finally:
+        if os.path.exists(temp_session_path):
+            os.remove(temp_session_path)
+
     trace_step(trace, "saved_session", path=SESSION_STATE_PATH)
 
     return context, page, False

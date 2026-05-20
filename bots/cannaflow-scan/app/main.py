@@ -323,6 +323,87 @@ def wait_for_inventory_ready(page, trace=None):
     }
 
 
+def wait_for_inventory_products_rendered(page, trace=None):
+    timeout_ms = int_env("CANNAFLOW_INVENTORY_NON_EMPTY_TIMEOUT_MS", 60_000)
+    trace_step(trace, "wait_for_inventory_products_rendered", timeout_ms=timeout_ms)
+
+    try:
+        state = page.wait_for_function(
+            """
+            () => {
+              const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+              const bodyText = normalize(document.body ? document.body.innerText : '');
+              const ranges = Array.from(bodyText.matchAll(/(\\d+)\\s*-\\s*(\\d+)\\s+von\\s+(\\d+)/g));
+              const rangeMatch = ranges.length ? ranges[ranges.length - 1] : null;
+              const tables = Array.from(document.querySelectorAll('table'));
+              const tableInfo = tables
+                .map((candidate) => ({
+                  element: candidate,
+                  rows: Array.from(candidate.querySelectorAll('tbody tr'))
+                    .filter((row) => row.querySelectorAll('td').length > 0),
+                }))
+                .sort((left, right) => right.rows.length - left.rows.length)[0];
+              const rows = tableInfo ? tableInfo.rows : [];
+              const rowCount = rows.length;
+              const from = rangeMatch ? Number(rangeMatch[1]) : null;
+              const to = rangeMatch ? Number(rangeMatch[2]) : null;
+              const total = rangeMatch ? Number(rangeMatch[3]) : null;
+              const expectedRows = rangeMatch ? Math.max(0, to - from + 1) : 0;
+              const first = rowCount ? normalize(rows[0].innerText) : '';
+              const last = rowCount ? normalize(rows[rowCount - 1].innerText) : '';
+              const state = {
+                label: rangeMatch ? rangeMatch[0] : '',
+                from_row: from,
+                to_row: to,
+                total_rows: total,
+                expected_rows: expectedRows,
+                row_count: rowCount,
+              };
+
+              window.__cannaflowInventoryRenderProbe = state;
+
+              if (!rangeMatch || !total || total <= 0 || !expectedRows || rowCount < expectedRows) {
+                window.__cannaflowInventoryRenderStability = null;
+                return false;
+              }
+
+              const signature = `${state.label}|${rowCount}|${first}|${last}`;
+              const previous = window.__cannaflowInventoryRenderStability || {};
+
+              if (previous.signature === signature) {
+                previous.hits = (previous.hits || 1) + 1;
+              } else {
+                previous.signature = signature;
+                previous.hits = 1;
+              }
+
+              window.__cannaflowInventoryRenderStability = previous;
+
+              if (previous.hits < 2) {
+                return false;
+              }
+
+              return state;
+            }
+            """,
+            timeout=timeout_ms,
+        ).json_value()
+    except Exception as exc:
+        probe = page.evaluate("() => window.__cannaflowInventoryRenderProbe || null")
+        screenshot_path = capture_debug_screenshot(page, "inventory-products-not-rendered", trace=trace)
+        raise BotStepError(
+            "Cannaflow inventory products did not render.",
+            current_url=page.url,
+            page_title=page.title(),
+            inventory_render_probe=probe,
+            body_excerpt=page_text_excerpt(page, limit=800),
+            debug_screenshot_path=screenshot_path,
+        ) from exc
+
+    trace_step(trace, "inventory_products_rendered", **state)
+    return state
+
+
 def page_size_input(page):
     return page.locator("xpath=//*[normalize-space()='Seitengröße']/following::input[1]").first
 
@@ -398,9 +479,10 @@ def wait_for_inventory_page_size_applied(page, target_size, trace=None):
 def ensure_inventory_page_size(page, trace=None):
     target_size = inventory_page_size()
     timeout_ms = int_env("CANNAFLOW_PAGE_SIZE_TIMEOUT_MS", 30_000)
-    page_size = page_size_input(page)
 
     trace_step(trace, "ensure_inventory_page_size", target_size=target_size, timeout_ms=timeout_ms)
+    inventory_render_state = wait_for_inventory_products_rendered(page, trace=trace)
+    page_size = page_size_input(page)
 
     try:
         page_size.wait_for(state="visible", timeout=timeout_ms)
@@ -429,6 +511,7 @@ def ensure_inventory_page_size(page, trace=None):
             "before": current_value,
             "after": current_value,
             "changed": False,
+            "inventory": inventory_render_state,
             "render": render_state,
         }
 
@@ -458,6 +541,7 @@ def ensure_inventory_page_size(page, trace=None):
         "before": current_value,
         "after": after_value,
         "changed": True,
+        "inventory": inventory_render_state,
         "render": render_state,
     }
 
@@ -1724,6 +1808,7 @@ def health():
         "page_size_target": inventory_page_size(),
         "screenshot_wait_ms": int_env("CANNAFLOW_AFTER_LOGIN_WAIT_MS", 5_000),
         "ready_timeout_ms": int_env("CANNAFLOW_READY_TIMEOUT_MS", 60_000),
+        "inventory_non_empty_timeout_ms": int_env("CANNAFLOW_INVENTORY_NON_EMPTY_TIMEOUT_MS", 60_000),
         "scrape_max_pages": SCRAPE_MAX_PAGES,
         "supabase_rest_configured": supabase_rest_configured(),
         "products_schema": products_schema(),

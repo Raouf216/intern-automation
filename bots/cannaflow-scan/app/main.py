@@ -1171,30 +1171,36 @@ def fetch_previous_products_snapshot(trace=None):
 
     import httpx
 
-    select_columns = ",".join(
-        [
-            "product_name",
-            "available_grams",
-            "available_text",
-            "stock_grams",
-            "stock_text",
-            "sale_price_text",
-            "sale_price_per_g",
-            "product_type",
-            "cultivar",
-            "manufacturer",
-            "sale_enabled",
-            "expiry_date_text",
-            "expiry_date",
-            "scraped_at",
-        ]
-    )
+    wanted_columns = [
+        "product_name",
+        "available_grams",
+        "available_text",
+        "stock_grams",
+        "stock_text",
+        "sale_price_text",
+        "sale_price_per_g",
+        "product_type",
+        "cultivar",
+        "manufacturer",
+        "sale_enabled",
+        "expiry_date_text",
+        "expiry_date",
+        "scraped_at",
+        "raw_data",
+    ]
     trace_step(trace, "fetch_previous_products_supabase_rest", table=products_table())
+
+    accepted_columns, skipped_columns = validate_rest_payload_columns(wanted_columns, trace=trace)
+
+    if "product_name" not in accepted_columns:
+        trace_step(trace, "previous_snapshot_without_product_name", skipped_columns=skipped_columns)
+        return []
+
     response = httpx.get(
         supabase_table_url(),
         headers=supabase_headers(),
         params={
-            "select": select_columns,
+            "select": ",".join(accepted_columns),
             "product_name": "not.is.null",
             "limit": "5000",
         },
@@ -1208,7 +1214,32 @@ def fetch_previous_products_snapshot(trace=None):
     if not isinstance(payload, list):
         raise RuntimeError("Supabase previous snapshot response was not a list.")
 
-    return payload
+    products = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+
+        raw_data = row.get("raw_data") if isinstance(row.get("raw_data"), dict) else {}
+        products.append(
+            {
+                "product_name": row.get("product_name") or raw_data.get("product_name"),
+                "available_grams": row.get("available_grams"),
+                "available_text": row.get("available_text") or raw_data.get("available_text"),
+                "stock_grams": row.get("stock_grams"),
+                "stock_text": row.get("stock_text") or raw_data.get("stock_text"),
+                "sale_price_text": row.get("sale_price_text") or raw_data.get("sale_price_text"),
+                "sale_price_per_g": row.get("sale_price_per_g"),
+                "product_type": row.get("product_type") or raw_data.get("product_type"),
+                "cultivar": row.get("cultivar") or raw_data.get("cultivar"),
+                "manufacturer": row.get("manufacturer") or raw_data.get("manufacturer"),
+                "sale_enabled": row.get("sale_enabled"),
+                "expiry_date_text": row.get("expiry_date_text") or raw_data.get("expiry_date_text"),
+                "expiry_date": row.get("expiry_date"),
+                "scraped_at": row.get("scraped_at"),
+            }
+        )
+
+    return products
 
 
 def compare_stock_snapshots(previous_products, current_products):

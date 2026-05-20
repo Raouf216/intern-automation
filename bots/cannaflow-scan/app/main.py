@@ -42,6 +42,12 @@ app.add_middleware(
 )
 
 
+class BotStepError(RuntimeError):
+    def __init__(self, message, **details):
+        super().__init__(message)
+        self.details = details
+
+
 def bool_env(name, default=True):
     value = os.environ.get(name)
     if value is None:
@@ -75,7 +81,7 @@ def inventory_url():
 
 
 def ready_text():
-    return (os.environ.get("CANNAFLOW_READY_TEXT") or "Produkte").strip() or "Produkte"
+    return (os.environ.get("CANNAFLOW_READY_TEXT") or "Inventar").strip() or "Inventar"
 
 
 def user_agent():
@@ -130,6 +136,21 @@ def screenshot_response_links(base_url, screenshot_path):
     }
 
 
+def capture_debug_screenshot(page, reason, trace=None):
+    os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_reason = re.sub(r"[^A-Za-z0-9_.-]+", "-", reason).strip("-") or "debug"
+    path = os.path.join(ARTIFACTS_DIR, f"cannaflow-{safe_reason}-{timestamp}.png")
+
+    try:
+        page.screenshot(path=path, full_page=True)
+        trace_step(trace, "capture_debug_screenshot", path=path, reason=reason)
+        return path
+    except Exception as exc:
+        trace_step(trace, "capture_debug_screenshot_failed", reason=reason, error=f"{type(exc).__name__}: {exc}")
+        return None
+
+
 def page_text_excerpt(page, limit=500):
     try:
         text = page.locator("body").inner_text(timeout=2_000)
@@ -148,7 +169,18 @@ def wait_for_inventory_ready(page, trace=None):
     text = ready_text()
     trace_step(trace, "wait_for_inventory_ready", ready_text=text, timeout_ms=timeout_ms)
 
-    page.get_by_text(text, exact=False).first.wait_for(state="visible", timeout=timeout_ms)
+    try:
+        page.get_by_text(text, exact=False).first.wait_for(state="visible", timeout=timeout_ms)
+    except Exception as exc:
+        screenshot_path = capture_debug_screenshot(page, "inventory-not-ready", trace=trace)
+        details = {
+            "current_url": page.url,
+            "page_title": page.title(),
+            "ready_text": text,
+            "body_excerpt": page_text_excerpt(page, limit=800),
+            "debug_screenshot_path": screenshot_path,
+        }
+        raise BotStepError("Inventory page did not become ready.", **details) from exc
 
     return {
         "ready_text": text,
@@ -307,14 +339,21 @@ def health():
 
 @app.post("/jobs/login")
 def login_job(request: Request):
+    base_url = base_url_from_request(request)
     try:
-        return login_only(base_url_from_request(request))
+        return login_only(base_url)
     except Exception as exc:
+        details = getattr(exc, "details", {}) or {}
+        debug_screenshot_path = details.get("debug_screenshot_path")
+        if debug_screenshot_path:
+            details.update(screenshot_response_links(base_url, debug_screenshot_path))
+
         return JSONResponse(
             status_code=500,
             content={
                 "ok": False,
                 "error": f"{type(exc).__name__}: {exc}",
+                **details,
                 "traceback": traceback.format_exc().splitlines()[-12:],
             },
         )

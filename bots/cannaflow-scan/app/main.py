@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from playwright.sync_api import expect
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -82,6 +83,10 @@ def inventory_url():
 
 def ready_text():
     return (os.environ.get("CANNAFLOW_READY_TEXT") or "Inventar").strip() or "Inventar"
+
+
+def inventory_page_size():
+    return int_env("CANNAFLOW_PAGE_SIZE", 200)
 
 
 def user_agent():
@@ -185,6 +190,74 @@ def wait_for_inventory_ready(page, trace=None):
     return {
         "ready_text": text,
         "body_excerpt": page_text_excerpt(page),
+    }
+
+
+def page_size_input(page):
+    return page.locator("xpath=//*[normalize-space()='Seitengröße']/following::input[1]").first
+
+
+def ensure_inventory_page_size(page, trace=None):
+    target_size = inventory_page_size()
+    timeout_ms = int_env("CANNAFLOW_PAGE_SIZE_TIMEOUT_MS", 30_000)
+    page_size = page_size_input(page)
+
+    trace_step(trace, "ensure_inventory_page_size", target_size=target_size, timeout_ms=timeout_ms)
+
+    try:
+        page_size.wait_for(state="visible", timeout=timeout_ms)
+        current_value = (page_size.input_value(timeout=timeout_ms) or "").strip()
+    except Exception as exc:
+        screenshot_path = capture_debug_screenshot(page, "page-size-input-not-found", trace=trace)
+        raise BotStepError(
+            "Cannaflow page size input was not visible.",
+            current_url=page.url,
+            page_title=page.title(),
+            body_excerpt=page_text_excerpt(page, limit=800),
+            debug_screenshot_path=screenshot_path,
+        ) from exc
+
+    trace_step(trace, "inventory_page_size_current", current_value=current_value, target_size=target_size)
+
+    try:
+        current_size = int(current_value)
+    except ValueError:
+        current_size = 0
+
+    if current_size >= target_size:
+        return {
+            "target": target_size,
+            "before": current_value,
+            "after": current_value,
+            "changed": False,
+        }
+
+    try:
+        page_size.scroll_into_view_if_needed(timeout=timeout_ms)
+        page_size.click(timeout=timeout_ms)
+        page.get_by_role("option", name=str(target_size), exact=True).click(timeout=timeout_ms)
+        expect(page_size).to_have_value(str(target_size), timeout=timeout_ms)
+    except Exception as exc:
+        screenshot_path = capture_debug_screenshot(page, "page-size-select-failed", trace=trace)
+        raise BotStepError(
+            "Could not set Cannaflow page size.",
+            current_url=page.url,
+            page_title=page.title(),
+            page_size_before=current_value,
+            page_size_target=target_size,
+            body_excerpt=page_text_excerpt(page, limit=800),
+            debug_screenshot_path=screenshot_path,
+        ) from exc
+
+    wait_for_inventory_ready(page, trace=trace)
+    after_value = (page_size.input_value(timeout=timeout_ms) or "").strip()
+    trace_step(trace, "inventory_page_size_changed", before=current_value, after=after_value)
+
+    return {
+        "target": target_size,
+        "before": current_value,
+        "after": after_value,
+        "changed": True,
     }
 
 
@@ -340,6 +413,7 @@ def login_only(base_url, trace=None):
         context = None
         try:
             context, page, reused_session = open_authenticated_inventory(browser, trace=trace)
+            page_size_result = ensure_inventory_page_size(page, trace=trace)
             trace_step(trace, "wait_before_screenshot", wait_ms=wait_ms)
             page.wait_for_timeout(wait_ms)
             trace_step(trace, "capture_screenshot", path=screenshot_path)
@@ -351,6 +425,7 @@ def login_only(base_url, trace=None):
                 "page_title": page.title(),
                 "reused_session": reused_session,
                 "ready_text": ready_text(),
+                "page_size": page_size_result,
                 "session_state_path": SESSION_STATE_PATH,
                 "session_state_exists": os.path.exists(SESSION_STATE_PATH),
                 "screenshot_path": screenshot_path,
@@ -374,6 +449,7 @@ def health():
         "session_state_path": SESSION_STATE_PATH,
         "session_state_exists": os.path.exists(SESSION_STATE_PATH),
         "ready_text": ready_text(),
+        "page_size_target": inventory_page_size(),
         "screenshot_wait_ms": int_env("CANNAFLOW_AFTER_LOGIN_WAIT_MS", 5_000),
         "ready_timeout_ms": int_env("CANNAFLOW_READY_TIMEOUT_MS", 60_000),
     }

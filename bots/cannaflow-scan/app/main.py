@@ -6,6 +6,7 @@ import traceback
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +30,7 @@ DEFAULT_USER_AGENT = (
 SCRAPE_PAGE_READY_TIMEOUT_MS = int(os.environ.get("CANNAFLOW_SCRAPE_PAGE_READY_TIMEOUT_MS", "30000"))
 SCRAPE_MAX_PAGES = int(os.environ.get("CANNAFLOW_SCRAPE_MAX_PAGES", "50"))
 SUPABASE_TIMEOUT_SECONDS = int(os.environ.get("CANNAFLOW_SUPABASE_TIMEOUT_SECONDS", "60"))
+GERMAN_TIMEZONE = ZoneInfo(os.environ.get("TZ", "Europe/Berlin") or "Europe/Berlin")
 
 app = FastAPI(title=SERVICE_NAME)
 
@@ -1744,6 +1746,51 @@ def auto_width_for_sheet(sheet, max_width=60):
         sheet.column_dimensions[column_letter].width = min(max(max_length + 2, 10), max_width)
 
 
+def parse_datetime_for_excel(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        date_value = value
+    elif isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.endswith("Z"):
+            normalized = f"{normalized[:-1]}+00:00"
+        try:
+            date_value = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if date_value.tzinfo is None:
+        date_value = date_value.replace(tzinfo=timezone.utc)
+
+    return date_value.astimezone(GERMAN_TIMEZONE)
+
+
+def german_excel_datetime(value):
+    date_value = parse_datetime_for_excel(value)
+    if not date_value:
+        return ""
+
+    return date_value.strftime("%d.%m.%Y %H:%M:%S")
+
+
+def german_excel_datetime_range(previous_value, current_value):
+    previous_text = german_excel_datetime(previous_value)
+    current_text = german_excel_datetime(current_value)
+
+    if previous_text and current_text:
+        return f"{previous_text} -> {current_text}"
+    if current_text:
+        return f"neu -> {current_text}"
+    if previous_text:
+        return f"{previous_text} -> entfernt"
+    return ""
+
+
 def create_stock_change_excel_report(
     changes,
     current_products,
@@ -1782,7 +1829,8 @@ def create_stock_change_excel_report(
 
     summary_rows = [
         ["Cannaflow Mengenänderungen", ""],
-        ["Erstellt am", str(scraped_at)],
+        ["Erstellt am", german_excel_datetime(scraped_at)],
+        ["Zeitzone", "Europe/Berlin"],
         ["Vorherige Produkte", previous_count],
         ["Aktuelle Produkte", len(current_products)],
         ["Zeilen im Report", changed_rows],
@@ -1817,8 +1865,9 @@ def create_stock_change_excel_report(
         "Verfall",
         "Seite",
         "Zeile",
-        "Vorheriger Lauf",
-        "Aktueller Lauf",
+        "Geändert von -> bis",
+        "Vorheriger Lauf (DE)",
+        "Aktueller Lauf (DE)",
     ]
     changes_sheet.append(headers)
     if changes:
@@ -1848,12 +1897,16 @@ def create_stock_change_excel_report(
                     change.get("expiry_date_text"),
                     change.get("page_number"),
                     change.get("row_index"),
-                    str(change.get("previous_scraped_at") or ""),
-                    str(change.get("current_scraped_at") or ""),
+                    german_excel_datetime_range(
+                        change.get("previous_scraped_at"),
+                        change.get("current_scraped_at"),
+                    ),
+                    german_excel_datetime(change.get("previous_scraped_at")),
+                    german_excel_datetime(change.get("current_scraped_at")),
                 ]
             )
     else:
-        changes_sheet.append(["Keine Mengenänderungen seit dem letzten Lauf.", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""])
+        changes_sheet.append(["Keine Mengenänderungen seit dem letzten Lauf.", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""])
 
     current_headers = [
         "Produkt",
@@ -1867,7 +1920,7 @@ def create_stock_change_excel_report(
         "Verfall",
         "Seite",
         "Zeile",
-        "Lauf",
+        "Lauf (DE)",
     ]
     current_sheet.append(current_headers)
     for product in sorted(current_products, key=lambda item: normalize_space(item.get("product_name")).casefold()):
@@ -1884,7 +1937,7 @@ def create_stock_change_excel_report(
                 product.get("expiry_date_text"),
                 product.get("page_number"),
                 product.get("row_index"),
-                str(product.get("scraped_at") or ""),
+                german_excel_datetime(product.get("scraped_at")),
             ]
         )
 

@@ -284,12 +284,21 @@ function germanyFilenameTimestamp(value: Date) {
   return `${part("year")}-${part("month")}-${part("day")}_${part("hour")}-${part("minute")}-${part("second")}`;
 }
 
-function exportDisplayTime(value: string) {
+function germanyReadableTimestamp(value: Date | string) {
   return new Intl.DateTimeFormat("de-DE", {
     timeZone: "Europe/Berlin",
-    dateStyle: "short",
-    timeStyle: "medium",
-  }).format(new Date(value));
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(value instanceof Date ? value : new Date(value));
+}
+
+function exportDisplayTime(value: string) {
+  return germanyReadableTimestamp(value);
 }
 
 function quantityNumber(value: unknown) {
@@ -340,20 +349,23 @@ function downloadProductChangesExcel(payload: SyncResponse, generatedAt = new Da
   if (!rows.length) return null;
 
   const filename = `doktorabc-mengen-aenderungen_${germanyFilenameTimestamp(generatedAt)}.xlsx`;
-  const worksheet = xlsxUtils.json_to_sheet(
-    rows.map((row) => ({
-      Produkt: row.productName,
-      PZN: row.pzn,
-      "Menge alt": row.oldQuantity,
-      "Menge neu": row.newQuantity,
-      "Änderung (neu - alt)": row.difference,
-    })),
-    {
-      header: ["Produkt", "PZN", "Menge alt", "Menge neu", "Änderung (neu - alt)"],
-    }
-  );
+  const worksheet = xlsxUtils.aoa_to_sheet([
+    ["DoktorABC Mengenänderungen"],
+    ["Erstellt am", germanyReadableTimestamp(generatedAt)],
+    ["Zeitzone", "Europe/Berlin"],
+    ["Quelle", "DoktorABC Produktsynchronisierung"],
+    [],
+    ["Produkt", "PZN", "Menge alt", "Menge neu", "Änderung (neu - alt)"],
+    ...rows.map((row) => [
+      row.productName,
+      row.pzn,
+      row.oldQuantity,
+      row.newQuantity,
+      row.difference,
+    ]),
+  ]);
   worksheet["!cols"] = [{ wch: 54 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 20 }];
-  worksheet["!autofilter"] = { ref: `A1:E${rows.length + 1}` };
+  worksheet["!autofilter"] = { ref: `A6:E${rows.length + 6}` };
 
   const workbook = xlsxUtils.book_new();
   xlsxUtils.book_append_sheet(workbook, worksheet, "Mengenänderungen");
@@ -1221,7 +1233,7 @@ export function SyncConsole() {
 
       {wawicanResult || isWawicanRunning || wawicanStatus !== "idle" ? (
         <div className={`wawican-report-note wawican-report-note-${isWawicanRunning ? "running" : wawicanStatus}`}>
-          {isWawicanRunning ? <Loader2 size={18} className="spin" /> : wawicanStatus === "success" ? <CheckCircle2 size={18} /> : wawicanStatus === "error" ? <AlertTriangle size={18} /> : <FileSpreadsheet size={18} />}
+          {isWawicanRunning ? <Loader2 size={18} className="spin" /> : wawicanStatus === "error" ? <AlertTriangle size={18} /> : <FileSpreadsheet size={18} />}
           <div>
             <span>Wawican Mengenänderungen</span>
             <strong>{wawicanResult?.stock_report?.filename || "Noch kein Excel-Report"}</strong>
@@ -1255,7 +1267,7 @@ export function SyncConsole() {
 
       {cannaflowResult || isCannaflowRunning || cannaflowStatus !== "idle" ? (
         <div className={`wawican-report-note cannaflow-report-note cannaflow-report-note-${isCannaflowRunning ? "running" : cannaflowStatus}`}>
-          {isCannaflowRunning ? <Loader2 size={18} className="spin" /> : cannaflowStatus === "success" ? <CheckCircle2 size={18} /> : cannaflowStatus === "error" ? <AlertTriangle size={18} /> : <FileSpreadsheet size={18} />}
+          {isCannaflowRunning ? <Loader2 size={18} className="spin" /> : cannaflowStatus === "error" ? <AlertTriangle size={18} /> : <FileSpreadsheet size={18} />}
           <div>
             <span>Cannaflow Mengenänderungen</span>
             <strong>{cannaflowResult?.stock_report?.filename || "Noch kein Excel-Report"}</strong>

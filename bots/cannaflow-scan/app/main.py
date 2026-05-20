@@ -331,7 +331,7 @@ def wait_for_inventory_products_rendered(page, trace=None):
         state = page.wait_for_function(
             """
             () => {
-              const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+              const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
               const bodyText = normalize(document.body ? document.body.innerText : '');
               const ranges = Array.from(bodyText.matchAll(/(\\d+)\\s*-\\s*(\\d+)\\s+von\\s+(\\d+)/g));
               const rangeMatch = ranges.length ? ranges[ranges.length - 1] : null;
@@ -416,7 +416,7 @@ def wait_for_inventory_page_size_applied(page, target_size, trace=None):
         return page.wait_for_function(
             """
             (targetSize) => {
-              const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+              const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
               const bodyText = normalize(document.body ? document.body.innerText : '');
               const ranges = Array.from(bodyText.matchAll(/(\\d+)\\s*-\\s*(\\d+)\\s+von\\s+(\\d+)/g));
               const rangeMatch = ranges.length ? ranges[ranges.length - 1] : null;
@@ -807,7 +807,7 @@ def wait_for_inventory_rows_ready(page, trace=None):
     page.wait_for_function(
         """
         () => {
-          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
           const tables = Array.from(document.querySelectorAll('table'));
           const table = tables
             .map((candidate) => ({
@@ -846,7 +846,7 @@ def scrape_current_inventory_page(page, page_number=None, trace=None):
     result = page.evaluate(
         """
         async () => {
-          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
           const fold = (value) => normalize(value)
             .normalize('NFD')
             .replace(/[\\u0300-\\u036f]/g, '')
@@ -1176,7 +1176,7 @@ def get_pagination_state(page):
     return page.evaluate(
         """
         () => {
-          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
           const bodyText = normalize(document.body ? document.body.innerText : '');
           const ranges = Array.from(bodyText.matchAll(/(\\d+)\\s*-\\s*(\\d+)\\s+von\\s+(\\d+)/g));
           const rangeMatch = ranges.length ? ranges[ranges.length - 1] : null;
@@ -1225,7 +1225,7 @@ def click_next_inventory_page(page, before_state, trace=None):
     page.wait_for_function(
         """
         (before) => {
-          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
           const bodyText = normalize(document.body ? document.body.innerText : '');
           const ranges = Array.from(bodyText.matchAll(/(\\d+)\\s*-\\s*(\\d+)\\s+von\\s+(\\d+)/g));
           const rangeMatch = ranges.length ? ranges[ranges.length - 1] : null;

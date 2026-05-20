@@ -1,5 +1,6 @@
 playwright
 httpx
+openpyxl
 python-dotenv
 fastapi
 uvicorn[standard]

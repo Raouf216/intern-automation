@@ -116,6 +116,10 @@ def products_upsert_on():
     return value or None
 
 
+def stock_report_enabled():
+    return bool_env("CANNAFLOW_STOCK_REPORT_ENABLED", True)
+
+
 def supabase_url():
     return (os.environ.get("SUPABASE_URL") or "").strip().rstrip("/")
 
@@ -169,6 +173,26 @@ def latest_screenshot_path():
     return max(screenshot_paths, key=os.path.getmtime)
 
 
+def safe_report_filename(filename):
+    if not re.match(r"^[A-Za-z0-9_.-]+\.xlsx$", filename or ""):
+        raise RuntimeError("Invalid report filename.")
+    return filename
+
+
+def latest_report_path():
+    if not os.path.isdir(ARTIFACTS_DIR):
+        return None
+
+    report_paths = [
+        os.path.join(ARTIFACTS_DIR, filename)
+        for filename in os.listdir(ARTIFACTS_DIR)
+        if filename.lower().endswith(".xlsx")
+    ]
+    if not report_paths:
+        return None
+    return max(report_paths, key=os.path.getmtime)
+
+
 def screenshot_file_url(base_url, screenshot_path):
     return f"{base_url}/screenshots/{os.path.basename(screenshot_path)}"
 
@@ -177,6 +201,17 @@ def screenshot_response_links(base_url, screenshot_path):
     return {
         "screenshot_url": screenshot_file_url(base_url, screenshot_path),
         "latest_screenshot_url": f"{base_url}/screenshots/latest",
+    }
+
+
+def report_file_url(base_url, report_path):
+    return f"{base_url}/reports/{os.path.basename(report_path)}"
+
+
+def report_response_links(base_url, report_path):
+    return {
+        "report_url": report_file_url(base_url, report_path),
+        "latest_report_url": f"{base_url}/reports/latest",
     }
 
 
@@ -490,6 +525,49 @@ def json_ready(value):
 def chunks(items, size):
     for index in range(0, len(items), size):
         yield items[index : index + size]
+
+
+def decimal_for_compare(value):
+    if value is None:
+        return None
+
+    if isinstance(value, Decimal):
+        return value
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, (int, float)):
+        try:
+            return Decimal(str(value))
+        except InvalidOperation:
+            return None
+
+    return parse_decimal(value)
+
+
+def quantity_display(value, fallback=None):
+    parsed = decimal_for_compare(value)
+
+    if parsed is None:
+        return normalize_space(fallback if fallback is not None else value)
+
+    if parsed == parsed.to_integral_value():
+        return str(int(parsed))
+
+    return str(parsed).replace(".", ",")
+
+
+def excel_number(value):
+    parsed = decimal_for_compare(value)
+
+    if parsed is None:
+        return None
+
+    if parsed == parsed.to_integral_value():
+        return int(parsed)
+
+    return float(parsed)
 
 
 def page_says_not_authenticated(page):
@@ -1087,6 +1165,399 @@ def write_products_to_supabase_rest(products, trace=None):
     }
 
 
+def fetch_previous_products_snapshot(trace=None):
+    if not stock_report_enabled() or not supabase_rest_configured():
+        return []
+
+    import httpx
+
+    select_columns = ",".join(
+        [
+            "product_name",
+            "available_grams",
+            "available_text",
+            "stock_grams",
+            "stock_text",
+            "sale_price_text",
+            "sale_price_per_g",
+            "product_type",
+            "cultivar",
+            "manufacturer",
+            "sale_enabled",
+            "expiry_date_text",
+            "expiry_date",
+            "scraped_at",
+        ]
+    )
+    trace_step(trace, "fetch_previous_products_supabase_rest", table=products_table())
+    response = httpx.get(
+        supabase_table_url(),
+        headers=supabase_headers(),
+        params={
+            "select": select_columns,
+            "product_name": "not.is.null",
+            "limit": "5000",
+        },
+        timeout=SUPABASE_TIMEOUT_SECONDS,
+    )
+
+    if response.status_code >= 400:
+        raise RuntimeError(f"Supabase previous snapshot fetch failed: {response_preview(response)}")
+
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise RuntimeError("Supabase previous snapshot response was not a list.")
+
+    return payload
+
+
+def compare_stock_snapshots(previous_products, current_products):
+    previous_by_name = {
+        product_name_key(product): product
+        for product in previous_products
+        if product_name_key(product)
+    }
+    current_by_name = {
+        product_name_key(product): product
+        for product in current_products
+        if product_name_key(product)
+    }
+    changes = []
+
+    for key in sorted(current_by_name, key=lambda item: normalize_space(current_by_name[item].get("product_name")).casefold()):
+        current = current_by_name[key]
+        previous = previous_by_name.get(key)
+        current_available = decimal_for_compare(current.get("available_grams"))
+        previous_available = decimal_for_compare(previous.get("available_grams")) if previous else None
+        current_text = quantity_display(current.get("available_grams"), current.get("available_text"))
+        previous_text = quantity_display(
+            previous.get("available_grams") if previous else None,
+            previous.get("available_text") if previous else None,
+        )
+        change_type = "new" if previous is None else "changed"
+
+        if previous is not None:
+            if current_available is not None and previous_available is not None:
+                if current_available == previous_available:
+                    continue
+            elif current_text == previous_text:
+                continue
+
+        difference = None
+        if current_available is not None and previous_available is not None:
+            difference = current_available - previous_available
+
+        changes.append(
+            {
+                "change_type": change_type,
+                "product_name": current.get("product_name"),
+                "previous_available": previous_available,
+                "current_available": current_available,
+                "previous_available_text": previous_text,
+                "current_available_text": current_text,
+                "difference": difference,
+                "previous_stock": decimal_for_compare(previous.get("stock_grams")) if previous else None,
+                "current_stock": decimal_for_compare(current.get("stock_grams")),
+                "previous_stock_text": quantity_display(
+                    previous.get("stock_grams") if previous else None,
+                    previous.get("stock_text") if previous else None,
+                ),
+                "current_stock_text": quantity_display(current.get("stock_grams"), current.get("stock_text")),
+                "manufacturer": current.get("manufacturer"),
+                "cultivar": current.get("cultivar"),
+                "product_type": current.get("product_type"),
+                "sale_price_text": current.get("sale_price_text"),
+                "sale_enabled": current.get("sale_enabled"),
+                "expiry_date_text": current.get("expiry_date_text"),
+                "page_number": current.get("page_number"),
+                "row_index": current.get("row_index"),
+                "previous_scraped_at": previous.get("scraped_at") if previous else None,
+                "current_scraped_at": current.get("scraped_at"),
+            }
+        )
+
+    for key in sorted(set(previous_by_name) - set(current_by_name), key=lambda item: normalize_space(previous_by_name[item].get("product_name")).casefold()):
+        previous = previous_by_name[key]
+        changes.append(
+            {
+                "change_type": "removed",
+                "product_name": previous.get("product_name"),
+                "previous_available": decimal_for_compare(previous.get("available_grams")),
+                "current_available": None,
+                "previous_available_text": quantity_display(previous.get("available_grams"), previous.get("available_text")),
+                "current_available_text": "",
+                "difference": None,
+                "previous_stock": decimal_for_compare(previous.get("stock_grams")),
+                "current_stock": None,
+                "previous_stock_text": quantity_display(previous.get("stock_grams"), previous.get("stock_text")),
+                "current_stock_text": "",
+                "manufacturer": previous.get("manufacturer"),
+                "cultivar": previous.get("cultivar"),
+                "product_type": previous.get("product_type"),
+                "sale_price_text": previous.get("sale_price_text"),
+                "sale_enabled": previous.get("sale_enabled"),
+                "expiry_date_text": previous.get("expiry_date_text"),
+                "page_number": None,
+                "row_index": None,
+                "previous_scraped_at": previous.get("scraped_at"),
+                "current_scraped_at": None,
+            }
+        )
+
+    decreased = [
+        change
+        for change in changes
+        if isinstance(change.get("difference"), Decimal) and change["difference"] < 0
+    ]
+    increased = [
+        change
+        for change in changes
+        if isinstance(change.get("difference"), Decimal) and change["difference"] > 0
+    ]
+
+    return changes, {
+        "previous_rows": len(previous_products),
+        "current_rows": len(current_products),
+        "changed_rows": len(changes),
+        "decreased_rows": len(decreased),
+        "increased_rows": len(increased),
+        "new_rows": sum(1 for change in changes if change.get("change_type") == "new"),
+        "removed_rows": sum(1 for change in changes if change.get("change_type") == "removed"),
+    }
+
+
+def auto_width_for_sheet(sheet, max_width=60):
+    for column_cells in sheet.columns:
+        column_letter = column_cells[0].column_letter
+        max_length = 0
+
+        for cell in column_cells:
+            value = cell.value
+            if value is None:
+                continue
+            max_length = max(max_length, len(str(value)))
+
+        sheet.column_dimensions[column_letter].width = min(max(max_length + 2, 10), max_width)
+
+
+def create_stock_change_excel_report(changes, current_products, previous_count, scraped_at, timestamp, trace=None):
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+    report_path = os.path.join(ARTIFACTS_DIR, f"cannaflow-stock-changes-{timestamp}.xlsx")
+    workbook = Workbook()
+    summary_sheet = workbook.active
+    summary_sheet.title = "Zusammenfassung"
+    changes_sheet = workbook.create_sheet("Mengenänderungen")
+    current_sheet = workbook.create_sheet("Aktueller Bestand")
+
+    changed_rows = len(changes)
+    decreased_rows = sum(
+        1
+        for change in changes
+        if isinstance(change.get("difference"), Decimal) and change["difference"] < 0
+    )
+    increased_rows = sum(
+        1
+        for change in changes
+        if isinstance(change.get("difference"), Decimal) and change["difference"] > 0
+    )
+    new_rows = sum(1 for change in changes if change.get("change_type") == "new")
+    removed_rows = sum(1 for change in changes if change.get("change_type") == "removed")
+
+    summary_rows = [
+        ["Cannaflow Mengenänderungen", ""],
+        ["Erstellt am", str(scraped_at)],
+        ["Vorherige Produkte", previous_count],
+        ["Aktuelle Produkte", len(current_products)],
+        ["Zeilen im Report", changed_rows],
+        ["Verfügbar gesunken", decreased_rows],
+        ["Verfügbar gestiegen", increased_rows],
+        ["Neue Produkte", new_rows],
+        ["Nicht mehr im aktuellen Inventar", removed_rows],
+        ["Verglichene Spalte", "Verfügbar"],
+    ]
+    summary_sheet.append(summary_rows[0])
+    summary_sheet["A1"].font = Font(size=16, bold=True, color="FFFFFF")
+    summary_sheet["A1"].fill = PatternFill("solid", fgColor="1F4E5F")
+    summary_sheet["B1"].fill = PatternFill("solid", fgColor="1F4E5F")
+    for row in summary_rows[1:]:
+        summary_sheet.append(row)
+    summary_sheet.column_dimensions["A"].width = 34
+    summary_sheet.column_dimensions["B"].width = 34
+
+    headers = [
+        "Produkt",
+        "Typ",
+        "Verfügbar alt",
+        "Verfügbar neu",
+        "Änderung (neu - alt)",
+        "Bestand alt",
+        "Bestand neu",
+        "Hersteller",
+        "Kultivar",
+        "Art",
+        "Preis pro g",
+        "Verkauf",
+        "Verfall",
+        "Seite",
+        "Zeile",
+        "Vorheriger Lauf",
+        "Aktueller Lauf",
+    ]
+    changes_sheet.append(headers)
+    if changes:
+        for change in changes:
+            changes_sheet.append(
+                [
+                    change.get("product_name"),
+                    change.get("change_type"),
+                    excel_number(change.get("previous_available"))
+                    if change.get("previous_available") is not None
+                    else change.get("previous_available_text"),
+                    excel_number(change.get("current_available"))
+                    if change.get("current_available") is not None
+                    else change.get("current_available_text"),
+                    excel_number(change.get("difference")) if change.get("difference") is not None else "",
+                    excel_number(change.get("previous_stock"))
+                    if change.get("previous_stock") is not None
+                    else change.get("previous_stock_text"),
+                    excel_number(change.get("current_stock"))
+                    if change.get("current_stock") is not None
+                    else change.get("current_stock_text"),
+                    change.get("manufacturer"),
+                    change.get("cultivar"),
+                    change.get("product_type"),
+                    change.get("sale_price_text"),
+                    change.get("sale_enabled"),
+                    change.get("expiry_date_text"),
+                    change.get("page_number"),
+                    change.get("row_index"),
+                    str(change.get("previous_scraped_at") or ""),
+                    str(change.get("current_scraped_at") or ""),
+                ]
+            )
+    else:
+        changes_sheet.append(["Keine Mengenänderungen seit dem letzten Lauf.", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""])
+
+    current_headers = [
+        "Produkt",
+        "Verfügbar",
+        "Bestand",
+        "Hersteller",
+        "Kultivar",
+        "Art",
+        "Preis pro g",
+        "Verkauf",
+        "Verfall",
+        "Seite",
+        "Zeile",
+        "Lauf",
+    ]
+    current_sheet.append(current_headers)
+    for product in sorted(current_products, key=lambda item: normalize_space(item.get("product_name")).casefold()):
+        current_sheet.append(
+            [
+                product.get("product_name"),
+                excel_number(product.get("available_grams")) if product.get("available_grams") is not None else product.get("available_text"),
+                excel_number(product.get("stock_grams")) if product.get("stock_grams") is not None else product.get("stock_text"),
+                product.get("manufacturer"),
+                product.get("cultivar"),
+                product.get("product_type"),
+                product.get("sale_price_text"),
+                product.get("sale_enabled"),
+                product.get("expiry_date_text"),
+                product.get("page_number"),
+                product.get("row_index"),
+                str(product.get("scraped_at") or ""),
+            ]
+        )
+
+    header_fill = PatternFill("solid", fgColor="1F4E5F")
+    header_font = Font(bold=True, color="FFFFFF")
+    thin_border = Border(bottom=Side(style="thin", color="B7B7B7"))
+    decrease_fill = PatternFill("solid", fgColor="FCE4D6")
+    increase_fill = PatternFill("solid", fgColor="E2F0D9")
+    new_fill = PatternFill("solid", fgColor="DDEBF7")
+    removed_fill = PatternFill("solid", fgColor="E7E6E6")
+
+    for sheet in [changes_sheet, current_sheet]:
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+        for cell in sheet[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+        for row in sheet.iter_rows(min_row=2):
+            for cell in row:
+                cell.border = thin_border
+            if sheet.title == "Mengenänderungen":
+                difference = row[4].value
+                change_type = row[1].value
+                fill = None
+                if isinstance(difference, (int, float)) and difference < 0:
+                    fill = decrease_fill
+                elif isinstance(difference, (int, float)) and difference > 0:
+                    fill = increase_fill
+                elif change_type == "new":
+                    fill = new_fill
+                elif change_type == "removed":
+                    fill = removed_fill
+                if fill:
+                    for cell in row:
+                        cell.fill = fill
+        auto_width_for_sheet(sheet)
+
+    for sheet in [changes_sheet, current_sheet]:
+        numeric_columns = [3, 4, 5, 6, 7] if sheet.title == "Mengenänderungen" else [2, 3]
+        for column_index in numeric_columns:
+            column_letter = get_column_letter(column_index)
+            for cell in sheet[column_letter][1:]:
+                if isinstance(cell.value, (int, float)):
+                    cell.number_format = '0.##'
+
+    workbook.save(report_path)
+    trace_step(
+        trace,
+        "created_stock_change_excel_report",
+        path=report_path,
+        changed_rows=changed_rows,
+        current_rows=len(current_products),
+        previous_rows=previous_count,
+    )
+
+    return report_path
+
+
+def build_stock_report(previous_products, current_products, scraped_at, timestamp, base_url, trace=None):
+    if not stock_report_enabled():
+        return {
+            "enabled": False,
+            "reason": "CANNAFLOW_STOCK_REPORT_ENABLED=false",
+        }
+
+    changes, summary = compare_stock_snapshots(previous_products, current_products)
+    report_path = create_stock_change_excel_report(
+        changes,
+        current_products,
+        len(previous_products),
+        scraped_at,
+        timestamp,
+        trace=trace,
+    )
+
+    return {
+        "enabled": True,
+        **summary,
+        "filename": os.path.basename(report_path),
+        "path": report_path,
+        **report_response_links(base_url, report_path),
+    }
+
+
 def scrape_inventory_products(base_url, trace=None):
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -1144,7 +1615,16 @@ def scrape_inventory_products(base_url, trace=None):
             if raw_rows and not products:
                 raise RuntimeError("Scrape found table rows, but no product names were extracted.")
 
+            previous_products = fetch_previous_products_snapshot(trace=trace)
             database_result = write_products_to_supabase_rest(products, trace=trace)
+            stock_report_result = build_stock_report(
+                previous_products,
+                products,
+                scraped_at,
+                timestamp,
+                base_url,
+                trace=trace,
+            )
 
             trace_step(trace, "capture_scrape_screenshot", path=screenshot_path)
             page.screenshot(path=screenshot_path, full_page=True)
@@ -1161,6 +1641,7 @@ def scrape_inventory_products(base_url, trace=None):
                 "products_scraped": len(products),
                 "dedupe": dedupe,
                 "database": database_result,
+                "stock_report": stock_report_result,
                 "screenshot_path": screenshot_path,
                 **screenshot_response_links(base_url, screenshot_path),
             }
@@ -1227,6 +1708,7 @@ def health():
         "products_table": products_table(),
         "products_replace_all": products_replace_all(),
         "products_upsert_on": products_upsert_on(),
+        "stock_report_enabled": stock_report_enabled(),
     }
 
 
@@ -1298,3 +1780,32 @@ def get_screenshot(filename: str):
     if not os.path.exists(screenshot_path):
         return JSONResponse(status_code=404, content={"ok": False, "error": "screenshot_not_found"})
     return FileResponse(screenshot_path, media_type="image/png", filename=os.path.basename(screenshot_path))
+
+
+@app.get("/reports/latest", name="get_latest_report")
+def get_latest_report():
+    report_path = latest_report_path()
+    if not report_path:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "no_report_found"})
+    return FileResponse(
+        report_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=os.path.basename(report_path),
+    )
+
+
+@app.get("/reports/{filename}", name="get_report")
+def get_report(filename: str):
+    try:
+        safe_filename = safe_report_filename(filename)
+    except RuntimeError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+    report_path = os.path.join(ARTIFACTS_DIR, safe_filename)
+    if not os.path.exists(report_path):
+        return JSONResponse(status_code=404, content={"ok": False, "error": "report_not_found"})
+    return FileResponse(
+        report_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=safe_filename,
+    )

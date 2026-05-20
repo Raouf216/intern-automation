@@ -606,6 +606,14 @@ def json_ready(value):
     return value
 
 
+def first_present(*values):
+    for value in values:
+        if value is not None and value != "":
+            return value
+
+    return None
+
+
 def chunks(items, size):
     for index in range(0, len(items), size):
         yield items[index : index + size]
@@ -1052,9 +1060,13 @@ def click_next_inventory_page(page, before_state, trace=None):
 
 def normalize_scraped_product(raw_product, page_number, source_url, scraped_at):
     available_text = normalize_space(raw_product.get("available_text"))
+    available_grams = parse_decimal(available_text)
     stock_text = normalize_space(raw_product.get("stock_text"))
+    stock_grams = parse_decimal(stock_text)
     sale_price_text = normalize_space(raw_product.get("sale_price_text"))
+    sale_price_per_g = parse_decimal(sale_price_text)
     expiry_date_text = normalize_space(raw_product.get("expiry_date_text"))
+    expiry_date = parse_date(expiry_date_text)
     raw_product = {
         **raw_product,
         "page_number": page_number,
@@ -1065,17 +1077,23 @@ def normalize_scraped_product(raw_product, page_number, source_url, scraped_at):
     return {
         "product_name": normalize_space(raw_product.get("product_name")),
         "available_text": available_text,
-        "available_grams": parse_decimal(available_text),
+        "available_grams": available_grams,
+        "available_quantity_text": available_text,
+        "available_quantity_g": available_grams,
         "stock_text": stock_text,
-        "stock_grams": parse_decimal(stock_text),
+        "stock_grams": stock_grams,
+        "stock_quantity_text": stock_text,
+        "stock_quantity_g": stock_grams,
         "sale_price_text": sale_price_text,
-        "sale_price_per_g": parse_decimal(sale_price_text),
+        "sale_price_per_g": sale_price_per_g,
+        "gross_price_per_g_text": sale_price_text,
+        "gross_price_per_g": sale_price_per_g,
         "product_type": normalize_space(raw_product.get("product_type")),
         "cultivar": normalize_space(raw_product.get("cultivar")),
         "manufacturer": normalize_space(raw_product.get("manufacturer")),
         "sale_enabled": raw_product.get("sale_enabled"),
         "expiry_date_text": expiry_date_text,
-        "expiry_date": parse_date(expiry_date_text),
+        "expiry_date": expiry_date,
         "page_number": page_number,
         "row_index": raw_product.get("row_index"),
         "source_url": source_url,
@@ -1259,10 +1277,16 @@ def fetch_previous_products_snapshot(trace=None):
         "product_name",
         "available_grams",
         "available_text",
+        "available_quantity_g",
+        "available_quantity_text",
         "stock_grams",
         "stock_text",
+        "stock_quantity_g",
+        "stock_quantity_text",
         "sale_price_text",
         "sale_price_per_g",
+        "gross_price_per_g_text",
+        "gross_price_per_g",
         "product_type",
         "cultivar",
         "manufacturer",
@@ -1304,21 +1328,49 @@ def fetch_previous_products_snapshot(trace=None):
             continue
 
         raw_data = row.get("raw_data") if isinstance(row.get("raw_data"), dict) else {}
+        available_text = first_present(
+            row.get("available_text"),
+            row.get("available_quantity_text"),
+            raw_data.get("available_text"),
+            raw_data.get("available_quantity_text"),
+        )
+        available_grams = first_present(
+            row.get("available_grams"),
+            row.get("available_quantity_g"),
+            json_ready(parse_decimal(available_text)),
+        )
+        stock_text = first_present(
+            row.get("stock_text"),
+            row.get("stock_quantity_text"),
+            raw_data.get("stock_text"),
+            raw_data.get("stock_quantity_text"),
+        )
+        stock_grams = first_present(
+            row.get("stock_grams"),
+            row.get("stock_quantity_g"),
+            json_ready(parse_decimal(stock_text)),
+        )
+        sale_price_text = first_present(
+            row.get("sale_price_text"),
+            row.get("gross_price_per_g_text"),
+            raw_data.get("sale_price_text"),
+            raw_data.get("gross_price_per_g_text"),
+        )
+        sale_price_per_g = first_present(
+            row.get("sale_price_per_g"),
+            row.get("gross_price_per_g"),
+            json_ready(parse_decimal(sale_price_text)),
+        )
+
         products.append(
             {
                 "product_name": row.get("product_name") or raw_data.get("product_name"),
-                "available_grams": row.get("available_grams")
-                if row.get("available_grams") is not None
-                else json_ready(parse_decimal(raw_data.get("available_text"))),
-                "available_text": row.get("available_text") or raw_data.get("available_text"),
-                "stock_grams": row.get("stock_grams")
-                if row.get("stock_grams") is not None
-                else json_ready(parse_decimal(raw_data.get("stock_text"))),
-                "stock_text": row.get("stock_text") or raw_data.get("stock_text"),
-                "sale_price_text": row.get("sale_price_text") or raw_data.get("sale_price_text"),
-                "sale_price_per_g": row.get("sale_price_per_g")
-                if row.get("sale_price_per_g") is not None
-                else json_ready(parse_decimal(raw_data.get("sale_price_text"))),
+                "available_grams": available_grams,
+                "available_text": available_text,
+                "stock_grams": stock_grams,
+                "stock_text": stock_text,
+                "sale_price_text": sale_price_text,
+                "sale_price_per_g": sale_price_per_g,
                 "product_type": row.get("product_type") or raw_data.get("product_type"),
                 "cultivar": row.get("cultivar") or raw_data.get("cultivar"),
                 "manufacturer": row.get("manufacturer") or raw_data.get("manufacturer"),

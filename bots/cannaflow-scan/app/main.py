@@ -188,6 +188,10 @@ def wait_for_inventory_ready(page, trace=None):
     }
 
 
+def page_says_not_authenticated(page):
+    return "Nicht angemeldet" in page_text_excerpt(page, limit=1_000)
+
+
 def click_inventory(page, trace=None):
     trace_step(trace, "open_inventory", url=inventory_url())
 
@@ -227,6 +231,43 @@ def fill_login_form(page, trace=None):
 def submit_login_form(page, trace=None):
     trace_step(trace, "submit_login_form")
     page.get_by_role("button", name="Anmelden", exact=True).click(timeout=15_000)
+
+
+def wait_for_authenticated_shell(page, trace=None):
+    timeout_ms = int_env("CANNAFLOW_POST_LOGIN_TIMEOUT_MS", 30_000)
+    deadline = time.time() + (timeout_ms / 1000)
+    trace_step(trace, "wait_for_authenticated_shell", timeout_ms=timeout_ms)
+
+    while time.time() < deadline:
+        if page_says_not_authenticated(page):
+            break
+
+        try:
+            inventory_link = page.get_by_role("link", name="Inventar")
+            if inventory_link.count() > 0 and inventory_link.first.is_visible(timeout=1_000):
+                trace_step(trace, "authenticated_shell_visible", current_url=page.url)
+                return
+        except Exception:
+            pass
+
+        if "/auth/login" not in page.url:
+            try:
+                page.get_by_text("Inventar", exact=False).first.wait_for(state="visible", timeout=1_000)
+                trace_step(trace, "authenticated_text_visible", current_url=page.url)
+                return
+            except Exception:
+                pass
+
+        page.wait_for_timeout(500)
+
+    screenshot_path = capture_debug_screenshot(page, "post-login-not-authenticated", trace=trace)
+    raise BotStepError(
+        "Login did not reach the authenticated Cannaflow app.",
+        current_url=page.url,
+        page_title=page.title(),
+        body_excerpt=page_text_excerpt(page, limit=800),
+        debug_screenshot_path=screenshot_path,
+    )
 
 
 def open_context_with_saved_session(browser, trace=None):
@@ -269,6 +310,7 @@ def open_fresh_session(browser, trace=None):
     else:
         fill_login_form(page, trace=trace)
         submit_login_form(page, trace=trace)
+        wait_for_authenticated_shell(page, trace=trace)
 
     click_inventory(page, trace=trace)
     os.makedirs(os.path.dirname(SESSION_STATE_PATH), exist_ok=True)

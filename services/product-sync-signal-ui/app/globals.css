@@ -637,6 +637,33 @@ body[data-theme="night"] .confirm-pickup-preview {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 8px 18px rgba(150, 41, 20, 0.18);
 }
 
+.cannaflow-button {
+  border-color: rgba(34, 220, 150, 0.42);
+  background: linear-gradient(135deg, #43efa1, #18c985);
+  color: #07110d;
+  box-shadow: 0 18px 32px rgba(24, 201, 133, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.cannaflow-button:not(:disabled):hover {
+  box-shadow: 0 22px 42px rgba(24, 201, 133, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.26);
+}
+
+.cannaflow-mark {
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-radius: 8px;
+  background: #050f0c;
+  color: #43efa1;
+  font-size: 15px;
+  font-weight: 950;
+  line-height: 1;
+  box-shadow: inset 0 -6px 0 rgba(67, 239, 161, 0.18), 0 8px 18px rgba(5, 15, 12, 0.18);
+}
+
 .manual-pickup-card {
   background: color-mix(in srgb, var(--surface) 92%, var(--green) 8%);
 }
@@ -934,6 +961,24 @@ body[data-theme="night"] .message-error {
   border-color: rgba(4, 120, 87, 0.22);
   background: var(--green-soft);
   color: var(--green);
+}
+
+.cannaflow-report-note {
+  border-color: rgba(24, 201, 133, 0.26);
+  background: color-mix(in srgb, var(--surface) 88%, #43efa1 12%);
+  color: #047857;
+}
+
+.cannaflow-report-note-error {
+  border-color: rgba(180, 35, 49, 0.26);
+  background: color-mix(in srgb, var(--surface) 88%, var(--red) 12%);
+  color: var(--red);
+}
+
+.cannaflow-report-note-success {
+  border-color: rgba(24, 201, 133, 0.3);
+  background: color-mix(in srgb, var(--surface) 82%, #43efa1 18%);
+  color: #047857;
 }
 
 .wawican-report-note > svg {

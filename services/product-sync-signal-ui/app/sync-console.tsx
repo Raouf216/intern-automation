@@ -60,7 +60,9 @@ type ProductChangeExport = {
 };
 
 type ProductRunStep = "syncing" | "notifying" | "exporting" | null;
-type WawicanRunStep = "running" | "downloading" | null;
+type StockRunStep = "running" | "downloading" | null;
+type WawicanRunStep = StockRunStep;
+type CannaflowRunStep = StockRunStep;
 
 type QuantityChangeExportRow = {
   productName: string;
@@ -176,9 +178,12 @@ const fallbackEndpoint = "http://178.104.144.30:8020/jobs/product-prices";
 const fallbackEndOfDayEndpoint = "http://178.104.144.30:8021/jobs/end-of-day/orders/sync";
 const configuredWawicanStockEndpoint = process.env.NEXT_PUBLIC_WAWICAN_STOCK_ENDPOINT || "";
 const fallbackWawicanStockEndpoint = "http://178.104.144.30:8024/jobs/scrape-products";
+const configuredCannaflowStockEndpoint = process.env.NEXT_PUBLIC_CANNAFLOW_STOCK_ENDPOINT || "";
+const fallbackCannaflowStockEndpoint = "http://178.104.144.30:8025/jobs/scrape-products";
 const syncEndpoint = configuredEndpoint || fallbackEndpoint;
 const endOfDayEndpoint = configuredEndOfDayEndpoint || fallbackEndOfDayEndpoint;
 const wawicanStockEndpoint = configuredWawicanStockEndpoint || fallbackWawicanStockEndpoint;
+const cannaflowStockEndpoint = configuredCannaflowStockEndpoint || fallbackCannaflowStockEndpoint;
 const endOfDayHealthEndpoint = healthEndpointFor(endOfDayEndpoint);
 const staffSteps = [
   {
@@ -467,6 +472,14 @@ function WawicanMark() {
   );
 }
 
+function CannaflowMark() {
+  return (
+    <span className="cannaflow-mark" aria-hidden="true">
+      c
+    </span>
+  );
+}
+
 async function sendFinalSyncNotification(notification: SyncNotification) {
   try {
     const response = await fetch("/api/sync-notification", {
@@ -513,18 +526,23 @@ export function SyncConsole() {
   const [isRunning, setIsRunning] = useState(false);
   const [isEndOfDayRunning, setIsEndOfDayRunning] = useState(false);
   const [isWawicanRunning, setIsWawicanRunning] = useState(false);
+  const [isCannaflowRunning, setIsCannaflowRunning] = useState(false);
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
   const [endOfDayStatus, setEndOfDayStatus] = useState<"idle" | "success" | "error">("idle");
   const [wawicanStatus, setWawicanStatus] = useState<"idle" | "success" | "error">("idle");
+  const [cannaflowStatus, setCannaflowStatus] = useState<"idle" | "success" | "error">("idle");
   const [message, setMessage] = useState("Bereit für eine kontrollierte Produktsynchronisierung.");
   const [endOfDayMessage, setEndOfDayMessage] = useState("Bereit für End-of-Day Bestellungen und Excel-Export.");
   const [wawicanMessage, setWawicanMessage] = useState("Bereit für Wawican Bestandsänderungen.");
+  const [cannaflowMessage, setCannaflowMessage] = useState("Bereit für Cannaflow Bestandsänderungen.");
   const [result, setResult] = useState<SyncResponse | null>(null);
   const [endOfDayResult, setEndOfDayResult] = useState<EndOfDayResponse | null>(null);
   const [wawicanResult, setWawicanResult] = useState<WawicanStockResponse | null>(null);
+  const [cannaflowResult, setCannaflowResult] = useState<WawicanStockResponse | null>(null);
   const [productExport, setProductExport] = useState<ProductChangeExport | null>(null);
   const [productRunStep, setProductRunStep] = useState<ProductRunStep>(null);
   const [wawicanRunStep, setWawicanRunStep] = useState<WawicanRunStep>(null);
+  const [cannaflowRunStep, setCannaflowRunStep] = useState<CannaflowRunStep>(null);
   const [isProductExporting, setIsProductExporting] = useState(false);
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [finishedAt, setFinishedAt] = useState<Date | null>(null);
@@ -532,6 +550,8 @@ export function SyncConsole() {
   const [endOfDayFinishedAt, setEndOfDayFinishedAt] = useState<Date | null>(null);
   const [wawicanStartedAt, setWawicanStartedAt] = useState<Date | null>(null);
   const [wawicanFinishedAt, setWawicanFinishedAt] = useState<Date | null>(null);
+  const [cannaflowStartedAt, setCannaflowStartedAt] = useState<Date | null>(null);
+  const [cannaflowFinishedAt, setCannaflowFinishedAt] = useState<Date | null>(null);
   const [theme, setTheme] = useState<"light" | "night">("light");
 
   useEffect(() => {
@@ -573,7 +593,7 @@ export function SyncConsole() {
     }
   }
 
-  function requireUnlocked(target: "products" | "eod" | "wawican") {
+  function requireUnlocked(target: "products" | "eod" | "wawican" | "cannaflow") {
     if (isUnlocked) return true;
 
     const messageText = "Bitte zuerst den Zugang freischalten.";
@@ -585,9 +605,12 @@ export function SyncConsole() {
     } else if (target === "eod") {
       setEndOfDayStatus("error");
       setEndOfDayMessage(messageText);
-    } else {
+    } else if (target === "wawican") {
       setWawicanStatus("error");
       setWawicanMessage(messageText);
+    } else {
+      setCannaflowStatus("error");
+      setCannaflowMessage(messageText);
     }
 
     return false;
@@ -653,9 +676,11 @@ export function SyncConsole() {
       setStatus("idle");
       setEndOfDayStatus("idle");
       setWawicanStatus("idle");
+      setCannaflowStatus("idle");
       setMessage("Bereit für eine kontrollierte Produktsynchronisierung.");
       setEndOfDayMessage("Bereit für End-of-Day Bestellungen und Excel-Export.");
       setWawicanMessage("Bereit für Wawican Bestandsänderungen.");
+      setCannaflowMessage("Bereit für Cannaflow Bestandsänderungen.");
     } catch (error) {
       setIsUnlocked(false);
       setUnlockStatus("error");
@@ -967,6 +992,84 @@ export function SyncConsole() {
     }
   }
 
+  async function triggerCannaflowStockReport() {
+    if (!requireUnlocked("cannaflow")) return;
+
+    if (!cannaflowStockEndpoint.trim()) {
+      setCannaflowStatus("error");
+      setCannaflowMessage("Der feste Cannaflow Bot-Endpunkt ist nicht konfiguriert.");
+      return;
+    }
+
+    setIsCannaflowRunning(true);
+    setCannaflowRunStep("running");
+    setCannaflowStatus("idle");
+    setCannaflowMessage("Cannaflow läuft. Der Bot synchronisiert den Bestand und erstellt den Mengenreport.");
+    setCannaflowResult(null);
+    const runStartedAt = new Date();
+    setCannaflowStartedAt(runStartedAt);
+    setCannaflowFinishedAt(null);
+
+    try {
+      const response = await fetch(cannaflowStockEndpoint.trim(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+      const contentType = response.headers.get("content-type") || "";
+      const payload = contentType.includes("application/json")
+        ? ((await response.json()) as WawicanStockResponse)
+        : ({ ok: false, error: await response.text() } satisfies WawicanStockResponse);
+
+      setCannaflowResult(payload);
+
+      if (!response.ok || !payload.ok) {
+        throw new Error(
+          payload.error
+            ? `Bot-Fehler: ${payload.error}`
+            : `HTTP-Fehler ${response.status}: ${response.statusText || "keine Details"}`
+        );
+      }
+
+      const report = payload.stock_report;
+      const changedRows = numberValue(report?.changed_rows);
+      const decreasedRows = numberValue(report?.decreased_rows);
+      const currentRows = numberValue(report?.current_rows ?? payload.products_scraped);
+
+      const reportDownloadUrl = browserSafeReportUrl(report, cannaflowStockEndpoint.trim());
+
+      if (reportDownloadUrl) {
+        setCannaflowRunStep("downloading");
+        setCannaflowMessage(`Cannaflow abgeschlossen: ${changedRows} Änderung(en), ${decreasedRows} gesunken. Excel wird heruntergeladen.`);
+        await downloadRemoteReport(reportDownloadUrl, report?.filename);
+      }
+
+      setCannaflowStatus("success");
+      setCannaflowMessage(
+        reportDownloadUrl
+          ? `Cannaflow abgeschlossen: ${changedRows} Änderung(en), ${decreasedRows} gesunken, ${currentRows} Produkte.`
+          : `Cannaflow abgeschlossen: ${changedRows} Änderung(en), aber kein Excel-Link wurde zurückgegeben.`
+      );
+      setCannaflowFinishedAt(new Date());
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
+      const isFetchFailure = isFetchFailureMessage(errorMessage);
+
+      setCannaflowStatus("error");
+      setCannaflowMessage(
+        isFetchFailure
+          ? `Netzwerk- oder CORS-Fehler: Der Browser konnte den Cannaflow Bot unter ${cannaflowStockEndpoint} nicht erreichen oder die Antwort nicht lesen.`
+          : `Cannaflow Anfrage fehlgeschlagen: ${errorMessage}`
+      );
+      setCannaflowFinishedAt(new Date());
+    } finally {
+      setIsCannaflowRunning(false);
+      setCannaflowRunStep(null);
+    }
+  }
+
   const isProductBusy = isRunning || isProductExporting;
   const productActionLabel =
     productRunStep === "notifying"
@@ -982,11 +1085,17 @@ export function SyncConsole() {
       : isWawicanRunning
         ? "Wawican läuft"
         : "Wawican Mengenänderungen prüfen";
-  const anyBotRunning = isProductBusy || isEndOfDayRunning || isWawicanRunning;
+  const cannaflowActionLabel =
+    cannaflowRunStep === "downloading"
+      ? "Excel wird heruntergeladen"
+      : isCannaflowRunning
+        ? "Cannaflow läuft"
+        : "Cannaflow Mengenänderungen prüfen";
+  const anyBotRunning = isProductBusy || isEndOfDayRunning || isWawicanRunning || isCannaflowRunning;
   const anyBotError =
-    status === "error" || endOfDayStatus === "error" || wawicanStatus === "error";
+    status === "error" || endOfDayStatus === "error" || wawicanStatus === "error" || cannaflowStatus === "error";
   const anyBotSuccess =
-    status === "success" || endOfDayStatus === "success" || wawicanStatus === "success";
+    status === "success" || endOfDayStatus === "success" || wawicanStatus === "success" || cannaflowStatus === "success";
 
   if (isSessionChecking) {
     return (
@@ -1143,6 +1252,40 @@ export function SyncConsole() {
           ) : null}
         </div>
       ) : null}
+
+      {cannaflowResult || isCannaflowRunning || cannaflowStatus !== "idle" ? (
+        <div className={`wawican-report-note cannaflow-report-note cannaflow-report-note-${isCannaflowRunning ? "running" : cannaflowStatus}`}>
+          {isCannaflowRunning ? <Loader2 size={18} className="spin" /> : cannaflowStatus === "success" ? <CheckCircle2 size={18} /> : cannaflowStatus === "error" ? <AlertTriangle size={18} /> : <FileSpreadsheet size={18} />}
+          <div>
+            <span>Cannaflow Mengenänderungen</span>
+            <strong>{cannaflowResult?.stock_report?.filename || "Noch kein Excel-Report"}</strong>
+            <small>
+              {cannaflowResult?.stock_report
+                ? `${numberValue(cannaflowResult.stock_report.changed_rows)} Änderung(en) · ${numberValue(cannaflowResult.stock_report.decreased_rows)} gesunken · ${numberValue(cannaflowResult.stock_report.current_rows)} Produkte`
+                : cannaflowMessage}
+            </small>
+          </div>
+          {cannaflowResult?.stock_report?.report_url ? (
+            <button
+              type="button"
+              onClick={() => {
+                const report = cannaflowResult.stock_report;
+                const reportDownloadUrl = browserSafeReportUrl(report, cannaflowStockEndpoint.trim());
+                if (!reportDownloadUrl) return;
+
+                void downloadRemoteReport(reportDownloadUrl, report?.filename).catch((error) => {
+                  const errorMessage = error instanceof Error ? error.message : "Unbekannter Fehler";
+                  setCannaflowStatus("error");
+                  setCannaflowMessage(`Excel-Download fehlgeschlagen: ${errorMessage}`);
+                });
+              }}
+              aria-label="Cannaflow Mengenänderungen als XLSX herunterladen"
+            >
+              <FileSpreadsheet size={16} />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </aside>
   );
 
@@ -1285,6 +1428,11 @@ export function SyncConsole() {
                   <button className="trigger-button wawican-button" type="button" onClick={triggerWawicanStockReport} disabled={isWawicanRunning}>
                     {isWawicanRunning ? <Loader2 size={21} className="spin" /> : <WawicanMark />}
                     <span>{wawicanActionLabel}</span>
+                    <ArrowRight size={20} />
+                  </button>
+                  <button className="trigger-button cannaflow-button" type="button" onClick={triggerCannaflowStockReport} disabled={isCannaflowRunning}>
+                    {isCannaflowRunning ? <Loader2 size={21} className="spin" /> : <CannaflowMark />}
+                    <span>{cannaflowActionLabel}</span>
                     <ArrowRight size={20} />
                   </button>
                 </div>

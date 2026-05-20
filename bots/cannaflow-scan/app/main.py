@@ -1254,25 +1254,28 @@ def compare_stock_snapshots(previous_products, current_products):
         if product_name_key(product)
     }
     changes = []
+    new_product_count = len(set(current_by_name) - set(previous_by_name))
+    removed_product_count = len(set(previous_by_name) - set(current_by_name))
 
     for key in sorted(current_by_name, key=lambda item: normalize_space(current_by_name[item].get("product_name")).casefold()):
         current = current_by_name[key]
         previous = previous_by_name.get(key)
+        if previous is None:
+            continue
+
         current_available = decimal_for_compare(current.get("available_grams"))
-        previous_available = decimal_for_compare(previous.get("available_grams")) if previous else None
+        previous_available = decimal_for_compare(previous.get("available_grams"))
         current_text = quantity_display(current.get("available_grams"), current.get("available_text"))
         previous_text = quantity_display(
-            previous.get("available_grams") if previous else None,
-            previous.get("available_text") if previous else None,
+            previous.get("available_grams"),
+            previous.get("available_text"),
         )
-        change_type = "new" if previous is None else "changed"
 
-        if previous is not None:
-            if current_available is not None and previous_available is not None:
-                if current_available == previous_available:
-                    continue
-            elif current_text == previous_text:
+        if current_available is not None and previous_available is not None:
+            if current_available == previous_available:
                 continue
+        elif current_text == previous_text:
+            continue
 
         difference = None
         if current_available is not None and previous_available is not None:
@@ -1280,18 +1283,18 @@ def compare_stock_snapshots(previous_products, current_products):
 
         changes.append(
             {
-                "change_type": change_type,
+                "change_type": "changed",
                 "product_name": current.get("product_name"),
                 "previous_available": previous_available,
                 "current_available": current_available,
                 "previous_available_text": previous_text,
                 "current_available_text": current_text,
                 "difference": difference,
-                "previous_stock": decimal_for_compare(previous.get("stock_grams")) if previous else None,
+                "previous_stock": decimal_for_compare(previous.get("stock_grams")),
                 "current_stock": decimal_for_compare(current.get("stock_grams")),
                 "previous_stock_text": quantity_display(
-                    previous.get("stock_grams") if previous else None,
-                    previous.get("stock_text") if previous else None,
+                    previous.get("stock_grams"),
+                    previous.get("stock_text"),
                 ),
                 "current_stock_text": quantity_display(current.get("stock_grams"), current.get("stock_text")),
                 "manufacturer": current.get("manufacturer"),
@@ -1302,36 +1305,8 @@ def compare_stock_snapshots(previous_products, current_products):
                 "expiry_date_text": current.get("expiry_date_text"),
                 "page_number": current.get("page_number"),
                 "row_index": current.get("row_index"),
-                "previous_scraped_at": previous.get("scraped_at") if previous else None,
-                "current_scraped_at": current.get("scraped_at"),
-            }
-        )
-
-    for key in sorted(set(previous_by_name) - set(current_by_name), key=lambda item: normalize_space(previous_by_name[item].get("product_name")).casefold()):
-        previous = previous_by_name[key]
-        changes.append(
-            {
-                "change_type": "removed",
-                "product_name": previous.get("product_name"),
-                "previous_available": decimal_for_compare(previous.get("available_grams")),
-                "current_available": None,
-                "previous_available_text": quantity_display(previous.get("available_grams"), previous.get("available_text")),
-                "current_available_text": "",
-                "difference": None,
-                "previous_stock": decimal_for_compare(previous.get("stock_grams")),
-                "current_stock": None,
-                "previous_stock_text": quantity_display(previous.get("stock_grams"), previous.get("stock_text")),
-                "current_stock_text": "",
-                "manufacturer": previous.get("manufacturer"),
-                "cultivar": previous.get("cultivar"),
-                "product_type": previous.get("product_type"),
-                "sale_price_text": previous.get("sale_price_text"),
-                "sale_enabled": previous.get("sale_enabled"),
-                "expiry_date_text": previous.get("expiry_date_text"),
-                "page_number": None,
-                "row_index": None,
                 "previous_scraped_at": previous.get("scraped_at"),
-                "current_scraped_at": None,
+                "current_scraped_at": current.get("scraped_at"),
             }
         )
 
@@ -1352,8 +1327,8 @@ def compare_stock_snapshots(previous_products, current_products):
         "changed_rows": len(changes),
         "decreased_rows": len(decreased),
         "increased_rows": len(increased),
-        "new_rows": sum(1 for change in changes if change.get("change_type") == "new"),
-        "removed_rows": sum(1 for change in changes if change.get("change_type") == "removed"),
+        "new_rows": new_product_count,
+        "removed_rows": removed_product_count,
     }
 
 
@@ -1371,7 +1346,15 @@ def auto_width_for_sheet(sheet, max_width=60):
         sheet.column_dimensions[column_letter].width = min(max(max_length + 2, 10), max_width)
 
 
-def create_stock_change_excel_report(changes, current_products, previous_count, scraped_at, timestamp, trace=None):
+def create_stock_change_excel_report(
+    changes,
+    current_products,
+    previous_count,
+    scraped_at,
+    timestamp,
+    summary_counts=None,
+    trace=None,
+):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
@@ -1395,8 +1378,9 @@ def create_stock_change_excel_report(changes, current_products, previous_count, 
         for change in changes
         if isinstance(change.get("difference"), Decimal) and change["difference"] > 0
     )
-    new_rows = sum(1 for change in changes if change.get("change_type") == "new")
-    removed_rows = sum(1 for change in changes if change.get("change_type") == "removed")
+    summary_counts = summary_counts or {}
+    new_rows = summary_counts.get("new_rows", 0)
+    removed_rows = summary_counts.get("removed_rows", 0)
 
     summary_rows = [
         ["Cannaflow Mengenänderungen", ""],
@@ -1577,6 +1561,7 @@ def build_stock_report(previous_products, current_products, scraped_at, timestam
         len(previous_products),
         scraped_at,
         timestamp,
+        summary_counts=summary,
         trace=trace,
     )
 

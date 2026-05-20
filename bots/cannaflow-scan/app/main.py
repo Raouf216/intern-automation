@@ -292,6 +292,74 @@ def page_size_input(page):
     return page.locator("xpath=//*[normalize-space()='Seitengröße']/following::input[1]").first
 
 
+def wait_for_inventory_page_size_applied(page, target_size, trace=None):
+    timeout_ms = int_env("CANNAFLOW_PAGE_SIZE_TIMEOUT_MS", 30_000)
+    trace_step(trace, "wait_for_inventory_page_size_applied", target_size=target_size, timeout_ms=timeout_ms)
+
+    try:
+        return page.wait_for_function(
+            """
+            (targetSize) => {
+              const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+              const bodyText = normalize(document.body ? document.body.innerText : '');
+              const ranges = Array.from(bodyText.matchAll(/(\\d+)\\s*-\\s*(\\d+)\\s+von\\s+(\\d+)/g));
+              const rangeMatch = ranges.length ? ranges[ranges.length - 1] : null;
+
+              if (!rangeMatch) {
+                return false;
+              }
+
+              const from = Number(rangeMatch[1]);
+              const to = Number(rangeMatch[2]);
+              const total = Number(rangeMatch[3]);
+              const expectedRows = Math.max(0, to - from + 1);
+              const tables = Array.from(document.querySelectorAll('table'));
+              const tableInfo = tables
+                .map((candidate) => ({
+                  element: candidate,
+                  rows: Array.from(candidate.querySelectorAll('tbody tr'))
+                    .filter((row) => row.querySelectorAll('td').length > 0),
+                }))
+                .sort((left, right) => right.rows.length - left.rows.length)[0];
+              const rowCount = tableInfo ? tableInfo.rows.length : 0;
+              const requiredRows = Math.min(expectedRows, Number(targetSize) || expectedRows);
+
+              if (!requiredRows || rowCount < requiredRows) {
+                window.__cannaflowPageSizeProbe = {
+                  label: rangeMatch[0],
+                  expectedRows,
+                  requiredRows,
+                  rowCount,
+                  total,
+                };
+                return false;
+              }
+
+              return {
+                label: rangeMatch[0],
+                expected_rows: expectedRows,
+                row_count: rowCount,
+                total_rows: total,
+              };
+            }
+            """,
+            arg=target_size,
+            timeout=timeout_ms,
+        ).json_value()
+    except Exception as exc:
+        probe = page.evaluate("() => window.__cannaflowPageSizeProbe || null")
+        screenshot_path = capture_debug_screenshot(page, "page-size-table-not-ready", trace=trace)
+        raise BotStepError(
+            "Cannaflow table did not render the selected page size.",
+            current_url=page.url,
+            page_title=page.title(),
+            page_size_target=target_size,
+            page_size_probe=probe,
+            body_excerpt=page_text_excerpt(page, limit=800),
+            debug_screenshot_path=screenshot_path,
+        ) from exc
+
+
 def ensure_inventory_page_size(page, trace=None):
     target_size = inventory_page_size()
     timeout_ms = int_env("CANNAFLOW_PAGE_SIZE_TIMEOUT_MS", 30_000)
@@ -320,11 +388,13 @@ def ensure_inventory_page_size(page, trace=None):
         current_size = 0
 
     if current_size >= target_size:
+        render_state = wait_for_inventory_page_size_applied(page, target_size, trace=trace)
         return {
             "target": target_size,
             "before": current_value,
             "after": current_value,
             "changed": False,
+            "render": render_state,
         }
 
     try:
@@ -344,7 +414,7 @@ def ensure_inventory_page_size(page, trace=None):
             debug_screenshot_path=screenshot_path,
         ) from exc
 
-    wait_for_inventory_ready(page, trace=trace)
+    render_state = wait_for_inventory_page_size_applied(page, target_size, trace=trace)
     after_value = (page_size.input_value(timeout=timeout_ms) or "").strip()
     trace_step(trace, "inventory_page_size_changed", before=current_value, after=after_value)
 
@@ -353,6 +423,7 @@ def ensure_inventory_page_size(page, trace=None):
         "before": current_value,
         "after": after_value,
         "changed": True,
+        "render": render_state,
     }
 
 

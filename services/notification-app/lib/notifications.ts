@@ -1,4 +1,4 @@
-export type NotificationSection = "upload" | "doktorabc_sync" | "check_bot" | "realtime_bot" | "abrechnung_verification";
+export type NotificationSection = "upload" | "doktorabc_sync" | "check_bot" | "realtime_bot";
 export type NotificationStatus = "triggered" | "success" | "failure" | "info" | "warning";
 
 export type StoredNotification = {
@@ -257,6 +257,7 @@ export async function listNotifications(limit = 100) {
 
   const url = new URL(tableUrl());
   url.searchParams.set("select", "*");
+  url.searchParams.set("section", "neq.abrechnung_verification");
   url.searchParams.set("order", "created_at.desc");
   url.searchParams.set("limit", String(limit));
 
@@ -269,7 +270,8 @@ export async function listNotifications(limit = 100) {
     throw new Error(`Supabase read failed (${response.status}): ${await response.text()}`);
   }
 
-  return (await response.json()) as StoredNotification[];
+  const notifications = (await response.json()) as StoredNotification[];
+  return notifications.filter((notification) => notification.section !== "abrechnung_verification");
 }
 
 function normalizeStatus(status: string | undefined, event = ""): NotificationStatus {

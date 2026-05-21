@@ -515,6 +515,12 @@ code {
   background: var(--red-soft);
 }
 
+.type-tabs button.ok.active {
+  color: var(--green);
+  border-color: rgba(4, 120, 87, 0.28);
+  background: var(--green-soft);
+}
+
 .problem-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -545,6 +551,11 @@ code {
   border-left-color: var(--blue);
 }
 
+.problem-card.success-card {
+  border-left-color: var(--green);
+  background: color-mix(in srgb, var(--surface) 94%, var(--green-soft));
+}
+
 .problem-head {
   display: flex;
   align-items: flex-start;
@@ -560,6 +571,10 @@ code {
 .problem-title svg {
   color: var(--red);
   flex: 0 0 auto;
+}
+
+.success-card .problem-title svg {
+  color: var(--green);
 }
 
 .problem-title h3 {
@@ -638,6 +653,12 @@ code {
   color: var(--blue);
   background: var(--blue-soft);
   border-color: rgba(14, 116, 144, 0.24);
+}
+
+.severity-ok {
+  color: var(--green);
+  background: var(--green-soft);
+  border-color: rgba(4, 120, 87, 0.24);
 }
 
 .value-compare {

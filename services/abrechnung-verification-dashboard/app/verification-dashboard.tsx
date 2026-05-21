@@ -31,6 +31,20 @@ type ProblemWithRun = {
   run: StoredVerificationRun;
 };
 
+type SuccessWithRun = {
+  kind: "success";
+  id: string;
+  run: StoredVerificationRun;
+};
+
+type ProblemListItem =
+  | {
+      kind: "problem";
+      problem: VerificationProblem;
+      run: StoredVerificationRun;
+    }
+  | SuccessWithRun;
+
 const demoRuns: StoredVerificationRun[] = [
   {
     id: "DEMO-ABR-2026-05-09-001",
@@ -50,6 +64,7 @@ const demoRuns: StoredVerificationRun[] = [
         id: "TEST-FAIL-QTY-001-quantity_mismatch-0",
         problem_type: "quantity_mismatch",
         order_reference: "TEST-FAIL-QTY-001",
+        hash_id: null,
         billing_id: "23387",
         line_no: "1",
         order_type: "eod",
@@ -67,6 +82,7 @@ const demoRuns: StoredVerificationRun[] = [
         id: "TEST-FAIL-PRICE-002-price_mismatch-1",
         problem_type: "price_mismatch",
         order_reference: "TEST-FAIL-PRICE-002",
+        hash_id: null,
         billing_id: "23388",
         line_no: "1",
         order_type: "eod",
@@ -84,6 +100,7 @@ const demoRuns: StoredVerificationRun[] = [
         id: "TEST-MISSING-003-missing_order-2",
         problem_type: "missing_order",
         order_reference: "TEST-MISSING-003",
+        hash_id: null,
         billing_id: null,
         line_no: null,
         order_type: "eod",
@@ -243,12 +260,27 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
     () =>
       focusedRuns.flatMap((run) =>
         run.problems.map((problem) => ({
+          kind: "problem" as const,
           problem,
           run,
         }))
       ),
     [focusedRuns]
   );
+
+  const allSuccesses = useMemo(
+    () =>
+      focusedRuns.flatMap((run) =>
+        run.success_ids.map((id) => ({
+          kind: "success" as const,
+          id,
+          run,
+        }))
+      ),
+    [focusedRuns]
+  );
+
+  const allItems = useMemo<ProblemListItem[]>(() => [...allProblems, ...allSuccesses], [allProblems, allSuccesses]);
 
   const summary = useMemo(() => {
     const successCount = selectedRun.success_count;
@@ -279,27 +311,35 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
       .sort((left, right) => right.count - left.count || typeLabel(left.type).localeCompare(typeLabel(right.type)));
   }, [allProblems]);
 
-  const filteredProblems = useMemo(() => {
+  const filteredItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
-    return allProblems.filter(({ problem, run }) => {
-      const matchesType = selectedType === "all" || problem.problem_type === selectedType;
-      const searchable = [
-        problem.order_reference,
-        problem.problem_type,
-        problem.problem,
-        formatValue(problem.expected_value),
-        formatValue(problem.actual_value),
-        run.id,
-        run.invoice_file || "",
-      ]
-        .join(" ")
-        .toLowerCase();
+    return allItems.filter((item) => {
+      const matchesType =
+        selectedType === "all" ||
+        (selectedType === "ok" && item.kind === "success") ||
+        (item.kind === "problem" && item.problem.problem_type === selectedType);
+      const searchable =
+        item.kind === "success"
+          ? [item.id, item.run.invoice_file || "", runDisplayName(item.run)].join(" ").toLowerCase()
+          : [
+              problemDisplayId(item.problem),
+              item.problem.order_reference,
+              item.problem.hash_id || "",
+              item.problem.problem_type,
+              item.problem.problem,
+              formatValue(item.problem.expected_value),
+              formatValue(item.problem.actual_value),
+              item.run.invoice_file || "",
+              runDisplayName(item.run),
+            ]
+              .join(" ")
+              .toLowerCase();
       const matchesQuery = normalizedQuery ? searchable.includes(normalizedQuery) : true;
 
       return matchesType && matchesQuery;
     });
-  }, [allProblems, query, selectedType]);
+  }, [allItems, query, selectedType]);
 
   const maxTypeCount = Math.max(1, ...problemTypeCounts.map((item) => item.count));
 
@@ -344,7 +384,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
           </div>
           <div>
             <p className="section-kicker">Letzter Lauf</p>
-            <h2>{latestRun.invoice_file || latestRun.id}</h2>
+            <h2>{runDisplayName(latestRun)}</h2>
             <p>
               {formatDateTime(latestRun.finished_at || latestRun.received_at)} · {latestRun.bot_name} · {latestRun.problem_count} Problem(e)
             </p>
@@ -371,8 +411,8 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
         <section className="problem-workspace" aria-label="Problemuebersicht">
           <div className="section-heading">
             <div>
-              <p className="section-kicker">Problems im ausgewählten Dokument</p>
-              <h2>Abweichungen in der Abrechnung</h2>
+              <p className="section-kicker">Pruefergebnisse im ausgewählten Dokument</p>
+              <h2>Abweichungen und OK-Pruefungen</h2>
             </div>
             <div className="refresh-note">
               <RefreshCw size={15} />
@@ -388,7 +428,11 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
             <div className="type-tabs" role="tablist" aria-label="Problemtyp Filter">
               <button className={selectedType === "all" ? "active" : ""} type="button" onClick={() => setSelectedType("all")}>
                 Alle
-                <strong>{allProblems.length}</strong>
+                <strong>{allItems.length}</strong>
+              </button>
+              <button className={selectedType === "ok" ? "active ok" : "ok"} type="button" onClick={() => setSelectedType("ok")}>
+                OK
+                <strong>{allSuccesses.length}</strong>
               </button>
               {problemTypeCounts.map((item) => (
                 <button className={selectedType === item.type ? "active" : ""} type="button" onClick={() => setSelectedType(item.type)} key={item.type}>
@@ -400,8 +444,14 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
           </div>
 
           <div className="problem-list">
-            {filteredProblems.length ? (
-              filteredProblems.map(({ problem, run }) => <ProblemCard problem={problem} run={run} key={`${run.id}-${problem.id}`} />)
+            {filteredItems.length ? (
+              filteredItems.map((item) =>
+                item.kind === "success" ? (
+                  <SuccessCard id={item.id} run={item.run} key={`${item.run.id}-ok-${item.id}`} />
+                ) : (
+                  <ProblemCard problem={item.problem} run={item.run} key={`${item.run.id}-${item.problem.id}`} />
+                )
+              )
             ) : (
               <div className="empty-state">
                 <CheckCircle2 size={30} />
@@ -459,7 +509,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
                     key={run.id}
                   >
                     <span>
-                      <b>{run.invoice_file || run.id}</b>
+                      <b>{runDisplayName(run)}</b>
                       <small>{formatDateTime(run.finished_at || run.received_at)}</small>
                     </span>
                     <strong>{run.problem_count}</strong>
@@ -528,13 +578,15 @@ function MetricCard({
 }
 
 function ProblemCard({ problem, run }: ProblemWithRun) {
+  const displayId = problemDisplayId(problem);
+
   return (
     <article className={`problem-card severity-${problem.severity}`}>
       <div className="problem-head">
         <div className="problem-title">
           <FileWarning size={19} />
           <div>
-            <h3>{problem.order_reference}</h3>
+            <h3>{displayId}</h3>
             <p>{typeLabel(problem.problem_type)}</p>
           </div>
         </div>
@@ -543,7 +595,7 @@ function ProblemCard({ problem, run }: ProblemWithRun) {
 
       <p className="problem-copy">{problem.problem}</p>
 
-      {problem.product_name || problem.pzn || problem.billing_id || problem.order_type || problem.billing_date ? (
+      {problem.product_name || problem.pzn || problem.billing_id || problem.hash_id || problem.order_type || problem.billing_date ? (
         <div className="problem-context">
           {problem.product_name ? (
             <span>
@@ -561,6 +613,12 @@ function ProblemCard({ problem, run }: ProblemWithRun) {
             <span>
               <b>Billing ID</b>
               <strong>{problem.billing_id}</strong>
+            </span>
+          ) : null}
+          {problem.hash_id ? (
+            <span>
+              <b>Hash ID</b>
+              <strong>{problem.hash_id}</strong>
             </span>
           ) : null}
           {problem.line_no ? (
@@ -597,11 +655,54 @@ function ProblemCard({ problem, run }: ProblemWithRun) {
       </div>
 
       <div className="problem-foot">
-        <span>{run.invoice_file || run.id}</span>
+        <span>{displayId}</span>
         <time dateTime={run.finished_at || run.received_at}>{formatDateTime(run.finished_at || run.received_at)}</time>
       </div>
     </article>
   );
+}
+
+function SuccessCard({ id, run }: Pick<SuccessWithRun, "id" | "run">) {
+  return (
+    <article className="problem-card success-card">
+      <div className="problem-head">
+        <div className="problem-title">
+          <CheckCircle2 size={19} />
+          <div>
+            <h3>{id}</h3>
+            <p>Geprueft OK</p>
+          </div>
+        </div>
+        <span className="severity-chip severity-ok">OK</span>
+      </div>
+
+      <p className="problem-copy">Diese Order wurde vom Abrechnung-Bot ohne Abweichung bestaetigt.</p>
+
+      <div className="problem-context">
+        <span>
+          <b>Hash / Order</b>
+          <strong>{id}</strong>
+        </span>
+        <span>
+          <b>Status</b>
+          <strong>OK</strong>
+        </span>
+      </div>
+
+      <div className="problem-foot">
+        <span>{id}</span>
+        <time dateTime={run.finished_at || run.received_at}>{formatDateTime(run.finished_at || run.received_at)}</time>
+      </div>
+    </article>
+  );
+}
+
+function runDisplayName(run: StoredVerificationRun) {
+  return run.invoice_file || `Verification ${formatDateTime(run.finished_at || run.received_at)}`;
+}
+
+function problemDisplayId(problem: VerificationProblem) {
+  return problem.hash_id || problem.order_reference;
 }
 
 function statusIcon(status: VerificationStatus) {

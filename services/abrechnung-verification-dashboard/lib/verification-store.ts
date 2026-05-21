@@ -9,6 +9,7 @@ export type VerificationProblem = {
   id: string;
   problem_type: string;
   order_reference: string;
+  hash_id: string | null;
   billing_id: string | null;
   line_no: string | null;
   order_type: string | null;
@@ -293,7 +294,7 @@ function verificationMessage(run: StoredVerificationRun) {
 function normalizeRun(rawPayload: unknown): StoredVerificationRun {
   const payload = extractVerificationPayload(rawPayload);
   const problems = recordArray(payload.problems).map(normalizeProblem);
-  const successIds = stringArray(payload.success_ids);
+  const successIds = successIdArray(payload.success_ids);
   const problemCount = numberValue(payload.problem_count, problems.length);
   const successCount = numberValue(payload.success_count, successIds.length);
   const timestamp =
@@ -340,6 +341,12 @@ function normalizeProblem(row: Record<string, unknown>, index: number): Verifica
     id: stringValue(row.id) || `${orderReference}-${problemType}-${index}`,
     problem_type: problemType,
     order_reference: orderReference,
+    hash_id:
+      stringValue(row.hash_id) ||
+      stringValue(row.billing_hash_id) ||
+      stringValue(row.billing_hash) ||
+      stringValue(row.order_hash_id) ||
+      null,
     billing_id: stringValue(row.billing_id) || null,
     line_no: stringValue(row.line_no) || null,
     order_type: stringValue(row.order_type) || null,
@@ -485,10 +492,24 @@ function recordArray(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(recordValue(item))) : [];
 }
 
-function stringArray(value: unknown) {
+function successIdArray(value: unknown) {
   return Array.isArray(value)
     ? value
-        .map((item) => stringValue(item))
+        .map((item) => {
+          const record = recordValue(item);
+          if (!record) {
+            return stringValue(item);
+          }
+
+          return (
+            stringValue(record.hash_id) ||
+            stringValue(record.billing_hash_id) ||
+            stringValue(record.order_reference) ||
+            stringValue(record.order_id) ||
+            stringValue(record.reference) ||
+            stringValue(record.id)
+          );
+        })
         .filter(Boolean)
     : [];
 }

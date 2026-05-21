@@ -24,6 +24,13 @@ export type VerificationProblem = {
   raw: Record<string, unknown>;
 };
 
+export type VerificationSuccess = {
+  id: string;
+  order_reference: string;
+  hash_id: string | null;
+  order_type: string | null;
+};
+
 export type StoredVerificationRun = {
   id: string;
   status: VerificationStatus;
@@ -35,7 +42,7 @@ export type StoredVerificationRun = {
   billing_period_to: string | null;
   invoice_file: string | null;
   success_count: number;
-  success_ids: string[];
+  success_ids: VerificationSuccess[];
   problem_count: number;
   problems: VerificationProblem[];
   raw: Record<string, unknown>;
@@ -112,7 +119,7 @@ async function readStore() {
   try {
     const data = await readFile(storePath(), "utf8");
     const parsed = JSON.parse(data) as unknown;
-    return Array.isArray(parsed) ? parsed.filter(isStoredRun) : [];
+    return Array.isArray(parsed) ? parsed.map(normalizeStoredRun).filter((run): run is StoredVerificationRun => Boolean(run)) : [];
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
       return [];
@@ -233,7 +240,7 @@ function notificationRowToRun(row: SupabaseNotificationRow | undefined): StoredV
   try {
     const payload = recordValue(row.payload) || {};
     const storedRun = recordValue(payload.verification_run);
-    const run = storedRun && isStoredRun(storedRun) ? storedRun : normalizeRun(payload);
+    const run = storedRun && isStoredRun(storedRun) ? normalizeStoredRun(storedRun) || normalizeRun(payload) : normalizeRun(payload);
 
     return withDocumentIdentity(
       {
@@ -294,7 +301,7 @@ function verificationMessage(run: StoredVerificationRun) {
 function normalizeRun(rawPayload: unknown): StoredVerificationRun {
   const payload = extractVerificationPayload(rawPayload);
   const problems = recordArray(payload.problems).map(normalizeProblem);
-  const successIds = successIdArray(payload.success_ids);
+  const successIds = successArray(payload.success_ids);
   const problemCount = numberValue(payload.problem_count, problems.length);
   const successCount = numberValue(payload.success_count, successIds.length);
   const timestamp =
@@ -349,7 +356,7 @@ function normalizeProblem(row: Record<string, unknown>, index: number): Verifica
       null,
     billing_id: stringValue(row.billing_id) || null,
     line_no: stringValue(row.line_no) || null,
-    order_type: stringValue(row.order_type) || null,
+    order_type: stringValue(row.order_type) || stringValue(row.orderType) || null,
     billing_date: validDateString(row.billing_date) || stringValue(row.billing_date) || null,
     billing_type: stringValue(row.billing_type) || null,
     pzn: stringValue(row.pzn) || null,
@@ -359,6 +366,35 @@ function normalizeProblem(row: Record<string, unknown>, index: number): Verifica
     problem: stringValue(row.problem) || stringValue(row.message) || "Abweichung in der Abrechnung gefunden.",
     severity: severityForProblem(problemType),
     raw: row,
+  };
+}
+
+function normalizeStoredRun(value: unknown): StoredVerificationRun | null {
+  const row = recordValue(value);
+
+  if (!row || !stringValue(row.id) || !Array.isArray(row.problems)) {
+    return null;
+  }
+
+  const problems = recordArray(row.problems).map(normalizeProblem);
+  const successIds = successArray(row.success_ids);
+  const problemCount = numberValue(row.problem_count, problems.length);
+
+  return {
+    id: stringValue(row.id),
+    status: normalizeStatus(row.status, problemCount),
+    source: stringValue(row.source) || "abrechnung-bot",
+    bot_name: stringValue(row.bot_name) || "Abrechnung Bot",
+    received_at: validDateString(row.received_at) || new Date().toISOString(),
+    finished_at: validDateString(row.finished_at) || stringValue(row.finished_at) || null,
+    billing_period_from: stringValue(row.billing_period_from) || null,
+    billing_period_to: stringValue(row.billing_period_to) || null,
+    invoice_file: stringValue(row.invoice_file) || null,
+    success_count: numberValue(row.success_count, successIds.length),
+    success_ids: successIds,
+    problem_count: problemCount,
+    problems,
+    raw: recordValue(row.raw) || {},
   };
 }
 
@@ -492,26 +528,50 @@ function recordArray(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(recordValue(item))) : [];
 }
 
-function successIdArray(value: unknown) {
+function successArray(value: unknown): VerificationSuccess[] {
   return Array.isArray(value)
     ? value
-        .map((item) => {
-          const record = recordValue(item);
-          if (!record) {
-            return stringValue(item);
-          }
-
-          return (
-            stringValue(record.hash_id) ||
-            stringValue(record.billing_hash_id) ||
-            stringValue(record.order_reference) ||
-            stringValue(record.order_id) ||
-            stringValue(record.reference) ||
-            stringValue(record.id)
-          );
-        })
-        .filter(Boolean)
+        .map(normalizeSuccess)
+        .filter((success): success is VerificationSuccess => Boolean(success))
     : [];
+}
+
+function normalizeSuccess(item: unknown, index: number): VerificationSuccess | null {
+  const record = recordValue(item);
+
+  if (!record) {
+    const id = stringValue(item);
+    return id
+      ? {
+          id,
+          order_reference: id,
+          hash_id: null,
+          order_type: null,
+        }
+      : null;
+  }
+
+  const hashId =
+    stringValue(record.hash_id) ||
+    stringValue(record.billing_hash_id) ||
+    stringValue(record.billing_hash) ||
+    stringValue(record.order_hash_id) ||
+    null;
+  const orderReference =
+    stringValue(record.order_reference) ||
+    stringValue(record.order_id) ||
+    stringValue(record.reference) ||
+    stringValue(record.id) ||
+    hashId ||
+    `OK ${index + 1}`;
+  const id = hashId || orderReference;
+
+  return {
+    id,
+    order_reference: orderReference,
+    hash_id: hashId,
+    order_type: stringValue(record.order_type) || stringValue(record.orderType) || stringValue(record.type) || null,
+  };
 }
 
 function stringValue(value: unknown) {

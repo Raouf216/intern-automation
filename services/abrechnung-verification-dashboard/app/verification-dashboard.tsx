@@ -19,7 +19,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { StoredVerificationRun, VerificationProblem, VerificationStatus } from "../lib/verification-store";
+import type { StoredVerificationRun, VerificationProblem, VerificationStatus, VerificationSuccess } from "../lib/verification-store";
 
 type Props = {
   initialRuns: StoredVerificationRun[];
@@ -33,7 +33,7 @@ type ProblemWithRun = {
 
 type SuccessWithRun = {
   kind: "success";
-  id: string;
+  success: VerificationSuccess;
   run: StoredVerificationRun;
 };
 
@@ -57,7 +57,11 @@ const demoRuns: StoredVerificationRun[] = [
     billing_period_to: "2026-05-09",
     invoice_file: "doktorabc-abrechnung-2026-05-09.xlsx",
     success_count: 3,
-    success_ids: ["TEST-PASS-001", "TEST-PASS-002", "TEST-PASS-RETURN-001"],
+    success_ids: [
+      { id: "TEST-PASS-001", order_reference: "TEST-PASS-001", hash_id: null, order_type: "eod" },
+      { id: "TEST-PASS-002", order_reference: "TEST-PASS-002", hash_id: null, order_type: "self pickup" },
+      { id: "TEST-PASS-RETURN-001", order_reference: "TEST-PASS-RETURN-001", hash_id: null, order_type: "eod" },
+    ],
     problem_count: 3,
     problems: [
       {
@@ -128,7 +132,12 @@ const demoRuns: StoredVerificationRun[] = [
     billing_period_to: "2026-05-08",
     invoice_file: "doktorabc-abrechnung-2026-05-08.xlsx",
     success_count: 42,
-    success_ids: ["A-2026-001", "A-2026-002", "A-2026-003", "A-2026-004"],
+    success_ids: [
+      { id: "A-2026-001", order_reference: "A-2026-001", hash_id: null, order_type: "eod" },
+      { id: "A-2026-002", order_reference: "A-2026-002", hash_id: null, order_type: "eod" },
+      { id: "A-2026-003", order_reference: "A-2026-003", hash_id: null, order_type: "self pickup" },
+      { id: "A-2026-004", order_reference: "A-2026-004", hash_id: null, order_type: "self pickup" },
+    ],
     problem_count: 0,
     problems: [],
     raw: {},
@@ -271,9 +280,9 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
   const allSuccesses = useMemo(
     () =>
       focusedRuns.flatMap((run) =>
-        run.success_ids.map((id) => ({
+        run.success_ids.map((success) => ({
           kind: "success" as const,
-          id,
+          success,
           run,
         }))
       ),
@@ -321,11 +330,23 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
         (item.kind === "problem" && item.problem.problem_type === selectedType);
       const searchable =
         item.kind === "success"
-          ? [item.id, item.run.invoice_file || "", runDisplayName(item.run)].join(" ").toLowerCase()
+          ? [
+              item.success.id,
+              item.success.order_reference,
+              item.success.hash_id || "",
+              item.success.order_type || "",
+              orderTypeLabel(item.success.order_type),
+              item.run.invoice_file || "",
+              runDisplayName(item.run),
+            ]
+              .join(" ")
+              .toLowerCase()
           : [
               problemDisplayId(item.problem),
               item.problem.order_reference,
               item.problem.hash_id || "",
+              item.problem.order_type || "",
+              orderTypeLabel(item.problem.order_type),
               item.problem.problem_type,
               item.problem.problem,
               formatValue(item.problem.expected_value),
@@ -447,7 +468,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
             {filteredItems.length ? (
               filteredItems.map((item) =>
                 item.kind === "success" ? (
-                  <SuccessCard id={item.id} run={item.run} key={`${item.run.id}-ok-${item.id}`} />
+                  <SuccessCard success={item.success} run={item.run} key={`${item.run.id}-ok-${item.success.id}`} />
                 ) : (
                   <ProblemCard problem={item.problem} run={item.run} key={`${item.run.id}-${item.problem.id}`} />
                 )
@@ -545,8 +566,11 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
               </div>
             </dl>
             <div className="success-id-list">
-              {selectedRun.success_ids.slice(0, 8).map((id) => (
-                <code key={id}>{id}</code>
+              {selectedRun.success_ids.slice(0, 8).map((success, index) => (
+                <code key={`${success.id}-${index}`}>
+                  <span>{success.id}</span>
+                  <small>{orderTypeLabel(success.order_type)}</small>
+                </code>
               ))}
               {selectedRun.success_ids.length > 8 ? <span>+{selectedRun.success_ids.length - 8} weitere</span> : null}
             </div>
@@ -579,6 +603,7 @@ function MetricCard({
 
 function ProblemCard({ problem, run }: ProblemWithRun) {
   const displayId = problemDisplayId(problem);
+  const orderType = orderTypeLabel(problem.order_type);
 
   return (
     <article className={`problem-card severity-${problem.severity}`}>
@@ -587,7 +612,9 @@ function ProblemCard({ problem, run }: ProblemWithRun) {
           <FileWarning size={19} />
           <div>
             <h3>{displayId}</h3>
-            <p>{typeLabel(problem.problem_type)}</p>
+            <p>
+              {typeLabel(problem.problem_type)} · {orderType}
+            </p>
           </div>
         </div>
         <span className={`severity-chip severity-${problem.severity}`}>{severityLabel(problem.severity)}</span>
@@ -595,52 +622,48 @@ function ProblemCard({ problem, run }: ProblemWithRun) {
 
       <p className="problem-copy">{problem.problem}</p>
 
-      {problem.product_name || problem.pzn || problem.billing_id || problem.hash_id || problem.order_type || problem.billing_date ? (
-        <div className="problem-context">
-          {problem.product_name ? (
-            <span>
-              <b>Produkt</b>
-              <strong>{problem.product_name}</strong>
-            </span>
-          ) : null}
-          {problem.pzn ? (
-            <span>
-              <b>PZN</b>
-              <strong>{problem.pzn}</strong>
-            </span>
-          ) : null}
-          {problem.billing_id ? (
-            <span>
-              <b>Billing ID</b>
-              <strong>{problem.billing_id}</strong>
-            </span>
-          ) : null}
-          {problem.hash_id ? (
-            <span>
-              <b>Hash ID</b>
-              <strong>{problem.hash_id}</strong>
-            </span>
-          ) : null}
-          {problem.line_no ? (
-            <span>
-              <b>Zeile</b>
-              <strong>{problem.line_no}</strong>
-            </span>
-          ) : null}
-          {problem.order_type ? (
-            <span>
-              <b>Order Typ</b>
-              <strong>{problem.order_type}</strong>
-            </span>
-          ) : null}
-          {problem.billing_date ? (
-            <span>
-              <b>Datum</b>
-              <strong>{formatDateTime(problem.billing_date)}</strong>
-            </span>
-          ) : null}
-        </div>
-      ) : null}
+      <div className="problem-context">
+        <span>
+          <b>Order Typ</b>
+          <strong>{orderType}</strong>
+        </span>
+        {problem.product_name ? (
+          <span>
+            <b>Produkt</b>
+            <strong>{problem.product_name}</strong>
+          </span>
+        ) : null}
+        {problem.pzn ? (
+          <span>
+            <b>PZN</b>
+            <strong>{problem.pzn}</strong>
+          </span>
+        ) : null}
+        {problem.billing_id ? (
+          <span>
+            <b>Billing ID</b>
+            <strong>{problem.billing_id}</strong>
+          </span>
+        ) : null}
+        {problem.hash_id ? (
+          <span>
+            <b>Hash ID</b>
+            <strong>{problem.hash_id}</strong>
+          </span>
+        ) : null}
+        {problem.line_no ? (
+          <span>
+            <b>Zeile</b>
+            <strong>{problem.line_no}</strong>
+          </span>
+        ) : null}
+        {problem.billing_date ? (
+          <span>
+            <b>Datum</b>
+            <strong>{formatDateTime(problem.billing_date)}</strong>
+          </span>
+        ) : null}
+      </div>
 
       <div className="value-compare">
         <div>
@@ -655,22 +678,26 @@ function ProblemCard({ problem, run }: ProblemWithRun) {
       </div>
 
       <div className="problem-foot">
-        <span>{displayId}</span>
+        <span>
+          {displayId} · {orderType}
+        </span>
         <time dateTime={run.finished_at || run.received_at}>{formatDateTime(run.finished_at || run.received_at)}</time>
       </div>
     </article>
   );
 }
 
-function SuccessCard({ id, run }: Pick<SuccessWithRun, "id" | "run">) {
+function SuccessCard({ success, run }: Pick<SuccessWithRun, "success" | "run">) {
+  const orderType = orderTypeLabel(success.order_type);
+
   return (
     <article className="problem-card success-card">
       <div className="problem-head">
         <div className="problem-title">
           <CheckCircle2 size={19} />
           <div>
-            <h3>{id}</h3>
-            <p>Geprueft OK</p>
+            <h3>{success.id}</h3>
+            <p>Geprueft OK · {orderType}</p>
           </div>
         </div>
         <span className="severity-chip severity-ok">OK</span>
@@ -680,8 +707,12 @@ function SuccessCard({ id, run }: Pick<SuccessWithRun, "id" | "run">) {
 
       <div className="problem-context">
         <span>
+          <b>Order Typ</b>
+          <strong>{orderType}</strong>
+        </span>
+        <span>
           <b>Hash / Order</b>
-          <strong>{id}</strong>
+          <strong>{success.id}</strong>
         </span>
         <span>
           <b>Status</b>
@@ -690,7 +721,9 @@ function SuccessCard({ id, run }: Pick<SuccessWithRun, "id" | "run">) {
       </div>
 
       <div className="problem-foot">
-        <span>{id}</span>
+        <span>
+          {success.id} · {orderType}
+        </span>
         <time dateTime={run.finished_at || run.received_at}>{formatDateTime(run.finished_at || run.received_at)}</time>
       </div>
     </article>
@@ -703,6 +736,20 @@ function runDisplayName(run: StoredVerificationRun) {
 
 function problemDisplayId(problem: VerificationProblem) {
   return problem.hash_id || problem.order_reference;
+}
+
+function orderTypeLabel(value: string | null | undefined) {
+  const normalized = (value || "").trim().toLowerCase().replaceAll("_", " ");
+
+  if (normalized === "eod") {
+    return "EOD";
+  }
+
+  if (normalized === "self pickup" || normalized === "pickup" || normalized === "pickup ready") {
+    return "Self Pickup";
+  }
+
+  return value || "Unbekannt";
 }
 
 function statusIcon(status: VerificationStatus) {

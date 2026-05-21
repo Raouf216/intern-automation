@@ -884,9 +884,16 @@ code {
 
 .success-id-list code {
   min-width: 0;
+  display: grid;
+  gap: 3px;
 }
 
-.success-id-list span {
+.success-id-list code span {
+  overflow-wrap: anywhere;
+}
+
+.success-id-list code small,
+.success-id-list > span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 850;

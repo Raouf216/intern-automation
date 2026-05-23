@@ -1,0 +1,29 @@
+services:
+  metabase:
+    container_name: metabase
+    image: metabase/metabase:latest
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${METABASE_PORT:-8070}:3000"
+    environment:
+      - TZ=${TZ:-Europe/Berlin}
+      - JAVA_TIMEZONE=${TZ:-Europe/Berlin}
+      - MB_JETTY_PORT=3000
+      - MB_DB_FILE=/metabase-data/metabase.db
+    volumes:
+      - metabase-data:/metabase-data
+    networks:
+      - dokploy-network
+      - supabase_network
+
+networks:
+  dokploy-network:
+    external: true
+  supabase_network:
+    external: true
+    name: analyticsengine-supabase-b2lvjw_default
+
+volumes:
+  metabase-data:
+    name: metabase-data

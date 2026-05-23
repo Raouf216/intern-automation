@@ -238,7 +238,7 @@ h3 {
 
 .summary-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 16px;
 }
@@ -521,6 +521,12 @@ code {
   background: var(--green-soft);
 }
 
+.type-tabs button.returns.active {
+  color: var(--amber);
+  border-color: rgba(161, 92, 7, 0.28);
+  background: var(--amber-soft);
+}
+
 .problem-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -556,6 +562,16 @@ code {
   background: color-mix(in srgb, var(--surface) 94%, var(--green-soft));
 }
 
+.problem-card.return-card {
+  border-left-color: var(--amber);
+  background: color-mix(in srgb, var(--surface) 94%, var(--amber-soft));
+}
+
+.problem-card.return-card.missing {
+  border-left-color: var(--red);
+  background: color-mix(in srgb, var(--surface) 92%, var(--red-soft));
+}
+
 .problem-head {
   display: flex;
   align-items: flex-start;
@@ -575,6 +591,14 @@ code {
 
 .success-card .problem-title svg {
   color: var(--green);
+}
+
+.return-card .problem-title svg {
+  color: var(--amber);
+}
+
+.return-card.missing .problem-title svg {
+  color: var(--red);
 }
 
 .problem-title h3 {
@@ -735,6 +759,7 @@ code {
 
 .category-list,
 .run-list,
+.return-list,
 .success-id-list {
   display: grid;
   gap: 8px;
@@ -846,6 +871,63 @@ code {
   color: var(--red);
   background: var(--red-soft);
   font-size: 13px;
+}
+
+.return-row {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--green);
+  border-radius: 8px;
+  padding: 10px;
+  color: var(--ink);
+  background: var(--surface);
+  text-align: left;
+}
+
+.return-row.missing {
+  border-left-color: var(--red);
+}
+
+.return-row span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.return-row b,
+.return-row small {
+  overflow-wrap: anywhere;
+}
+
+.return-row b {
+  font-size: 13px;
+}
+
+.return-row small,
+.more-line {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.return-row strong {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 13px;
+}
+
+.return-row.missing strong {
+  color: var(--red);
+  background: var(--red-soft);
 }
 
 .fact-grid {

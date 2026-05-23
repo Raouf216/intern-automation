@@ -31,6 +31,20 @@ export type VerificationSuccess = {
   order_type: string | null;
 };
 
+export type VerificationReturn = {
+  id: string;
+  order_reference: string;
+  hash_id: string | null;
+  billing_id: string | null;
+  billing_type: string | null;
+  supply_price_base: unknown;
+  return_billing_date: string | null;
+  sent_at: string | null;
+  order_type: string | null;
+  found_in_bot: boolean;
+  problem: string | null;
+};
+
 export type StoredVerificationRun = {
   id: string;
   status: VerificationStatus;
@@ -43,6 +57,7 @@ export type StoredVerificationRun = {
   invoice_file: string | null;
   success_count: number;
   success_ids: VerificationSuccess[];
+  returns: VerificationReturn[];
   problem_count: number;
   problems: VerificationProblem[];
   raw: Record<string, unknown>;
@@ -302,6 +317,7 @@ function normalizeRun(rawPayload: unknown): StoredVerificationRun {
   const payload = extractVerificationPayload(rawPayload);
   const problems = recordArray(payload.problems).map(normalizeProblem);
   const successIds = successArray(payload.success_ids);
+  const returns = returnArray(payload.returns);
   const problemCount = numberValue(payload.problem_count, problems.length);
   const successCount = numberValue(payload.success_count, successIds.length);
   const timestamp =
@@ -330,6 +346,7 @@ function normalizeRun(rawPayload: unknown): StoredVerificationRun {
       null,
     success_count: successCount,
     success_ids: successIds,
+    returns,
     problem_count: problemCount,
     problems,
     raw: payload,
@@ -378,6 +395,7 @@ function normalizeStoredRun(value: unknown): StoredVerificationRun | null {
 
   const problems = recordArray(row.problems).map(normalizeProblem);
   const successIds = successArray(row.success_ids);
+  const returns = returnArray(row.returns);
   const problemCount = numberValue(row.problem_count, problems.length);
 
   return {
@@ -392,6 +410,7 @@ function normalizeStoredRun(value: unknown): StoredVerificationRun | null {
     invoice_file: stringValue(row.invoice_file) || null,
     success_count: numberValue(row.success_count, successIds.length),
     success_ids: successIds,
+    returns,
     problem_count: problemCount,
     problems,
     raw: recordValue(row.raw) || {},
@@ -417,7 +436,7 @@ function normalizeStatus(value: unknown, problemCount: number): VerificationStat
 }
 
 function severityForProblem(problemType: string): ProblemSeverity {
-  if (["missing_order", "unexpected_order", "duplicate_order", "billing_missing"].includes(problemType)) {
+  if (["missing_order", "unexpected_order", "duplicate_order", "billing_missing", "return_order_not_found"].includes(problemType)) {
     return "critical";
   }
 
@@ -495,6 +514,7 @@ function looksLikeVerificationPayload(record: Record<string, unknown>) {
   return (
     Array.isArray(record.problems) ||
     Array.isArray(record.success_ids) ||
+    Array.isArray(record.returns) ||
     record.problem_count !== undefined ||
     record.success_count !== undefined ||
     (record.status !== undefined && record.checked_at !== undefined)
@@ -536,6 +556,14 @@ function successArray(value: unknown): VerificationSuccess[] {
     : [];
 }
 
+function returnArray(value: unknown): VerificationReturn[] {
+  return Array.isArray(value)
+    ? value
+        .map(normalizeReturn)
+        .filter((item): item is VerificationReturn => Boolean(item))
+    : [];
+}
+
 function normalizeSuccess(item: unknown, index: number): VerificationSuccess | null {
   const record = recordValue(item);
 
@@ -571,6 +599,55 @@ function normalizeSuccess(item: unknown, index: number): VerificationSuccess | n
     order_reference: orderReference,
     hash_id: hashId,
     order_type: stringValue(record.order_type) || stringValue(record.orderType) || stringValue(record.type) || null,
+  };
+}
+
+function normalizeReturn(item: unknown, index: number): VerificationReturn | null {
+  const record = recordValue(item);
+
+  if (!record) {
+    return null;
+  }
+
+  const hashId =
+    stringValue(record.hash_id) ||
+    stringValue(record.billing_hash_id) ||
+    stringValue(record.billing_hash) ||
+    stringValue(record.order_hash_id) ||
+    null;
+  const orderReference =
+    stringValue(record.order_reference) ||
+    stringValue(record.order_id) ||
+    stringValue(record.reference) ||
+    hashId ||
+    `Retoure ${index + 1}`;
+  const sentAt =
+    validDateString(record.sent_at) ||
+    validDateString(record.bot_scraped_at) ||
+    validDateString(record.original_scraped_at) ||
+    validDateString(record.scraped_at) ||
+    null;
+  const foundInBot =
+    typeof record.found_in_bot === "boolean"
+      ? record.found_in_bot
+      : Boolean(sentAt || stringValue(record.bot_order_type) || stringValue(record.order_type));
+
+  return {
+    id: stringValue(record.id) || `${orderReference}-return-${index}`,
+    order_reference: orderReference,
+    hash_id: hashId,
+    billing_id: stringValue(record.billing_id) || null,
+    billing_type: stringValue(record.billing_type) || null,
+    supply_price_base: record.supply_price_base ?? record.billing_total ?? record.amount ?? null,
+    return_billing_date:
+      validDateString(record.return_billing_date) ||
+      validDateString(record.billing_date) ||
+      validDateString(record.return_sent_date) ||
+      null,
+    sent_at: sentAt,
+    order_type: stringValue(record.bot_order_type) || stringValue(record.order_type) || stringValue(record.orderType) || null,
+    found_in_bot: foundInBot,
+    problem: stringValue(record.problem) || stringValue(record.message) || null,
   };
 }
 

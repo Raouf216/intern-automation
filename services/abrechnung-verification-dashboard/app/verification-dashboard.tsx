@@ -16,10 +16,11 @@ import {
   ShieldCheck,
   Sun,
   Target,
+  RotateCcw,
   XCircle,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { StoredVerificationRun, VerificationProblem, VerificationStatus, VerificationSuccess } from "../lib/verification-store";
+import type { StoredVerificationRun, VerificationProblem, VerificationReturn, VerificationStatus, VerificationSuccess } from "../lib/verification-store";
 
 type Props = {
   initialRuns: StoredVerificationRun[];
@@ -37,112 +38,38 @@ type SuccessWithRun = {
   run: StoredVerificationRun;
 };
 
+type ReturnWithRun = {
+  kind: "return";
+  returnItem: VerificationReturn;
+  run: StoredVerificationRun;
+};
+
 type ProblemListItem =
   | {
       kind: "problem";
       problem: VerificationProblem;
       run: StoredVerificationRun;
     }
-  | SuccessWithRun;
+  | SuccessWithRun
+  | ReturnWithRun;
 
-const demoRuns: StoredVerificationRun[] = [
-  {
-    id: "DEMO-ABR-2026-05-09-001",
-    status: "failure",
-    source: "abrechnung-verification-bot",
-    bot_name: "Abrechnung Bot",
-    received_at: "2026-05-09T15:52:00.000Z",
-    finished_at: "2026-05-09T15:51:42.000Z",
-    billing_period_from: "2026-05-01",
-    billing_period_to: "2026-05-09",
-    invoice_file: "doktorabc-abrechnung-2026-05-09.xlsx",
-    success_count: 3,
-    success_ids: [
-      { id: "TEST-PASS-001", order_reference: "TEST-PASS-001", hash_id: null, order_type: "eod" },
-      { id: "TEST-PASS-002", order_reference: "TEST-PASS-002", hash_id: null, order_type: "self pickup" },
-      { id: "TEST-PASS-RETURN-001", order_reference: "TEST-PASS-RETURN-001", hash_id: null, order_type: "eod" },
-    ],
-    problem_count: 3,
-    problems: [
-      {
-        id: "TEST-FAIL-QTY-001-quantity_mismatch-0",
-        problem_type: "quantity_mismatch",
-        order_reference: "TEST-FAIL-QTY-001",
-        hash_id: null,
-        billing_id: "23387",
-        line_no: "1",
-        order_type: "eod",
-        billing_date: "2026-02-21T10:00:00.000Z",
-        billing_type: "shipping",
-        pzn: "20343593",
-        product_name: "Blueten Canopy KMI 30/1 - Strain Kush Mints",
-        expected_value: 20,
-        actual_value: 15,
-        problem: "Billing quantity in grams does not match bot quantity.",
-        severity: "high",
-        raw: {},
-      },
-      {
-        id: "TEST-FAIL-PRICE-002-price_mismatch-1",
-        problem_type: "price_mismatch",
-        order_reference: "TEST-FAIL-PRICE-002",
-        hash_id: null,
-        billing_id: "23388",
-        line_no: "1",
-        order_type: "eod",
-        billing_date: "2026-02-21T10:00:00.000Z",
-        billing_type: "shipping",
-        pzn: "19474172",
-        product_name: "Blueten Nimbus Health easy 26/1 - Strain French Cookies",
-        expected_value: "EUR 147.50",
-        actual_value: "EUR 132.50",
-        problem: "Abrechnungspreis weicht von der Bot-Kontrolle ab.",
-        severity: "high",
-        raw: {},
-      },
-      {
-        id: "TEST-MISSING-003-missing_order-2",
-        problem_type: "missing_order",
-        order_reference: "TEST-MISSING-003",
-        hash_id: null,
-        billing_id: null,
-        line_no: null,
-        order_type: "eod",
-        billing_date: null,
-        billing_type: null,
-        pzn: null,
-        product_name: null,
-        expected_value: "Order in Bot",
-        actual_value: "Nicht in Abrechnung",
-        problem: "Order wurde vom Bot gefunden, fehlt aber in der Abrechnung.",
-        severity: "critical",
-        raw: {},
-      },
-    ],
-    raw: {},
-  },
-  {
-    id: "DEMO-ABR-2026-05-08-002",
-    status: "success",
-    source: "abrechnung-verification-bot",
-    bot_name: "Abrechnung Bot",
-    received_at: "2026-05-08T18:20:00.000Z",
-    finished_at: "2026-05-08T18:19:31.000Z",
-    billing_period_from: "2026-05-01",
-    billing_period_to: "2026-05-08",
-    invoice_file: "doktorabc-abrechnung-2026-05-08.xlsx",
-    success_count: 42,
-    success_ids: [
-      { id: "A-2026-001", order_reference: "A-2026-001", hash_id: null, order_type: "eod" },
-      { id: "A-2026-002", order_reference: "A-2026-002", hash_id: null, order_type: "eod" },
-      { id: "A-2026-003", order_reference: "A-2026-003", hash_id: null, order_type: "self pickup" },
-      { id: "A-2026-004", order_reference: "A-2026-004", hash_id: null, order_type: "self pickup" },
-    ],
-    problem_count: 0,
-    problems: [],
-    raw: {},
-  },
-];
+const emptyRun: StoredVerificationRun = {
+  id: "empty",
+  status: "success",
+  source: "abrechnung-bot",
+  bot_name: "Abrechnung Bot",
+  received_at: new Date(0).toISOString(),
+  finished_at: null,
+  billing_period_from: null,
+  billing_period_to: null,
+  invoice_file: null,
+  success_count: 0,
+  success_ids: [],
+  returns: [],
+  problem_count: 0,
+  problems: [],
+  raw: {},
+};
 
 const problemLabels: Record<string, string> = {
   billing_total_mismatch: "Abrechnungssumme",
@@ -157,6 +84,7 @@ const problemLabels: Record<string, string> = {
   unexpected_order: "Unerwartete Order",
   duplicate_order: "Doppelte Order",
   billing_missing: "Abrechnung fehlt",
+  return_order_not_found: "Retoure ohne Versand",
   unknown_problem: "Unbekanntes Problem",
 };
 
@@ -167,7 +95,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
   const [theme, setTheme] = useState<"light" | "night">("light");
   const [selectedType, setSelectedType] = useState("all");
   const [query, setQuery] = useState("");
-  const [expandedRunId, setExpandedRunId] = useState(initialRuns[0]?.id || demoRuns[0].id);
+  const [expandedRunId, setExpandedRunId] = useState(initialRuns[0]?.id || "");
   const [showDocumentList, setShowDocumentList] = useState(false);
   const [origin, setOrigin] = useState("");
   const [copiedEndpoint, setCopiedEndpoint] = useState(false);
@@ -258,9 +186,9 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
     window.setTimeout(() => setCopiedEndpoint(false), 1400);
   }
 
-  const displayRuns = runs.length ? runs : demoRuns;
+  const displayRuns = runs;
   const isPreview = runs.length === 0;
-  const latestRun = displayRuns[0];
+  const latestRun = displayRuns[0] || emptyRun;
   const endpoint = `${origin || "http://localhost:8060"}/api/verification-runs`;
   const selectedRun = displayRuns.find((run) => run.id === expandedRunId) || latestRun;
   const focusedRuns = [selectedRun];
@@ -289,7 +217,19 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
     [focusedRuns]
   );
 
-  const allItems = useMemo<ProblemListItem[]>(() => [...allProblems, ...allSuccesses], [allProblems, allSuccesses]);
+  const allReturns = useMemo(
+    () =>
+      focusedRuns.flatMap((run) =>
+        run.returns.map((returnItem) => ({
+          kind: "return" as const,
+          returnItem,
+          run,
+        }))
+      ),
+    [focusedRuns]
+  );
+
+  const allItems = useMemo<ProblemListItem[]>(() => [...allProblems, ...allSuccesses, ...allReturns], [allProblems, allSuccesses, allReturns]);
 
   const summary = useMemo(() => {
     const successCount = selectedRun.success_count;
@@ -304,10 +244,11 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
       criticalCount,
       healthScore,
       problemCount,
+      returnCount: allReturns.length,
       successCount,
       totalChecked,
     };
-  }, [allProblems, selectedRun]);
+  }, [allProblems, allReturns, selectedRun]);
 
   const problemTypeCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -327,6 +268,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
       const matchesType =
         selectedType === "all" ||
         (selectedType === "ok" && item.kind === "success") ||
+        (selectedType === "returns" && item.kind === "return") ||
         (item.kind === "problem" && item.problem.problem_type === selectedType);
       const searchable =
         item.kind === "success"
@@ -341,6 +283,24 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
             ]
               .join(" ")
               .toLowerCase()
+          : item.kind === "return"
+            ? [
+                item.returnItem.id,
+                item.returnItem.order_reference,
+                item.returnItem.hash_id || "",
+                item.returnItem.billing_id || "",
+                item.returnItem.billing_type || "",
+                item.returnItem.order_type || "",
+                orderTypeLabel(item.returnItem.order_type),
+                item.returnItem.found_in_bot ? "gefunden" : "nicht gefunden",
+                item.returnItem.problem || "",
+                formatValue(item.returnItem.supply_price_base),
+                item.returnItem.sent_at ? formatDateTime(item.returnItem.sent_at) : "",
+                item.run.invoice_file || "",
+                runDisplayName(item.run),
+              ]
+                .join(" ")
+                .toLowerCase()
           : [
               problemDisplayId(item.problem),
               item.problem.order_reference,
@@ -395,6 +355,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
         <MetricCard label="Probleme offen" value={summary.problemCount} tone={summary.problemCount ? "danger" : "good"} icon={<AlertTriangle size={22} />} />
         <MetricCard label="Kritisch" value={summary.criticalCount} tone={summary.criticalCount ? "danger" : "neutral"} icon={<XCircle size={22} />} />
         <MetricCard label="Geprueft OK" value={summary.successCount} tone="good" icon={<BadgeCheck size={22} />} />
+        <MetricCard label="Retouren" value={summary.returnCount} tone={summary.returnCount ? "warn" : "neutral"} icon={<RotateCcw size={22} />} />
         <MetricCard label="Betroffene Orders" value={summary.affectedOrders} tone={summary.affectedOrders ? "warn" : "neutral"} icon={<Target size={22} />} />
       </section>
 
@@ -407,7 +368,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
             <p className="section-kicker">Letzter Lauf</p>
             <h2>{runDisplayName(latestRun)}</h2>
             <p>
-              {formatDateTime(latestRun.finished_at || latestRun.received_at)} · {latestRun.bot_name} · {latestRun.problem_count} Problem(e)
+              {latestRun.id === "empty" ? "Noch keine Verification Daten" : formatDateTime(latestRun.finished_at || latestRun.received_at)} · {latestRun.bot_name} · {latestRun.problem_count} Problem(e)
             </p>
           </div>
         </div>
@@ -455,6 +416,10 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
                 OK
                 <strong>{allSuccesses.length}</strong>
               </button>
+              <button className={selectedType === "returns" ? "active returns" : "returns"} type="button" onClick={() => setSelectedType("returns")}>
+                Retouren
+                <strong>{allReturns.length}</strong>
+              </button>
               {problemTypeCounts.map((item) => (
                 <button className={selectedType === item.type ? "active" : ""} type="button" onClick={() => setSelectedType(item.type)} key={item.type}>
                   {typeLabel(item.type)}
@@ -469,6 +434,8 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
               filteredItems.map((item) =>
                 item.kind === "success" ? (
                   <SuccessCard success={item.success} run={item.run} key={`${item.run.id}-ok-${item.success.id}`} />
+                ) : item.kind === "return" ? (
+                  <ReturnCard returnItem={item.returnItem} run={item.run} key={`${item.run.id}-return-${item.returnItem.id}`} />
                 ) : (
                   <ProblemCard problem={item.problem} run={item.run} key={`${item.run.id}-${item.problem.id}`} />
                 )
@@ -539,6 +506,37 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
               </div>
             ) : (
               <div className="quiet-line">Der neueste empfangene JSON-Request ist ausgewählt. Öffnen, um ältere Dokumente zu sehen.</div>
+            )}
+          </section>
+
+          <section className="analysis-panel return-panel">
+            <div className="panel-heading">
+              <RotateCcw size={18} />
+              <span>Retouren</span>
+            </div>
+            {selectedRun.returns.length ? (
+              <div className="return-list">
+                {selectedRun.returns.slice(0, 8).map((returnItem) => (
+                  <button
+                    className={returnItem.found_in_bot ? "return-row found" : "return-row missing"}
+                    type="button"
+                    onClick={() => {
+                      setSelectedType("returns");
+                      setQuery(returnItem.hash_id || returnItem.order_reference);
+                    }}
+                    key={returnItem.id}
+                  >
+                    <span>
+                      <b>{returnItem.hash_id || returnItem.order_reference}</b>
+                      <small>{returnItem.sent_at ? `Gesendet: ${formatDateTime(returnItem.sent_at)}` : "Nicht im Bot gefunden"}</small>
+                    </span>
+                    <strong>{returnItem.found_in_bot ? "OK" : "!"}</strong>
+                  </button>
+                ))}
+                {selectedRun.returns.length > 8 ? <span className="more-line">+{selectedRun.returns.length - 8} weitere Retouren</span> : null}
+              </div>
+            ) : (
+              <div className="quiet-line">Keine Retouren in diesem Run.</div>
             )}
           </section>
 
@@ -730,7 +728,79 @@ function SuccessCard({ success, run }: Pick<SuccessWithRun, "success" | "run">) 
   );
 }
 
+function ReturnCard({ returnItem, run }: Pick<ReturnWithRun, "returnItem" | "run">) {
+  const displayId = returnItem.hash_id || returnItem.order_reference;
+  const orderType = orderTypeLabel(returnItem.order_type);
+
+  return (
+    <article className={returnItem.found_in_bot ? "problem-card return-card found" : "problem-card return-card missing"}>
+      <div className="problem-head">
+        <div className="problem-title">
+          <RotateCcw size={19} />
+          <div>
+            <h3>{displayId}</h3>
+            <p>{returnItem.found_in_bot ? `Retoure · Versand gefunden · ${orderType}` : "Retoure · Versand nicht gefunden"}</p>
+          </div>
+        </div>
+        <span className={returnItem.found_in_bot ? "severity-chip severity-ok" : "severity-chip severity-critical"}>
+          {returnItem.found_in_bot ? "Gefunden" : "Problem"}
+        </span>
+      </div>
+
+      <p className="problem-copy">
+        {returnItem.found_in_bot
+          ? "Diese Retoure wurde im Bot gefunden. Das Versanddatum kommt aus dem Bot-Scrape."
+          : returnItem.problem || "Diese Retoure wurde in der Abrechnung gefunden, aber nicht in der Bot-Tabelle."}
+      </p>
+
+      <div className="problem-context">
+        <span>
+          <b>Order Typ</b>
+          <strong>{orderType}</strong>
+        </span>
+        <span>
+          <b>Gesendet laut Bot</b>
+          <strong>{returnItem.sent_at ? formatDateTime(returnItem.sent_at) : "Nicht gefunden"}</strong>
+        </span>
+        <span>
+          <b>Supply Price</b>
+          <strong>{formatValue(returnItem.supply_price_base)}</strong>
+        </span>
+        {returnItem.billing_id ? (
+          <span>
+            <b>Billing ID</b>
+            <strong>{returnItem.billing_id}</strong>
+          </span>
+        ) : null}
+        {returnItem.billing_type ? (
+          <span>
+            <b>Billing Typ</b>
+            <strong>{returnItem.billing_type}</strong>
+          </span>
+        ) : null}
+        {returnItem.return_billing_date ? (
+          <span>
+            <b>Retoure Datum</b>
+            <strong>{formatDateTime(returnItem.return_billing_date)}</strong>
+          </span>
+        ) : null}
+      </div>
+
+      <div className="problem-foot">
+        <span>
+          {displayId} · {returnItem.found_in_bot ? "Bot gefunden" : "Bot fehlt"}
+        </span>
+        <time dateTime={run.finished_at || run.received_at}>{formatDateTime(run.finished_at || run.received_at)}</time>
+      </div>
+    </article>
+  );
+}
+
 function runDisplayName(run: StoredVerificationRun) {
+  if (run.id === "empty") {
+    return "Noch kein Verification Lauf";
+  }
+
   return run.invoice_file || `Verification ${formatDateTime(run.finished_at || run.received_at)}`;
 }
 

@@ -39,7 +39,7 @@ services:
       - ARTIFACTS_DIR=/app/artifacts
       - CANNAFLOW_SESSION_STATE_PATH=${CANNAFLOW_SESSION_STATE_PATH:-/app/artifacts/cannaflow-storage-state.json}
     volumes:
-      - "${CANNAFLOW_SCAN_ARTIFACTS_DIR:-../../web-scraper-artifacts/cannaflow-scan}:/app/artifacts"
+      - cannaflow-scan-artifacts:/app/artifacts
     networks:
       - default
       - supabase_network
@@ -60,3 +60,7 @@ networks:
   supabase_network:
     external: true
     name: analyticsengine-supabase-b2lvjw_default
+
+volumes:
+  cannaflow-scan-artifacts:
+    name: cannaflow-scan-artifacts

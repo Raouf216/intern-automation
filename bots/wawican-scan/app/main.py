@@ -211,8 +211,32 @@ def trace_step(trace, name, **fields):
         trace(name, **fields)
 
 
+def ensure_parent_dir(path):
+    parent_dir = os.path.dirname(path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
+
+def artifacts_dir_health():
+    try:
+        os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+        return {
+            "artifacts_dir": ARTIFACTS_DIR,
+            "artifacts_dir_exists": os.path.isdir(ARTIFACTS_DIR),
+            "artifacts_dir_writable": os.access(ARTIFACTS_DIR, os.W_OK),
+        }
+    except Exception as exc:
+        return {
+            "artifacts_dir": ARTIFACTS_DIR,
+            "artifacts_dir_exists": os.path.isdir(ARTIFACTS_DIR),
+            "artifacts_dir_writable": False,
+            "artifacts_dir_error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def capture_screenshot_now(page, path, trace=None, trigger="inventory_ready_visible"):
     trace_step(trace, "capture_screenshot", path=path)
+    ensure_parent_dir(path)
     page.screenshot(path=path, full_page=True)
 
     return {
@@ -250,6 +274,7 @@ def trace_page_state(trace, name, page, **fields):
 
 def capture_debug_screenshot(page, path, trace, step_name):
     try:
+        ensure_parent_dir(path)
         page.screenshot(path=path, full_page=True)
         trace_step(trace, step_name, path=path, current_url=page.url)
     except Exception as exc:
@@ -558,7 +583,12 @@ def open_fresh_session(browser, before_login_path=None, trace=None):
 
     if before_login_path:
         trace_step(trace, "capture_before_login_screenshot", path=before_login_path)
-        page.screenshot(path=before_login_path, full_page=True)
+        capture_debug_screenshot(
+            page,
+            before_login_path,
+            trace,
+            "before_login_screenshot",
+        )
 
     trace_step(trace, "submit_login_form")
     submit_login_form(page)
@@ -3023,6 +3053,7 @@ def health():
         "ok": True,
         "service": SERVICE_NAME,
         "uptime_seconds": round(time.time() - STARTED_AT, 3),
+        **artifacts_dir_health(),
         "inventory_url_configured": bool((os.environ.get("WAWICAN_INVENTORY_URL") or "").strip()),
         "login_url_configured": bool((os.environ.get("WAWICAN_LOGIN_URL") or "").strip()),
         "session_state_path": SESSION_STATE_PATH,

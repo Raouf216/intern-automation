@@ -50,7 +50,7 @@ services:
       - ARTIFACTS_DIR=/app/artifacts
       - WAWICAN_SESSION_STATE_PATH=${WAWICAN_SESSION_STATE_PATH:-/app/artifacts/wawican-storage-state.json}
     volumes:
-      - "${WAWICAN_SCAN_ARTIFACTS_DIR:-../../web-scraper-artifacts/wawican-scan}:/app/artifacts"
+      - wawican-scan-artifacts:/app/artifacts
     networks:
       - default
       - supabase_network
@@ -71,3 +71,7 @@ networks:
   supabase_network:
     external: true
     name: analyticsengine-supabase-b2lvjw_default
+
+volumes:
+  wawican-scan-artifacts:
+    name: wawican-scan-artifacts

@@ -2222,10 +2222,26 @@ def login_only(base_url, trace=None):
 
 @app.get("/health")
 def health():
+    try:
+        os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+        artifacts_dir_health = {
+            "artifacts_dir": ARTIFACTS_DIR,
+            "artifacts_dir_exists": os.path.isdir(ARTIFACTS_DIR),
+            "artifacts_dir_writable": os.access(ARTIFACTS_DIR, os.W_OK),
+        }
+    except Exception as exc:
+        artifacts_dir_health = {
+            "artifacts_dir": ARTIFACTS_DIR,
+            "artifacts_dir_exists": os.path.isdir(ARTIFACTS_DIR),
+            "artifacts_dir_writable": False,
+            "artifacts_dir_error": f"{type(exc).__name__}: {exc}",
+        }
+
     return {
         "ok": True,
         "service": SERVICE_NAME,
         "uptime_seconds": round(time.time() - STARTED_AT, 3),
+        **artifacts_dir_health,
         "login_url_configured": bool((os.environ.get("CANNAFLOW_LOGIN_URL") or "").strip()),
         "inventory_url_configured": bool((os.environ.get("CANNAFLOW_INVENTORY_URL") or "").strip()),
         "session_state_path": SESSION_STATE_PATH,

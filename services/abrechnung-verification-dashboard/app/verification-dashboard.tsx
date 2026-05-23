@@ -80,13 +80,40 @@ const problemLabels: Record<string, string> = {
   total_mismatch: "Summenabweichung",
   return_mismatch: "Retoure-Abweichung",
   product_mismatch: "Produktabweichung",
-  missing_order: "Order fehlt",
-  unexpected_order: "Unerwartete Order",
-  duplicate_order: "Doppelte Order",
+  missing_in_billing: "Fehlt in der Abrechnung",
+  missing_in_bot: "Fehlt im Bot",
+  missing_eod_billing_date: "EOD-Abrechnungsdatum fehlt",
+  missing_self_pickup_scraped_at: "Selbstabholung-Scrape fehlt",
+  billing_product_name_not_found: "Produktname nicht gefunden",
+  product_missing_in_bot: "Produkt fehlt im Bot",
+  no_valid_price_at_billing_date: "Preis am Datum fehlt",
+  wrong_return_sign: "RETURN-Vorzeichen falsch",
+  wrong_positive_sign: "Vorzeichen falsch",
+  missing_order: "Bestellung fehlt",
+  unexpected_order: "Unerwartete Bestellung",
+  duplicate_order: "Doppelte Bestellung",
   billing_missing: "Abrechnung fehlt",
-  return_order_not_found: "Retoure ohne Versand",
+  return_order_not_found: "RETURN ohne Versand",
   unknown_problem: "Unbekanntes Problem",
 };
+
+const problemMessages: Record<string, string> = {
+  missing_in_billing: "Bot-Bestellung vorhanden, aber es wurde keine passende Zeile in doktorabc_billing ueber hash_id/order_reference gefunden.",
+  missing_in_bot: "Abrechnungszeile vorhanden, aber es wurde keine passende Bot-Bestellung ueber order_reference/hash_id gefunden.",
+  return_order_not_found: "RETURN ist in der Abrechnung vorhanden, aber die urspruengliche Versand-Bestellung wurde nicht in der Bot-Tabelle gefunden.",
+  missing_eod_billing_date: "EOD-Bot-Bestellung hat kein billing_date. Die Preisgueltigkeit kann nicht geprueft werden.",
+  missing_self_pickup_scraped_at: "Selbstabholung-Bot-Bestellung hat kein scraped_at. Sie kann keinem Abrechnungszeitraum zugeordnet werden.",
+  billing_product_name_not_found: "Der Produktname aus billing.stock konnte nicht doktorabc_products.product_name zugeordnet werden. PZN und Preis koennen nicht geprueft werden.",
+  pzn_mismatch: "Das Produkt aus der Abrechnung ist einer anderen PZN zugeordnet als die Bot-PZN fuer dieselbe Bestellung.",
+  quantity_mismatch: "Die Menge in Gramm stimmt nicht mit der Bot-Menge ueberein.",
+  product_missing_in_bot: "Die Abrechnung enthaelt diese Produktzeile, aber im Bot wurde kein passendes Produkt bzw. keine passende PZN gefunden.",
+  no_valid_price_at_billing_date: "Fuer diese PZN gibt es am Abrechnungsdatum keinen gueltigen products_price-Eintrag mit price_type price_per_g_incl_vat.",
+  billing_total_mismatch: "doktorabc_billing.supply_price_base stimmt nicht mit der berechneten Produktsumme ueberein: Anzahl x Gramm x price_per_g_incl_vat.",
+  wrong_return_sign: "RETURN-Zeile muss einen negativen supply_price_base haben.",
+  wrong_positive_sign: "Nicht-RETURN-Zeile muss einen positiven supply_price_base haben.",
+};
+
+const resultPreviewLimit = 100;
 
 export function AbrechnungVerificationDashboard({ initialError, initialRuns }: Props) {
   const [runs, setRuns] = useState(initialRuns);
@@ -96,6 +123,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
   const [selectedType, setSelectedType] = useState("all");
   const [query, setQuery] = useState("");
   const [expandedRunId, setExpandedRunId] = useState(initialRuns[0]?.id || "");
+  const [expandedResultSections, setExpandedResultSections] = useState<Record<string, boolean>>({});
   const [showDocumentList, setShowDocumentList] = useState(false);
   const [origin, setOrigin] = useState("");
   const [copiedEndpoint, setCopiedEndpoint] = useState(false);
@@ -229,6 +257,9 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
     [focusedRuns]
   );
 
+  const returnsWithShipping = useMemo(() => allReturns.filter((item) => item.returnItem.found_in_bot), [allReturns]);
+  const returnsWithoutShipping = useMemo(() => allReturns.filter((item) => !item.returnItem.found_in_bot), [allReturns]);
+
   const allItems = useMemo<ProblemListItem[]>(() => [...allProblems, ...allSuccesses, ...allReturns], [allProblems, allSuccesses, allReturns]);
 
   const summary = useMemo(() => {
@@ -244,11 +275,12 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
       criticalCount,
       healthScore,
       problemCount,
-      returnCount: allReturns.length,
+      returnsWithShippingCount: returnsWithShipping.length,
+      returnsWithoutShippingCount: returnsWithoutShipping.length,
       successCount,
       totalChecked,
     };
-  }, [allProblems, allReturns, selectedRun]);
+  }, [allProblems, returnsWithShipping, returnsWithoutShipping, selectedRun]);
 
   const problemTypeCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -262,13 +294,15 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
   }, [allProblems]);
 
   const filteredItems = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
+    const normalizedQuery = normalizeSearchText(query);
+    const compactQuery = compactSearchText(query);
 
     return allItems.filter((item) => {
       const matchesType =
         selectedType === "all" ||
         (selectedType === "ok" && item.kind === "success") ||
-        (selectedType === "returns" && item.kind === "return") ||
+        (selectedType === "returns_sent" && item.kind === "return" && item.returnItem.found_in_bot) ||
+        (selectedType === "returns_missing" && item.kind === "return" && !item.returnItem.found_in_bot) ||
         (item.kind === "problem" && item.problem.problem_type === selectedType);
       const searchable =
         item.kind === "success"
@@ -282,7 +316,6 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
               runDisplayName(item.run),
             ]
               .join(" ")
-              .toLowerCase()
           : item.kind === "return"
             ? [
                 item.returnItem.id,
@@ -300,28 +333,37 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
                 runDisplayName(item.run),
               ]
                 .join(" ")
-                .toLowerCase()
           : [
               problemDisplayId(item.problem),
               item.problem.order_reference,
               item.problem.hash_id || "",
+              item.problem.billing_id || "",
+              item.problem.line_no || "",
+              item.problem.pzn || "",
+              item.problem.product_name || "",
               item.problem.order_type || "",
               orderTypeLabel(item.problem.order_type),
               item.problem.problem_type,
               item.problem.problem,
+              problemMessage(item.problem),
               formatValue(item.problem.expected_value),
               formatValue(item.problem.actual_value),
               item.run.invoice_file || "",
               runDisplayName(item.run),
             ]
-              .join(" ")
-              .toLowerCase();
-      const matchesQuery = normalizedQuery ? searchable.includes(normalizedQuery) : true;
+              .join(" ");
+      const matchesQuery = normalizedQuery
+        ? normalizeSearchText(searchable).includes(normalizedQuery) || (compactQuery ? compactSearchText(searchable).includes(compactQuery) : false)
+        : true;
 
       return matchesType && matchesQuery;
     });
   }, [allItems, query, selectedType]);
 
+  const resultSectionKey = selectedType;
+  const sectionExpanded = Boolean(expandedResultSections[resultSectionKey]);
+  const visibleItems = sectionExpanded ? filteredItems : filteredItems.slice(0, resultPreviewLimit);
+  const hiddenItemCount = Math.max(0, filteredItems.length - visibleItems.length);
   const maxTypeCount = Math.max(1, ...problemTypeCounts.map((item) => item.count));
 
   return (
@@ -334,8 +376,8 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
           </div>
           <div>
             <p className="eyebrow">Rats-Apotheke</p>
-            <h1>Abrechnung Verification</h1>
-            <p className="subtitle">Boss-Dashboard fuer Bot-Pruefungen, Abweichungen und betroffene Orders</p>
+            <h1>Abrechnungspruefung</h1>
+            <p className="subtitle">Dashboard fuer Bot-Pruefungen, Abweichungen und betroffene Bestellungen</p>
           </div>
         </div>
         <div className="topbar-actions">
@@ -351,15 +393,16 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
       </header>
 
       <section className="summary-strip" aria-label="Abrechnung Kennzahlen">
-        <MetricCard label="Health Score" value={`${summary.healthScore}%`} tone={summary.healthScore >= 90 ? "good" : "danger"} icon={<Gauge size={22} />} />
+        <MetricCard label="Pruefquote" value={`${summary.healthScore}%`} tone={summary.healthScore >= 90 ? "good" : "danger"} icon={<Gauge size={22} />} />
         <MetricCard label="Probleme offen" value={summary.problemCount} tone={summary.problemCount ? "danger" : "good"} icon={<AlertTriangle size={22} />} />
         <MetricCard label="Kritisch" value={summary.criticalCount} tone={summary.criticalCount ? "danger" : "neutral"} icon={<XCircle size={22} />} />
         <MetricCard label="Geprueft OK" value={summary.successCount} tone="good" icon={<BadgeCheck size={22} />} />
-        <MetricCard label="Retouren" value={summary.returnCount} tone={summary.returnCount ? "warn" : "neutral"} icon={<RotateCcw size={22} />} />
-        <MetricCard label="Betroffene Orders" value={summary.affectedOrders} tone={summary.affectedOrders ? "warn" : "neutral"} icon={<Target size={22} />} />
+        <MetricCard label="RETURN mit Versand" value={summary.returnsWithShippingCount} tone="good" icon={<RotateCcw size={22} />} />
+        <MetricCard label="RETURN ohne Versand" value={summary.returnsWithoutShippingCount} tone={summary.returnsWithoutShippingCount ? "danger" : "neutral"} icon={<RotateCcw size={22} />} />
+        <MetricCard label="Betroffene Bestellungen" value={summary.affectedOrders} tone={summary.affectedOrders ? "warn" : "neutral"} icon={<Target size={22} />} />
       </section>
 
-      <section className="signal-band" aria-label="Letzter Verification Lauf">
+      <section className="signal-band" aria-label="Letzter Verifikationslauf">
         <div className="signal-main">
           <div className={`signal-icon signal-${latestRun.status}`}>
             {statusIcon(latestRun.status)}
@@ -368,14 +411,14 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
             <p className="section-kicker">Letzter Lauf</p>
             <h2>{runDisplayName(latestRun)}</h2>
             <p>
-              {latestRun.id === "empty" ? "Noch keine Verification Daten" : formatDateTime(latestRun.finished_at || latestRun.received_at)} · {latestRun.bot_name} · {latestRun.problem_count} Problem(e)
+              {latestRun.id === "empty" ? "Noch keine Verifikationsdaten" : formatDateTime(latestRun.finished_at || latestRun.received_at)} · {latestRun.bot_name} · {latestRun.problem_count} Problem(e)
             </p>
           </div>
         </div>
         <div className="endpoint-box">
-          <span>Ingest Endpoint</span>
+          <span>Eingangsendpunkt</span>
           <code>{endpoint}</code>
-          <button className="copy-button" type="button" onClick={copyEndpoint} aria-label="Endpoint kopieren">
+          <button className="copy-button" type="button" onClick={copyEndpoint} aria-label="Endpunkt kopieren">
             <Clipboard size={16} />
             <span>{copiedEndpoint ? "Kopiert" : "Kopieren"}</span>
           </button>
@@ -398,14 +441,14 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
             </div>
             <div className="refresh-note">
               <RefreshCw size={15} />
-              <span>{lastRefresh ? `Aktualisiert ${formatRelativeTime(lastRefresh.toISOString())}` : "Auto-Refresh aktiv"}</span>
+              <span>{lastRefresh ? `Aktualisiert ${formatRelativeTime(lastRefresh.toISOString())}` : "Automatische Aktualisierung aktiv"}</span>
             </div>
           </div>
 
           <div className="filter-bar">
             <label className="search-box">
               <Search size={17} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Order, Problem oder Datei suchen" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Bestellreferenz, Hash-ID, Problem oder Datei suchen" />
             </label>
             <div className="type-tabs" role="tablist" aria-label="Problemtyp Filter">
               <button className={selectedType === "all" ? "active" : ""} type="button" onClick={() => setSelectedType("all")}>
@@ -416,9 +459,13 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
                 OK
                 <strong>{allSuccesses.length}</strong>
               </button>
-              <button className={selectedType === "returns" ? "active returns" : "returns"} type="button" onClick={() => setSelectedType("returns")}>
-                Retouren
-                <strong>{allReturns.length}</strong>
+              <button className={selectedType === "returns_sent" ? "active returns-sent" : "returns-sent"} type="button" onClick={() => setSelectedType("returns_sent")}>
+                RETURN mit Versand
+                <strong>{returnsWithShipping.length}</strong>
+              </button>
+              <button className={selectedType === "returns_missing" ? "active returns-missing" : "returns-missing"} type="button" onClick={() => setSelectedType("returns_missing")}>
+                RETURN ohne Versand
+                <strong>{returnsWithoutShipping.length}</strong>
               </button>
               {problemTypeCounts.map((item) => (
                 <button className={selectedType === item.type ? "active" : ""} type="button" onClick={() => setSelectedType(item.type)} key={item.type}>
@@ -429,9 +476,31 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
             </div>
           </div>
 
+          <div className="result-limit-bar">
+            <span>
+              {filteredItems.length
+                ? `${formatNumber(visibleItems.length)} von ${formatNumber(filteredItems.length)} Treffer angezeigt`
+                : "Keine Treffer im aktuellen Filter"}
+            </span>
+            <small>Suche prueft alle geladenen IDs, auch wenn nur 100 Karten sichtbar sind.</small>
+            {filteredItems.length > resultPreviewLimit ? (
+              <button
+                type="button"
+                onClick={() =>
+                  setExpandedResultSections((sections) => ({
+                    ...sections,
+                    [resultSectionKey]: !sectionExpanded,
+                  }))
+                }
+              >
+                {sectionExpanded ? "Nur 100 anzeigen" : `Alle anzeigen (+${formatNumber(hiddenItemCount)})`}
+              </button>
+            ) : null}
+          </div>
+
           <div className="problem-list">
-            {filteredItems.length ? (
-              filteredItems.map((item) =>
+            {visibleItems.length ? (
+              visibleItems.map((item) =>
                 item.kind === "success" ? (
                   <SuccessCard success={item.success} run={item.run} key={`${item.run.id}-ok-${item.success.id}`} />
                 ) : item.kind === "return" ? (
@@ -444,7 +513,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
               <div className="empty-state">
                 <CheckCircle2 size={30} />
                 <h3>Keine passenden Abweichungen</h3>
-                <p>Der aktuelle Filter findet keine Probleme in den geladenen Verification Runs.</p>
+                <p>Der aktuelle Filter findet keine Probleme in den geladenen Verifikationslaeufen.</p>
               </div>
             )}
           </div>
@@ -515,35 +584,78 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
               <span>Retouren</span>
             </div>
             {selectedRun.returns.length ? (
-              <div className="return-list">
-                {selectedRun.returns.slice(0, 8).map((returnItem) => (
-                  <button
-                    className={returnItem.found_in_bot ? "return-row found" : "return-row missing"}
-                    type="button"
-                    onClick={() => {
-                      setSelectedType("returns");
-                      setQuery(returnItem.hash_id || returnItem.order_reference);
-                    }}
-                    key={returnItem.id}
-                  >
-                    <span>
-                      <b>{returnItem.hash_id || returnItem.order_reference}</b>
-                      <small>{returnItem.sent_at ? `Gesendet: ${formatDateTime(returnItem.sent_at)}` : "Nicht im Bot gefunden"}</small>
-                    </span>
-                    <strong>{returnItem.found_in_bot ? "OK" : "!"}</strong>
-                  </button>
-                ))}
-                {selectedRun.returns.length > 8 ? <span className="more-line">+{selectedRun.returns.length - 8} weitere Retouren</span> : null}
+              <div className="return-groups">
+                <div className="return-group">
+                  <div className="return-group-title missing">
+                    <span>RETURN ohne Versand</span>
+                    <strong>{returnsWithoutShipping.length}</strong>
+                  </div>
+                  {returnsWithoutShipping.length ? (
+                    <div className="return-list">
+                      {returnsWithoutShipping.slice(0, 6).map(({ returnItem }) => (
+                        <button
+                          className="return-row missing"
+                          type="button"
+                          onClick={() => {
+                            setSelectedType("returns_missing");
+                            setQuery(returnItem.hash_id || returnItem.order_reference);
+                          }}
+                          key={returnItem.id}
+                        >
+                          <span>
+                            <b>{returnItem.hash_id || returnItem.order_reference}</b>
+                            <small>Nicht im Bot gefunden</small>
+                          </span>
+                          <strong>!</strong>
+                        </button>
+                      ))}
+                      {returnsWithoutShipping.length > 6 ? <span className="more-line">+{returnsWithoutShipping.length - 6} weitere</span> : null}
+                    </div>
+                  ) : (
+                    <div className="quiet-line">Keine RETURN ohne Versand.</div>
+                  )}
+                </div>
+
+                <div className="return-group">
+                  <div className="return-group-title found">
+                    <span>RETURN mit Versand</span>
+                    <strong>{returnsWithShipping.length}</strong>
+                  </div>
+                  {returnsWithShipping.length ? (
+                    <div className="return-list">
+                      {returnsWithShipping.slice(0, 6).map(({ returnItem }) => (
+                        <button
+                          className="return-row found"
+                          type="button"
+                          onClick={() => {
+                            setSelectedType("returns_sent");
+                            setQuery(returnItem.hash_id || returnItem.order_reference);
+                          }}
+                          key={returnItem.id}
+                        >
+                          <span>
+                            <b>{returnItem.hash_id || returnItem.order_reference}</b>
+                            <small>{returnItem.sent_at ? `Gesendet: ${formatDateTime(returnItem.sent_at)}` : "Datum fehlt"}</small>
+                          </span>
+                          <strong>OK</strong>
+                        </button>
+                      ))}
+                      {returnsWithShipping.length > 6 ? <span className="more-line">+{returnsWithShipping.length - 6} weitere</span> : null}
+                    </div>
+                  ) : (
+                    <div className="quiet-line">Keine RETURN mit Versand.</div>
+                  )}
+                </div>
               </div>
             ) : (
-              <div className="quiet-line">Keine Retouren in diesem Run.</div>
+              <div className="quiet-line">Keine Retouren in diesem Lauf.</div>
             )}
           </section>
 
           <section className="analysis-panel run-detail">
             <div className="panel-heading">
               <Bot size={18} />
-              <span>Ausgewaehlter Run</span>
+              <span>Ausgewaehlter Lauf</span>
             </div>
             <dl className="fact-grid">
               <div>
@@ -551,7 +663,7 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
                 <dd>{statusLabel(selectedRun.status)}</dd>
               </div>
               <div>
-                <dt>OK IDs</dt>
+                <dt>OK-IDs</dt>
                 <dd>{selectedRun.success_count}</dd>
               </div>
               <div>
@@ -618,11 +730,11 @@ function ProblemCard({ problem, run }: ProblemWithRun) {
         <span className={`severity-chip severity-${problem.severity}`}>{severityLabel(problem.severity)}</span>
       </div>
 
-      <p className="problem-copy">{problem.problem}</p>
+      <p className="problem-copy">{problemMessage(problem)}</p>
 
       <div className="problem-context">
         <span>
-          <b>Order Typ</b>
+          <b>Bestelltyp</b>
           <strong>{orderType}</strong>
         </span>
         {problem.product_name ? (
@@ -639,13 +751,13 @@ function ProblemCard({ problem, run }: ProblemWithRun) {
         ) : null}
         {problem.billing_id ? (
           <span>
-            <b>Billing ID</b>
+            <b>Abrechnungs-ID</b>
             <strong>{problem.billing_id}</strong>
           </span>
         ) : null}
         {problem.hash_id ? (
           <span>
-            <b>Hash ID</b>
+            <b>Hash-ID</b>
             <strong>{problem.hash_id}</strong>
           </span>
         ) : null}
@@ -701,15 +813,15 @@ function SuccessCard({ success, run }: Pick<SuccessWithRun, "success" | "run">) 
         <span className="severity-chip severity-ok">OK</span>
       </div>
 
-      <p className="problem-copy">Diese Order wurde vom Abrechnung-Bot ohne Abweichung bestaetigt.</p>
+      <p className="problem-copy">Diese Bestellung wurde vom Abrechnung-Bot ohne Abweichung bestaetigt.</p>
 
       <div className="problem-context">
         <span>
-          <b>Order Typ</b>
+          <b>Bestelltyp</b>
           <strong>{orderType}</strong>
         </span>
         <span>
-          <b>Hash / Order</b>
+          <b>Hash / Bestellung</b>
           <strong>{success.id}</strong>
         </span>
         <span>
@@ -739,23 +851,23 @@ function ReturnCard({ returnItem, run }: Pick<ReturnWithRun, "returnItem" | "run
           <RotateCcw size={19} />
           <div>
             <h3>{displayId}</h3>
-            <p>{returnItem.found_in_bot ? `Retoure · Versand gefunden · ${orderType}` : "Retoure · Versand nicht gefunden"}</p>
+            <p>{returnItem.found_in_bot ? `RETURN mit Versand · ${orderType}` : "RETURN ohne Versand"}</p>
           </div>
         </div>
         <span className={returnItem.found_in_bot ? "severity-chip severity-ok" : "severity-chip severity-critical"}>
-          {returnItem.found_in_bot ? "Gefunden" : "Problem"}
+          {returnItem.found_in_bot ? "Mit Versand" : "Ohne Versand"}
         </span>
       </div>
 
       <p className="problem-copy">
         {returnItem.found_in_bot
-          ? "Diese Retoure wurde im Bot gefunden. Das Versanddatum kommt aus dem Bot-Scrape."
-          : returnItem.problem || "Diese Retoure wurde in der Abrechnung gefunden, aber nicht in der Bot-Tabelle."}
+          ? "Diese Retoure wurde im Bot gefunden. Das Versanddatum kommt aus dem Bot-Lauf."
+          : returnProblemMessage(returnItem)}
       </p>
 
       <div className="problem-context">
         <span>
-          <b>Order Typ</b>
+          <b>Bestelltyp</b>
           <strong>{orderType}</strong>
         </span>
         <span>
@@ -763,24 +875,24 @@ function ReturnCard({ returnItem, run }: Pick<ReturnWithRun, "returnItem" | "run
           <strong>{returnItem.sent_at ? formatDateTime(returnItem.sent_at) : "Nicht gefunden"}</strong>
         </span>
         <span>
-          <b>Supply Price</b>
+          <b>Lieferpreis</b>
           <strong>{formatValue(returnItem.supply_price_base)}</strong>
         </span>
         {returnItem.billing_id ? (
           <span>
-            <b>Billing ID</b>
+            <b>Abrechnungs-ID</b>
             <strong>{returnItem.billing_id}</strong>
           </span>
         ) : null}
         {returnItem.billing_type ? (
           <span>
-            <b>Billing Typ</b>
+            <b>Abrechnungstyp</b>
             <strong>{returnItem.billing_type}</strong>
           </span>
         ) : null}
         {returnItem.return_billing_date ? (
           <span>
-            <b>Retoure Datum</b>
+            <b>Retouren-Datum</b>
             <strong>{formatDateTime(returnItem.return_billing_date)}</strong>
           </span>
         ) : null}
@@ -798,14 +910,80 @@ function ReturnCard({ returnItem, run }: Pick<ReturnWithRun, "returnItem" | "run
 
 function runDisplayName(run: StoredVerificationRun) {
   if (run.id === "empty") {
-    return "Noch kein Verification Lauf";
+    return "Noch kein Verifikationslauf";
   }
 
-  return run.invoice_file || `Verification ${formatDateTime(run.finished_at || run.received_at)}`;
+  return run.invoice_file || `Verifikation ${formatDateTime(run.finished_at || run.received_at)}`;
 }
 
 function problemDisplayId(problem: VerificationProblem) {
   return problem.hash_id || problem.order_reference;
+}
+
+function problemMessage(problem: VerificationProblem) {
+  return problemMessages[problem.problem_type] || translateKnownProblemMessage(problem.problem) || problem.problem;
+}
+
+function returnProblemMessage(returnItem: VerificationReturn) {
+  return (returnItem.problem ? translateKnownProblemMessage(returnItem.problem) : "") || returnItem.problem || problemMessages.return_order_not_found;
+}
+
+function translateKnownProblemMessage(message: string) {
+  const normalized = normalizeSearchText(message);
+
+  if (normalized.includes("billing row exists") && normalized.includes("no matching bot order")) {
+    return problemMessages.missing_in_bot;
+  }
+
+  if (normalized.includes("bot order exists") && normalized.includes("no matching doktorabc_billing")) {
+    return problemMessages.missing_in_billing;
+  }
+
+  if (normalized.includes("return exists in billing") && normalized.includes("no matching sent order")) {
+    return problemMessages.return_order_not_found;
+  }
+
+  if (normalized.includes("eod bot order has no billing_date")) {
+    return problemMessages.missing_eod_billing_date;
+  }
+
+  if (normalized.includes("self pickup bot order has no scraped_at")) {
+    return problemMessages.missing_self_pickup_scraped_at;
+  }
+
+  if (normalized.includes("billing stock product name could not be mapped")) {
+    return problemMessages.billing_product_name_not_found;
+  }
+
+  if (normalized.includes("different pzn than the bot pzn")) {
+    return problemMessages.pzn_mismatch;
+  }
+
+  if (normalized.includes("billing quantity in grams does not match bot quantity")) {
+    return problemMessages.quantity_mismatch;
+  }
+
+  if (normalized.includes("billing contains this product line")) {
+    return problemMessages.product_missing_in_bot;
+  }
+
+  if (normalized.includes("no products_price row exists")) {
+    return problemMessages.no_valid_price_at_billing_date;
+  }
+
+  if (normalized.includes("supply_price_base does not match") || normalized.includes("total_medication_cost_incl_vat does not match")) {
+    return problemMessages.billing_total_mismatch;
+  }
+
+  if (normalized.includes("return row should have a negative")) {
+    return problemMessages.wrong_return_sign;
+  }
+
+  if (normalized.includes("non-return row should have a positive")) {
+    return problemMessages.wrong_positive_sign;
+  }
+
+  return "";
 }
 
 function orderTypeLabel(value: string | null | undefined) {
@@ -816,7 +994,7 @@ function orderTypeLabel(value: string | null | undefined) {
   }
 
   if (normalized === "self pickup" || normalized === "pickup" || normalized === "pickup ready") {
-    return "Self Pickup";
+    return "Selbstabholung";
   }
 
   return value || "Unbekannt";
@@ -880,6 +1058,14 @@ function formatValue(value: unknown) {
   }
 
   return JSON.stringify(value);
+}
+
+function normalizeSearchText(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function compactSearchText(value: string) {
+  return normalizeSearchText(value).replace(/[^a-z0-9]/g, "");
 }
 
 function formatNumber(value: number) {

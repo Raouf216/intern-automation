@@ -238,7 +238,7 @@ h3 {
 
 .summary-strip {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 16px;
 }
@@ -521,10 +521,56 @@ code {
   background: var(--green-soft);
 }
 
-.type-tabs button.returns.active {
-  color: var(--amber);
-  border-color: rgba(161, 92, 7, 0.28);
-  background: var(--amber-soft);
+.type-tabs button.returns-sent.active {
+  color: var(--green);
+  border-color: rgba(4, 120, 87, 0.28);
+  background: var(--green-soft);
+}
+
+.type-tabs button.returns-missing.active {
+  color: var(--red);
+  border-color: rgba(180, 35, 49, 0.28);
+  background: var(--red-soft);
+}
+
+.result-limit-bar {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--blue-soft));
+}
+
+.result-limit-bar span {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.result-limit-bar small {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.result-limit-bar button {
+  min-height: 30px;
+  border: 1px solid rgba(14, 116, 144, 0.3);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--blue);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 950;
+  white-space: nowrap;
 }
 
 .problem-list {
@@ -892,6 +938,50 @@ code {
   border-left-color: var(--red);
 }
 
+.return-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.return-group {
+  display: grid;
+  gap: 8px;
+}
+
+.return-group-title {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface-strong);
+  font-size: 12px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.return-group-title.found {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.return-group-title.missing {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.return-group-title strong {
+  min-width: 28px;
+  min-height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
 .return-row span {
   min-width: 0;
   display: grid;
@@ -1081,6 +1171,7 @@ code {
   }
 
   .endpoint-box,
+  .result-limit-bar,
   .value-compare,
   .problem-context,
   .fact-grid,

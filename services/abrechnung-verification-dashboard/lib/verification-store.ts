@@ -293,24 +293,24 @@ function withDocumentIdentity(run: StoredVerificationRun, documentId: string): S
 
 function verificationTitle(run: StoredVerificationRun) {
   if (run.status === "success") {
-    return "Abrechnung Verification erfolgreich";
+    return "Abrechnungspruefung erfolgreich";
   }
 
   if (run.status === "warning") {
-    return "Abrechnung Verification pruefen";
+    return "Abrechnungspruefung pruefen";
   }
 
-  return "Abrechnung Verification fehlgeschlagen";
+  return "Abrechnungspruefung fehlgeschlagen";
 }
 
 function verificationMessage(run: StoredVerificationRun) {
   const file = run.invoice_file ? ` fuer ${run.invoice_file}` : "";
 
   if (run.status === "success") {
-    return `${run.success_count} Orders${file} erfolgreich geprueft.`;
+    return `${run.success_count} Bestellungen${file} erfolgreich geprueft.`;
   }
 
-  return `${run.problem_count} Problem(e) bei ${run.success_count + run.problem_count} geprueften Orders${file}.`;
+  return `${run.problem_count} Problem(e) bei ${run.success_count + run.problem_count} geprueften Bestellungen${file}.`;
 }
 
 function normalizeRun(rawPayload: unknown): StoredVerificationRun {

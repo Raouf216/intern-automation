@@ -1897,6 +1897,7 @@ def fetch_previous_products_from_supabase_rest(trace=None):
             "thc",
             "cbd",
             "price_per_g_text",
+            "expiry_date_text",
             "scraped_at",
         ]
     )
@@ -1946,6 +1947,7 @@ def fetch_previous_products_from_postgres(trace=None):
                     "thc",
                     "cbd",
                     "price_per_g_text",
+                    "expiry_date_text",
                     "scraped_at",
                 ]
                 if column in columns
@@ -2079,6 +2081,7 @@ def compare_stock_snapshots(previous_products, current_products):
                 "thc": current.get("thc"),
                 "cbd": current.get("cbd"),
                 "price_per_g_text": current.get("price_per_g_text"),
+                "expiry_date_text": current.get("expiry_date_text"),
                 "page_number": current.get("page_number"),
                 "row_index": current.get("row_index"),
                 "previous_scraped_at": previous.get("scraped_at") if previous else None,
@@ -2107,6 +2110,7 @@ def compare_stock_snapshots(previous_products, current_products):
                 "thc": previous.get("thc"),
                 "cbd": previous.get("cbd"),
                 "price_per_g_text": previous.get("price_per_g_text"),
+                "expiry_date_text": previous.get("expiry_date_text"),
                 "page_number": None,
                 "row_index": None,
                 "previous_scraped_at": previous.get("scraped_at"),
@@ -2268,6 +2272,7 @@ def create_stock_change_excel_report(changes, current_products, previous_count, 
         "THC",
         "CBD",
         "Preis pro g",
+        "Verfallsdatum",
         "Seite",
         "Zeile",
         "Geändert von -> bis",
@@ -2299,6 +2304,7 @@ def create_stock_change_excel_report(changes, current_products, previous_count, 
                     change.get("thc"),
                     change.get("cbd"),
                     change.get("price_per_g_text"),
+                    change.get("expiry_date_text"),
                     change.get("page_number"),
                     change.get("row_index"),
                     german_excel_datetime_range(
@@ -2310,7 +2316,7 @@ def create_stock_change_excel_report(changes, current_products, previous_count, 
                 ]
             )
     else:
-        changes_sheet.append(["Keine Mengenänderungen seit dem letzten Lauf.", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""])
+        changes_sheet.append(["Keine Mengenänderungen seit dem letzten Lauf.", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""])
 
     current_headers = [
         "Produkt",
@@ -2321,6 +2327,7 @@ def create_stock_change_excel_report(changes, current_products, previous_count, 
         "THC",
         "CBD",
         "Preis pro g",
+        "Verfallsdatum",
         "Seite",
         "Zeile",
         "Lauf (DE)",
@@ -2337,6 +2344,7 @@ def create_stock_change_excel_report(changes, current_products, previous_count, 
                 product.get("thc"),
                 product.get("cbd"),
                 product.get("price_per_g_text"),
+                product.get("expiry_date_text"),
                 product.get("page_number"),
                 product.get("row_index"),
                 german_excel_datetime(product.get("scraped_at")),

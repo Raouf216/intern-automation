@@ -43,9 +43,7 @@ body {
 }
 
 body {
-  background:
-    linear-gradient(130deg, rgba(216, 239, 230, 0.88), rgba(238, 247, 243, 0.35) 42%, rgba(226, 232, 240, 0.75)),
-    radial-gradient(circle at 86% 14%, rgba(37, 99, 235, 0.12), transparent 28%);
+  background: var(--bg);
   color: var(--ink);
   font-family: Arial, Helvetica, sans-serif;
   font-size: 16px;
@@ -54,26 +52,7 @@ body {
 }
 
 :root[data-theme="dark"] body {
-  background:
-    linear-gradient(135deg, rgba(4, 23, 20, 0.98), rgba(8, 29, 27, 0.95) 44%, rgba(12, 22, 34, 0.98)),
-    radial-gradient(circle at 84% 14%, rgba(45, 212, 191, 0.14), transparent 30%);
-}
-
-body::before {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 260 260'%3E%3Ccircle cx='130' cy='130' r='104' fill='none' stroke='%23dc2626' stroke-width='14'/%3E%3Cpath fill='none' stroke='%23dc2626' stroke-linecap='round' stroke-linejoin='round' stroke-width='18' d='M74 198 130 54l56 144M96 145h68'/%3E%3Cpath fill='none' stroke='%23dc2626' stroke-linecap='round' stroke-width='14' d='M130 74v40M110 94h40'/%3E%3Cpath fill='none' stroke='%23dc2626' stroke-linecap='round' stroke-linejoin='round' stroke-width='10' d='M82 205c26-34 57-51 94-51 16 0 28 4 38 11'/%3E%3C/svg%3E");
-  background-position: right 7vw top 8vh;
-  background-repeat: no-repeat;
-  background-size: min(42vw, 560px);
-  content: "";
-  inset: 0;
-  opacity: 0.06;
-  pointer-events: none;
-  position: fixed;
-  z-index: 0;
-}
-
-:root[data-theme="dark"] body::before {
-  opacity: 0.075;
+  background: var(--bg);
 }
 
 button,
@@ -121,56 +100,26 @@ button {
 
 .brand-mark {
   align-items: center;
-  background:
-    linear-gradient(150deg, rgba(255, 255, 255, 0.16), transparent 38%),
-    linear-gradient(135deg, #082f2a, #0f766e 55%, #1d4ed8);
+  background: #0f766e;
   border-radius: 8px;
-  box-shadow: 0 16px 34px rgba(15, 118, 110, 0.2);
+  box-shadow: 0 14px 28px rgba(15, 118, 110, 0.18);
   color: white;
   display: grid;
   height: 56px;
-  overflow: hidden;
   place-items: center;
   position: relative;
   width: 56px;
 }
 
-.brand-mark::after {
-  background: radial-gradient(circle at 74% 76%, rgba(96, 165, 250, 0.42), transparent 24%);
-  content: "";
-  inset: 0;
-  position: absolute;
-}
-
 .brand-chart-svg {
-  filter: drop-shadow(0 8px 16px rgba(15, 36, 31, 0.28));
-  height: 52px;
+  height: 38px;
   position: relative;
-  width: 52px;
+  width: 38px;
   z-index: 1;
 }
 
-.brand-screen {
-  fill: rgba(4, 20, 18, 0.28);
-  stroke: rgba(255, 255, 255, 0.22);
-  stroke-width: 1;
-}
-
-.brand-grid-line {
-  stroke: rgba(255, 255, 255, 0.16);
-  stroke-width: 1;
-}
-
 .brand-bar {
-  fill: rgba(219, 234, 254, 0.32);
-}
-
-.brand-price-line {
-  fill: none;
-  stroke: #ffffff;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 3.4;
+  fill: rgba(255, 255, 255, 0.38);
 }
 
 .brand-trend {
@@ -178,13 +127,14 @@ button {
   stroke: #ffffff;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 3.8;
+  stroke-width: 3.4;
 }
 
-.brand-trend-dot {
-  fill: #dcfce7;
-  stroke: #0f766e;
-  stroke-width: 1.4;
+.brand-axis {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.55);
+  stroke-linecap: round;
+  stroke-width: 2.4;
 }
 
 .eyebrow {
@@ -621,8 +571,10 @@ h2 {
 .axis-label,
 .x-label {
   fill: #536861;
+  font-family: "Segoe UI", Arial, Helvetica, sans-serif;
   font-size: 14px;
-  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
 }
 
 :root[data-theme="dark"] .axis-label,
@@ -687,7 +639,9 @@ h2 {
 
 .chart-tooltip-value {
   fill: #ffffff;
+  font-family: "Segoe UI", Arial, Helvetica, sans-serif;
   font-size: 24px;
+  font-variant-numeric: tabular-nums;
   font-weight: 900;
 }
 

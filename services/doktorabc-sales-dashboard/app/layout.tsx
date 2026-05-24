@@ -4,6 +4,9 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "DoktorABC Sales",
   description: "Verkaufsdashboard fuer DoktorABC Abrechnungsdaten.",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

@@ -1,0 +1,42 @@
+services:
+  doktorabc-sales-dashboard:
+    container_name: doktorabc-sales-dashboard
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${DOKTORABC_SALES_DASHBOARD_PORT:-8072}:8000"
+    networks:
+      - dokploy-network
+      - supabase_network
+    environment:
+      - PORT=8000
+      - HOSTNAME=0.0.0.0
+      - TZ=${TZ:-Europe/Berlin}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - SALES_DASHBOARD_SCHEMA=${SALES_DASHBOARD_SCHEMA:-private}
+      - SALES_DASHBOARD_VIEW=${SALES_DASHBOARD_VIEW:-doktorabc_sales_by_product_period}
+      - SALES_DASHBOARD_PASSWORD=${SALES_DASHBOARD_PASSWORD:-}
+      - SALES_DASHBOARD_SESSION_SECRET=${SALES_DASHBOARD_SESSION_SECRET:-}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  dokploy-network:
+    external: true
+  supabase_network:
+    external: true
+    name: analyticsengine-supabase-b2lvjw_default

@@ -13,7 +13,15 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="de">
-      <body>{children}</body>
+      <body>
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){try{var theme=localStorage.getItem('sales-dashboard-theme');if(theme==='dark'||theme==='light'){document.documentElement.dataset.theme=theme;document.documentElement.style.colorScheme=theme;}}catch(error){}})();",
+          }}
+        />
+        {children}
+      </body>
     </html>
   );
 }

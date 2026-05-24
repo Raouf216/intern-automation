@@ -1,7 +1,9 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { ChartCandlestick, Cross, LockKeyhole } from "lucide-react";
+import { LockKeyhole } from "lucide-react";
+import { BrandMark } from "../brand-mark";
+import { ThemeToggle } from "../theme-toggle";
 
 export default function LoginPage() {
   const [password, setPassword] = useState("");
@@ -34,12 +36,12 @@ export default function LoginPage() {
 
   return (
     <main className="login-shell">
+      <div className="login-theme-action">
+        <ThemeToggle />
+      </div>
       <section className="login-panel" aria-label="DoktorABC Sales Login">
         <div className="brand-lock">
-          <div className="brand-mark">
-            <Cross className="brand-pharmacy-mark" size={42} />
-            <ChartCandlestick className="brand-chart-mark" size={30} />
-          </div>
+          <BrandMark />
           <div>
             <p>Rats-Apotheke Blieskastel</p>
             <h1>DoktorABC Sales</h1>

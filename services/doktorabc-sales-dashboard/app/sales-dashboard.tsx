@@ -1,8 +1,10 @@
 "use client";
 
-import { BarChart3, CalendarDays, ChartCandlestick, ChevronDown, Cross, FlaskConical, LogOut, PackageCheck, Pill, RefreshCw, RotateCcw, Scale } from "lucide-react";
+import { BarChart3, CalendarDays, Check, ChevronDown, FlaskConical, LogOut, PackageCheck, Pill, RefreshCw, RotateCcw, Scale, Search, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { BrandMark } from "./brand-mark";
 import type { SalesMetricKey, SalesRow } from "../lib/sales-data";
+import { ThemeToggle } from "./theme-toggle";
 
 type Props = {
   initialRows: SalesRow[];
@@ -21,6 +23,11 @@ type ChartPoint = {
   returned_grams: number;
   net_grams: number;
   orders: number;
+};
+
+type ProductOption = {
+  label: string;
+  value: string;
 };
 
 const periodOptions: Array<{ label: string; value: PeriodKey }> = [
@@ -82,16 +89,14 @@ export function SalesDashboard({ initialRows, loadError }: Props) {
     <main className="dashboard-shell">
       <header className="dashboard-header">
         <div className="brand-row">
-          <div className="brand-mark" aria-hidden="true">
-            <Cross className="brand-pharmacy-mark" size={42} />
-            <ChartCandlestick className="brand-chart-mark" size={30} />
-          </div>
+          <BrandMark />
           <div>
             <p className="eyebrow">Rats-Apotheke Blieskastel</p>
             <h1>DoktorABC Sales</h1>
           </div>
         </div>
         <div className="header-actions">
+          <ThemeToggle />
           <button className="ghost-button" onClick={() => window.location.reload()} type="button">
             <RefreshCw size={17} />
             <span>Aktualisieren</span>
@@ -134,20 +139,7 @@ export function SalesDashboard({ initialRows, loadError }: Props) {
         </div>
 
         {showProductSelector ? (
-          <label className="product-select">
-            <span>Produkt</span>
-            <div>
-              <select value={selectedProduct} onChange={(event) => setSelectedProduct(event.target.value)}>
-                <option value="__all__">Alle Produkte</option>
-                {productOptions.map((product) => (
-                  <option key={product.value} value={product.value}>
-                    {product.label}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={18} />
-            </div>
-          </label>
+          <ProductCombobox onChange={setSelectedProduct} options={productOptions} selectedLabel={selectedProductLabel} value={selectedProduct} />
         ) : null}
       </section>
 
@@ -180,6 +172,141 @@ export function SalesDashboard({ initialRows, loadError }: Props) {
         <SalesLineChart metricLabel={metricOption.label} points={chartPoints} />
       </section>
     </main>
+  );
+}
+
+function ProductCombobox({
+  onChange,
+  options,
+  selectedLabel,
+  value,
+}: {
+  onChange: (value: string) => void;
+  options: ProductOption[];
+  selectedLabel: string;
+  value: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const filteredOptions = useMemo(() => {
+    const search = normalizeText(query);
+
+    if (!search) {
+      return options;
+    }
+
+    return options.filter((option) => normalizeText(option.label).includes(search));
+  }, [options, query]);
+  const inputValue = open ? query : selectedLabel;
+  const hasProductSelected = value !== "__all__";
+
+  function openPicker() {
+    setQuery(hasProductSelected ? selectedLabel : "");
+    setOpen(true);
+  }
+
+  function chooseProduct(nextValue: string) {
+    onChange(nextValue);
+    setQuery("");
+    setOpen(false);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      setOpen(false);
+      setQuery("");
+      return;
+    }
+
+    if (event.key !== "Enter") {
+      return;
+    }
+
+    event.preventDefault();
+
+    if (!query.trim()) {
+      chooseProduct("__all__");
+      return;
+    }
+
+    if (filteredOptions[0]) {
+      chooseProduct(filteredOptions[0].value);
+    }
+  }
+
+  return (
+    <label className="product-select product-search">
+      <span>Produkt</span>
+      <div className="product-combobox" onBlur={() => window.setTimeout(() => setOpen(false), 110)}>
+        <div className="product-search-field">
+          <Search className="product-search-icon" size={18} />
+          <input
+            aria-controls="product-results"
+            aria-expanded={open}
+            autoComplete="off"
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setOpen(true);
+            }}
+            onFocus={openPicker}
+            onKeyDown={handleKeyDown}
+            placeholder="Produkt suchen..."
+            role="combobox"
+            value={inputValue}
+          />
+          {hasProductSelected ? (
+            <button
+              className="product-clear"
+              onClick={(event) => {
+                event.preventDefault();
+                chooseProduct("__all__");
+              }}
+              type="button"
+              aria-label="Produktauswahl zuruecksetzen"
+            >
+              <X size={17} />
+            </button>
+          ) : (
+            <ChevronDown className="product-chevron" size={18} />
+          )}
+        </div>
+
+        {open ? (
+          <div className="product-results" id="product-results" role="listbox">
+            <button
+              className={value === "__all__" ? "product-result active" : "product-result"}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => chooseProduct("__all__")}
+              type="button"
+              role="option"
+              aria-selected={value === "__all__"}
+            >
+              <span>Alle Produkte</span>
+              {value === "__all__" ? <Check size={17} /> : null}
+            </button>
+
+            {filteredOptions.length ? (
+              filteredOptions.map((product) => (
+                <button
+                  className={value === product.value ? "product-result active" : "product-result"}
+                  key={product.value}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => chooseProduct(product.value)}
+                  type="button"
+                  role="option"
+                  aria-selected={value === product.value}
+                >
+                  <span>{product.label}</span>
+                  {value === product.value ? <Check size={17} /> : null}
+                </button>
+              ))
+            ) : (
+              <div className="product-empty">Kein Produkt gefunden</div>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </label>
   );
 }
 
@@ -326,6 +453,14 @@ function formatNumber(value: number) {
 
 function formatCompact(value: number) {
   return new Intl.NumberFormat("de-DE", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
+function normalizeText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
 }
 
 function makeTicks(min: number, max: number, count: number) {

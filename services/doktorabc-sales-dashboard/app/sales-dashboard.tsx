@@ -323,6 +323,8 @@ function SummaryTile({ label, tone = "neutral", unit, value }: { label: string; 
 }
 
 function SalesLineChart({ metricLabel, points }: { metricLabel: string; points: ChartPoint[] }) {
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+
   if (!points.length) {
     return (
       <div className="empty-chart">
@@ -349,6 +351,14 @@ function SalesLineChart({ metricLabel, points }: { metricLabel: string; points: 
   const zeroY = yFor(0);
   const ticks = makeTicks(paddedMin, paddedMax, 5);
   const xLabelEvery = Math.max(1, Math.ceil(points.length / 7));
+  const activePoint = activeIndex === null ? null : points[activeIndex];
+  const activeX = activeIndex === null ? 0 : xFor(activeIndex);
+  const activeY = activePoint ? yFor(activePoint.value) : 0;
+  const tooltipWidth = 245;
+  const tooltipHeight = 82;
+  const tooltipX = clamp(activeX - tooltipWidth / 2, margin.left + 4, width - margin.right - tooltipWidth - 4);
+  const tooltipY = activeY - tooltipHeight - 18 < margin.top ? activeY + 20 : activeY - tooltipHeight - 18;
+  const valueUnit = metricLabel.toLowerCase().includes("gramm") ? " g" : "";
 
   return (
     <div className="chart-wrap">
@@ -370,17 +380,44 @@ function SalesLineChart({ metricLabel, points }: { metricLabel: string; points: 
         ))}
         <line className="zero-line" x1={margin.left} x2={width - margin.right} y1={zeroY} y2={zeroY} />
         <path className="chart-line" d={linePath} />
+        {activePoint ? <line className="chart-tooltip-guide" x1={activeX} x2={activeX} y1={margin.top} y2={height - margin.bottom} /> : null}
         {points.map((point, index) => (
           <g key={point.key}>
-            <circle className="chart-dot" cx={xFor(index)} cy={yFor(point.value)} r={5} />
+            <circle className={activeIndex === index ? "chart-dot active" : "chart-dot"} cx={xFor(index)} cy={yFor(point.value)} r={activeIndex === index ? 7 : 5} />
             {index % xLabelEvery === 0 || index === points.length - 1 ? (
               <text className="x-label" x={xFor(index)} y={height - 24} textAnchor="middle">
                 {point.label}
               </text>
             ) : null}
-            <title>{`${point.label}: ${formatNumber(point.value)}`}</title>
+            <circle
+              className="chart-hit-area"
+              cx={xFor(index)}
+              cy={yFor(point.value)}
+              r={20}
+              onBlur={() => setActiveIndex(null)}
+              onFocus={() => setActiveIndex(index)}
+              onPointerEnter={() => setActiveIndex(index)}
+              onPointerLeave={() => setActiveIndex(null)}
+              tabIndex={0}
+            />
           </g>
         ))}
+
+        {activePoint ? (
+          <g className="chart-tooltip" pointerEvents="none">
+            <rect className="chart-tooltip-box" x={tooltipX} y={tooltipY} width={tooltipWidth} height={tooltipHeight} rx={10} />
+            <text className="chart-tooltip-kicker" x={tooltipX + 14} y={tooltipY + 24}>
+              {activePoint.label}
+            </text>
+            <text className="chart-tooltip-value" x={tooltipX + 14} y={tooltipY + 50}>
+              {formatNumber(activePoint.value)}
+              {valueUnit}
+            </text>
+            <text className="chart-tooltip-meta" x={tooltipX + 14} y={tooltipY + 69}>
+              {metricLabel} - {formatNumber(activePoint.orders)} Bestellungen
+            </text>
+          </g>
+        ) : null}
       </svg>
     </div>
   );
@@ -461,6 +498,10 @@ function normalizeText(value: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function makeTicks(min: number, max: number, count: number) {

@@ -60,13 +60,13 @@ body {
 }
 
 body::before {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240'%3E%3Cpath fill='none' stroke='%230f766e' stroke-linecap='round' stroke-linejoin='round' stroke-width='18' d='M120 34v172M34 120h172'/%3E%3Crect x='60' y='60' width='120' height='120' rx='26' fill='none' stroke='%230f766e' stroke-width='12'/%3E%3Cpath fill='none' stroke='%2315803d' stroke-linecap='round' stroke-width='10' d='M78 176c24-42 60-72 104-90'/%3E%3C/svg%3E");
-  background-position: right 8vw top 9vh;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 260 260'%3E%3Ccircle cx='130' cy='130' r='104' fill='none' stroke='%23dc2626' stroke-width='14'/%3E%3Cpath fill='none' stroke='%23dc2626' stroke-linecap='round' stroke-linejoin='round' stroke-width='18' d='M74 198 130 54l56 144M96 145h68'/%3E%3Cpath fill='none' stroke='%23dc2626' stroke-linecap='round' stroke-width='14' d='M130 74v40M110 94h40'/%3E%3Cpath fill='none' stroke='%23dc2626' stroke-linecap='round' stroke-linejoin='round' stroke-width='10' d='M82 205c26-34 57-51 94-51 16 0 28 4 38 11'/%3E%3C/svg%3E");
+  background-position: right 7vw top 8vh;
   background-repeat: no-repeat;
   background-size: min(42vw, 560px);
   content: "";
   inset: 0;
-  opacity: 0.055;
+  opacity: 0.06;
   pointer-events: none;
   position: fixed;
   z-index: 0;
@@ -122,10 +122,10 @@ button {
 .brand-mark {
   align-items: center;
   background:
-    linear-gradient(150deg, rgba(255, 255, 255, 0.14), transparent 36%),
-    linear-gradient(135deg, #0f766e, #16a34a 58%, #2563eb);
+    linear-gradient(150deg, rgba(255, 255, 255, 0.16), transparent 38%),
+    linear-gradient(135deg, #082f2a, #0f766e 55%, #1d4ed8);
   border-radius: 8px;
-  box-shadow: 0 16px 34px rgba(15, 118, 110, 0.24);
+  box-shadow: 0 16px 34px rgba(15, 118, 110, 0.2);
   color: white;
   display: grid;
   height: 56px;
@@ -136,7 +136,7 @@ button {
 }
 
 .brand-mark::after {
-  background: radial-gradient(circle at 72% 78%, rgba(96, 165, 250, 0.5), transparent 22%);
+  background: radial-gradient(circle at 74% 76%, rgba(96, 165, 250, 0.42), transparent 24%);
   content: "";
   inset: 0;
   position: absolute;
@@ -150,36 +150,27 @@ button {
   z-index: 1;
 }
 
-.brand-grid-line {
-  stroke: rgba(255, 255, 255, 0.2);
+.brand-screen {
+  fill: rgba(4, 20, 18, 0.28);
+  stroke: rgba(255, 255, 255, 0.22);
   stroke-width: 1;
 }
 
-.brand-axis {
+.brand-grid-line {
+  stroke: rgba(255, 255, 255, 0.16);
+  stroke-width: 1;
+}
+
+.brand-bar {
+  fill: rgba(219, 234, 254, 0.32);
+}
+
+.brand-price-line {
   fill: none;
-  stroke: rgba(255, 255, 255, 0.55);
+  stroke: #ffffff;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 2;
-}
-
-.brand-candle-stem {
-  stroke: rgba(255, 255, 255, 0.92);
-  stroke-linecap: round;
-  stroke-width: 2;
-}
-
-.brand-candle {
-  stroke: rgba(255, 255, 255, 0.96);
-  stroke-width: 2;
-}
-
-.brand-candle-up {
-  fill: rgba(220, 252, 231, 0.2);
-}
-
-.brand-candle-down {
-  fill: rgba(219, 234, 254, 0.28);
+  stroke-width: 3.4;
 }
 
 .brand-trend {
@@ -187,7 +178,7 @@ button {
   stroke: #ffffff;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 3.4;
+  stroke-width: 3.8;
 }
 
 .brand-trend-dot {
@@ -651,11 +642,64 @@ h2 {
   fill: #ffffff;
   stroke: #0f766e;
   stroke-width: 4;
+  transition: r 120ms ease, stroke-width 120ms ease;
+}
+
+.chart-dot.active {
+  stroke: #16a34a;
+  stroke-width: 5;
 }
 
 :root[data-theme="dark"] .chart-dot {
   fill: #071815;
   stroke: #5eead4;
+}
+
+.chart-hit-area {
+  cursor: pointer;
+  fill: transparent;
+  outline: none;
+}
+
+.chart-hit-area:focus-visible {
+  stroke: rgba(15, 118, 110, 0.42);
+  stroke-width: 2;
+}
+
+.chart-tooltip-guide {
+  stroke: rgba(15, 118, 110, 0.26);
+  stroke-dasharray: 5 7;
+  stroke-width: 2;
+}
+
+.chart-tooltip-box {
+  fill: rgba(15, 36, 31, 0.95);
+  filter: drop-shadow(0 18px 28px rgba(15, 36, 31, 0.22));
+  stroke: rgba(94, 234, 212, 0.28);
+  stroke-width: 1;
+}
+
+.chart-tooltip-kicker {
+  fill: #a7f3d0;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.chart-tooltip-value {
+  fill: #ffffff;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.chart-tooltip-meta {
+  fill: #cbd5e1;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+:root[data-theme="dark"] .chart-tooltip-box {
+  fill: rgba(8, 18, 17, 0.96);
+  filter: drop-shadow(0 18px 28px rgba(0, 0, 0, 0.36));
 }
 
 .empty-chart,

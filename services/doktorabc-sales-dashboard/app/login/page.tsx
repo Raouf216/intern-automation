@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { LockKeyhole, ShieldCheck } from "lucide-react";
+import { ChartCandlestick, Cross, LockKeyhole } from "lucide-react";
 
 export default function LoginPage() {
   const [password, setPassword] = useState("");
@@ -37,11 +37,11 @@ export default function LoginPage() {
       <section className="login-panel" aria-label="DoktorABC Sales Login">
         <div className="brand-lock">
           <div className="brand-mark">
-            <ShieldCheck size={28} />
-            <span />
+            <Cross className="brand-pharmacy-mark" size={42} />
+            <ChartCandlestick className="brand-chart-mark" size={30} />
           </div>
           <div>
-            <p>Rats-Apotheke</p>
+            <p>Rats-Apotheke Blieskastel</p>
             <h1>DoktorABC Sales</h1>
           </div>
         </div>

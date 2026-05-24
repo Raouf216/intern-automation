@@ -1,6 +1,6 @@
 "use client";
 
-import { BarChart3, CalendarDays, ChevronDown, FlaskConical, LogOut, PackageCheck, Pill, RefreshCw, RotateCcw, Scale } from "lucide-react";
+import { BarChart3, CalendarDays, ChartCandlestick, ChevronDown, Cross, FlaskConical, LogOut, PackageCheck, Pill, RefreshCw, RotateCcw, Scale } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { SalesMetricKey, SalesRow } from "../lib/sales-data";
 
@@ -83,11 +83,11 @@ export function SalesDashboard({ initialRows, loadError }: Props) {
       <header className="dashboard-header">
         <div className="brand-row">
           <div className="brand-mark" aria-hidden="true">
-            <Pill size={28} />
-            <span />
+            <Cross className="brand-pharmacy-mark" size={42} />
+            <ChartCandlestick className="brand-chart-mark" size={30} />
           </div>
           <div>
-            <p className="eyebrow">Rats-Apotheke</p>
+            <p className="eyebrow">Rats-Apotheke Blieskastel</p>
             <h1>DoktorABC Sales</h1>
           </div>
         </div>

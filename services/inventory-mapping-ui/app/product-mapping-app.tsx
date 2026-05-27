@@ -307,7 +307,6 @@ export function ProductMappingApp() {
                 <th>Wawican</th>
                 <th>Kultivar</th>
                 <th>DoktorABC</th>
-                <th>Search key</th>
                 <th>Art</th>
                 <th>Status</th>
                 <th>Aktion</th>
@@ -316,7 +315,7 @@ export function ProductMappingApp() {
             <tbody>
               {!loading && products.length === 0 ? (
                 <tr>
-                  <td className="empty-row" colSpan={8}>
+                  <td className="empty-row" colSpan={7}>
                     Keine Produkte gefunden.
                   </td>
                 </tr>
@@ -335,7 +334,6 @@ export function ProductMappingApp() {
                   <td>
                     <strong>{displayValue(product.doktorabcName, "Nicht in DoktorABC")}</strong>
                   </td>
-                  <td>{displayValue(product.doktorabcSearchKey || product.wawicanSearchKey)}</td>
                   <td>
                     <span className={`pill ${productSignal(product)}`}>{signalText(product)}</span>
                   </td>

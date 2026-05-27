@@ -59,6 +59,13 @@ a {
 .brand,
 .subnav,
 .subnav a,
+.create-strip,
+.create-actions,
+.platform-picker,
+.platform-picker button,
+.primary-action,
+.save-action,
+.check-line,
 .search-box,
 .filter-row,
 .filter-row button,
@@ -280,6 +287,140 @@ h2 {
 
 .summary-card.red strong {
   color: var(--red);
+}
+
+.create-strip {
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 14px;
+}
+
+.primary-action,
+.save-action {
+  min-height: 42px;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 0 14px;
+  font-size: 14px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.primary-action {
+  border: 1px solid rgba(5, 122, 85, 0.28);
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.save-action {
+  border: 1px solid rgba(5, 122, 85, 0.35);
+  color: #ffffff;
+  background: var(--green);
+}
+
+.save-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.create-note {
+  color: var(--red);
+  font-size: 13px;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.create-note.success {
+  color: var(--green);
+}
+
+.create-card {
+  display: grid;
+  gap: 14px;
+  margin: 0 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.platform-picker {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.platform-picker button {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  color: var(--label);
+  background: var(--surface-strong);
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.platform-picker button.active {
+  color: var(--green);
+  border-color: rgba(5, 122, 85, 0.28);
+  background: var(--green-soft);
+}
+
+.create-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.create-grid label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.create-grid span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.create-grid input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: 0;
+  padding: 0 11px;
+  color: var(--ink);
+  background: var(--surface-strong);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.create-grid input:focus {
+  border-color: rgba(8, 111, 157, 0.42);
+  background: #ffffff;
+}
+
+.create-actions {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.check-line {
+  min-height: 38px;
+  gap: 8px;
+  color: var(--label);
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.check-line input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--green);
 }
 
 .search-panel,
@@ -550,6 +691,10 @@ tbody tr:hover {
     grid-template-columns: 1fr;
   }
 
+  .create-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .filter-row {
     justify-content: flex-start;
   }
@@ -572,6 +717,16 @@ tbody tr:hover {
   }
 
   .summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .create-strip,
+  .create-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .create-grid {
     grid-template-columns: 1fr;
   }
 

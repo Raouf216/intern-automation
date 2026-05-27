@@ -5,3 +5,6 @@ __pycache__/
 web-scraper-artifacts/
 doktorabc-*.png
 ~$*.xlsx
+*.xlsx
+*.pdf
+README.md

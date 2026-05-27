@@ -18,11 +18,12 @@ const inventoryOptions = [
     meta: "Fotos · Mengen · Ablaufdaten",
   },
   {
-    title: "Bestandsaktionen",
-    eyebrow: "Automation",
+    title: "Abrechnungen",
+    eyebrow: "AI-Prüfung",
+    href: "/abrechnungen",
     icon: ClipboardList,
-    active: false,
-    meta: "Bot-Schritte · Plattformen",
+    active: true,
+    meta: "Großhändler · Einkauf · Verifizierung",
   },
 ];
 

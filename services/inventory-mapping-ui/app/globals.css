@@ -68,6 +68,8 @@ a {
 .secondary-action,
 .check-line,
 .search-box,
+.abrechnung-toolbar,
+.abrechnung-empty-card,
 .filter-row,
 .filter-row button,
 .verify-button,
@@ -471,6 +473,21 @@ h2 {
   padding: 14px;
 }
 
+.abrechnung-toolbar {
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 18px 0 14px;
+  padding: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.abrechnung-toolbar .search-box {
+  flex: 1 1 360px;
+}
+
 .search-box {
   min-height: 46px;
   gap: 10px;
@@ -534,6 +551,43 @@ h2 {
 
 .table-panel {
   overflow: hidden;
+}
+
+.abrechnung-feed {
+  display: grid;
+  gap: 12px;
+  padding-bottom: 18px;
+}
+
+.abrechnung-empty-card {
+  min-height: 132px;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+  color: var(--muted);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.abrechnung-empty-card svg {
+  flex: 0 0 auto;
+  color: var(--blue);
+}
+
+.abrechnung-empty-card p {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.abrechnung-empty-card h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 1.2;
 }
 
 .table-head {
@@ -721,6 +775,11 @@ tbody tr:hover {
 
   .search-panel {
     grid-template-columns: 1fr;
+  }
+
+  .abrechnung-toolbar {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .create-grid {

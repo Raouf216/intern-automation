@@ -1,0 +1,50 @@
+services:
+  inbound-email-webhook:
+    container_name: inbound-email-webhook
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${INBOUND_EMAIL_HTTP_PORT:-8074}:8000"
+      - "${INBOUND_EMAIL_SMTP_PORT:-2525}:2525"
+    networks:
+      - dokploy-network
+    environment:
+      - PORT=8000
+      - SMTP_HOST=0.0.0.0
+      - SMTP_PORT=2525
+      - SMTP_HOSTNAME=${INBOUND_EMAIL_SMTP_HOSTNAME:-mail.local}
+      - WEBHOOK_URL=${INBOUND_EMAIL_WEBHOOK_URL}
+      - WEBHOOK_SECRET=${INBOUND_EMAIL_WEBHOOK_SECRET:-}
+      - WEBHOOK_BEARER_TOKEN=${INBOUND_EMAIL_WEBHOOK_BEARER_TOKEN:-}
+      - ACCEPTED_RECIPIENTS=${INBOUND_EMAIL_ACCEPTED_RECIPIENTS:-}
+      - ACCEPTED_DOMAINS=${INBOUND_EMAIL_ACCEPTED_DOMAINS:-}
+      - MAX_MESSAGE_BYTES=${INBOUND_EMAIL_MAX_MESSAGE_BYTES:-10485760}
+      - INCLUDE_ATTACHMENT_CONTENT=${INBOUND_EMAIL_INCLUDE_ATTACHMENT_CONTENT:-true}
+      - MAX_RECENT_EVENTS=${INBOUND_EMAIL_MAX_RECENT_EVENTS:-50}
+      - EVENT_HISTORY_PATH=${INBOUND_EMAIL_EVENT_HISTORY_PATH:-/app/data/events.jsonl}
+      - MAX_HISTORY_FILE_BYTES=${INBOUND_EMAIL_MAX_HISTORY_FILE_BYTES:-5242880}
+      - TZ=${TZ:-Europe/Berlin}
+    volumes:
+      - inbound_email_data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  dokploy-network:
+    external: true
+
+volumes:
+  inbound_email_data:

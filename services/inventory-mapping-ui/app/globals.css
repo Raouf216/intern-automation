@@ -62,11 +62,13 @@ a {
 .search-box,
 .filter-row,
 .filter-row button,
+.verify-button,
 .table-head,
 .table-state,
 .error-box,
 .pill,
-.status {
+.status,
+.verified-action {
   display: flex;
   align-items: center;
 }
@@ -411,7 +413,7 @@ h2 {
 
 table {
   width: 100%;
-  min-width: 1080px;
+  min-width: 1180px;
   border-collapse: collapse;
 }
 
@@ -498,6 +500,34 @@ tbody tr:hover {
 .pill.missing {
   color: var(--blue);
   background: var(--blue-soft);
+}
+
+.verify-button,
+.verified-action {
+  width: max-content;
+  min-height: 32px;
+  gap: 7px;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.verify-button {
+  border: 1px solid rgba(5, 122, 85, 0.28);
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.verify-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.verified-action {
+  color: var(--green);
+  background: var(--green-soft);
 }
 
 .empty-row {

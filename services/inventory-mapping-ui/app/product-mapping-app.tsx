@@ -50,6 +50,11 @@ type ProductsResponse = {
   products?: ProductRow[];
 };
 
+type VerifyResponse = {
+  ok?: boolean;
+  error?: string;
+};
+
 type FilterKind = "all" | "matched" | "missing-doktorabc" | "deal" | "needs-review";
 
 const filterOptions: Array<{
@@ -79,8 +84,8 @@ function displayValue(value: string, fallback = "—") {
 }
 
 function statusLabel(status: string) {
-  if (status === "verified") return "verified";
-  if (status === "needs_review") return "needs review";
+  if (status === "verified") return "OK";
+  if (status === "needs_review") return "Prüfen";
   if (status === "archived") return "archived";
   return status || "unknown";
 }
@@ -118,6 +123,8 @@ export function ProductMappingApp() {
   const [filteredCount, setFilteredCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [verifyingProductId, setVerifyingProductId] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -159,7 +166,41 @@ export function ProductMappingApp() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [query, filter]);
+  }, [query, filter, refreshTick]);
+
+  async function verifyProduct(product: ProductRow) {
+    if (!product.canonicalId || verifyingProductId) return;
+
+    const label = product.wawicanName || product.doktorabcName || product.canonicalId;
+    const confirmed = window.confirm(`Dieses Produkt als OK markieren?\n\n${label}`);
+    if (!confirmed) return;
+
+    setVerifyingProductId(product.id);
+    setError("");
+
+    try {
+      const response = await fetch("/api/products/verify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          canonicalId: product.canonicalId,
+        }),
+      });
+      const payload = (await response.json()) as VerifyResponse;
+
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || `Verify failed (${response.status}).`);
+      }
+
+      setRefreshTick((value) => value + 1);
+    } catch (verifyError) {
+      setError(verifyError instanceof Error ? verifyError.message : "Verify failed.");
+    } finally {
+      setVerifyingProductId("");
+    }
+  }
 
   const summaryCards = useMemo(
     () => [
@@ -269,12 +310,13 @@ export function ProductMappingApp() {
                 <th>Search key</th>
                 <th>Art</th>
                 <th>Status</th>
+                <th>Aktion</th>
               </tr>
             </thead>
             <tbody>
               {!loading && products.length === 0 ? (
                 <tr>
-                  <td className="empty-row" colSpan={7}>
+                  <td className="empty-row" colSpan={8}>
                     Keine Produkte gefunden.
                   </td>
                 </tr>
@@ -300,6 +342,25 @@ export function ProductMappingApp() {
                   <td>
                     <span className={`status ${product.status}`}>{statusLabel(product.status)}</span>
                     {product.reviewReason ? <small>{product.reviewReason}</small> : null}
+                  </td>
+                  <td>
+                    {product.status === "verified" ? (
+                      <span className="verified-action">
+                        <CheckCircle2 size={16} />
+                        OK
+                      </span>
+                    ) : (
+                      <button
+                        className="verify-button"
+                        type="button"
+                        onClick={() => verifyProduct(product)}
+                        disabled={Boolean(verifyingProductId)}
+                        title="Dieses Mapping als OK markieren"
+                      >
+                        {verifyingProductId === product.id ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
+                        OK setzen
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

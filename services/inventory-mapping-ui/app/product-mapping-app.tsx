@@ -185,9 +185,13 @@ export function ProductMappingApp() {
           </div>
         </div>
         <nav className="subnav" aria-label="Inventory">
+          <a href="/">
+            <Boxes size={18} />
+            Inventory
+          </a>
           <a className="active" href="/products">
             <PackageSearch size={18} />
-            Produkte
+            Produktnamen
           </a>
         </nav>
       </header>

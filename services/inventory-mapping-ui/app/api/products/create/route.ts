@@ -94,11 +94,11 @@ function payloadPlatforms(payload: Record<string, unknown>) {
   const wawicanName = textValue(platformRecord.wawicanName);
   const doktorabcName = textValue(platformRecord.doktorabcName);
 
-  if (platformRecord.wawican === true && wawicanName) {
+  if (wawicanName) {
     rows.push({ platform: "wawican", name: normalizeWhitespace(wawicanName) });
   }
 
-  if (platformRecord.doktorabc === true && doktorabcName) {
+  if (doktorabcName) {
     rows.push({ platform: "doktorabc", name: normalizeWhitespace(doktorabcName) });
   }
 
@@ -120,19 +120,15 @@ function platformValidationError(payload: Record<string, unknown>) {
     return "Choose at least one platform and enter its exact name.";
   }
 
-  const inWawican = platforms.wawican === true;
-  const inDoktorabc = platforms.doktorabc === true;
+  const wawicanName = textValue(platforms.wawicanName);
+  const doktorabcName = textValue(platforms.doktorabcName);
 
-  if (!inWawican && !inDoktorabc) {
-    return "Choose at least one platform.";
+  if (!wawicanName && !doktorabcName) {
+    return "Enter at least one platform name.";
   }
 
-  if (inWawican && !textValue(platforms.wawicanName)) {
-    return "Wawican name is required.";
-  }
-
-  if (inDoktorabc && !textValue(platforms.doktorabcName)) {
-    return "DoktorABC name is required.";
+  if (wawicanName && !textValue(payload.kultivar)) {
+    return "Kultivar is required when Wawican name is set.";
   }
 
   return "";
@@ -163,7 +159,6 @@ async function insertProduct(payload: Record<string, unknown>, platforms: Platfo
     },
     body: JSON.stringify({
       canonical_id: canonicalId(),
-      our_name: nullableText(textValue(payload.ourName)),
       kultivar: nullableText(textValue(payload.kultivar)),
       product_kind: productKind,
       status,

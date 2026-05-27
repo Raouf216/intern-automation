@@ -61,10 +61,11 @@ a {
 .subnav a,
 .create-strip,
 .create-actions,
-.platform-picker,
-.platform-picker button,
+.modal-head,
+.modal-actions,
 .primary-action,
 .save-action,
+.secondary-action,
 .check-line,
 .search-box,
 .filter-row,
@@ -296,7 +297,8 @@ h2 {
 }
 
 .primary-action,
-.save-action {
+.save-action,
+.secondary-action {
   min-height: 42px;
   gap: 8px;
   border-radius: 8px;
@@ -323,6 +325,12 @@ h2 {
   opacity: 0.58;
 }
 
+.secondary-action {
+  border: 1px solid var(--line);
+  color: var(--label);
+  background: var(--surface);
+}
+
 .create-note {
   color: var(--red);
   font-size: 13px;
@@ -334,42 +342,66 @@ h2 {
   color: var(--green);
 }
 
-.create-card {
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
   display: grid;
-  gap: 14px;
-  margin: 0 0 16px;
+  place-items: center;
+  padding: 18px;
+  background: rgba(23, 32, 38, 0.32);
+}
+
+.modal-card {
+  width: min(720px, 100%);
+  display: grid;
+  gap: 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 14px;
+  padding: 18px;
   background: var(--surface);
-  box-shadow: var(--shadow);
+  box-shadow: 0 24px 70px rgba(23, 32, 38, 0.2);
 }
 
-.platform-picker {
-  flex-wrap: wrap;
-  gap: 8px;
+.modal-head,
+.modal-actions {
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.platform-picker button {
-  min-height: 38px;
+.modal-head p {
+  margin: 0 0 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.modal-close {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0 12px;
-  color: var(--label);
+  color: var(--muted);
   background: var(--surface-strong);
-  font-size: 13px;
-  font-weight: 950;
 }
 
-.platform-picker button.active {
-  color: var(--green);
-  border-color: rgba(5, 122, 85, 0.28);
-  background: var(--green-soft);
+.modal-error {
+  border: 1px solid rgba(180, 35, 49, 0.24);
+  border-radius: 8px;
+  padding: 11px;
+  color: var(--red);
+  background: var(--red-soft);
+  font-size: 13px;
+  font-weight: 900;
+  overflow-wrap: anywhere;
 }
 
 .create-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -721,7 +753,9 @@ tbody tr:hover {
   }
 
   .create-strip,
-  .create-actions {
+  .create-actions,
+  .modal-head,
+  .modal-actions {
     align-items: stretch;
     flex-direction: column;
   }

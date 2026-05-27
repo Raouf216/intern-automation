@@ -20,7 +20,6 @@ import { useEffect, useMemo, useState } from "react";
 type ProductRow = {
   id: string;
   canonicalId: string;
-  ourName: string;
   kultivar: string;
   status: string;
   productKind: string;
@@ -64,12 +63,9 @@ type CreateProductResponse = {
 };
 
 type NewProductForm = {
-  inWawican: boolean;
-  inDoktorabc: boolean;
   wawicanName: string;
   doktorabcName: string;
   kultivar: string;
-  ourName: string;
   verified: boolean;
 };
 
@@ -98,12 +94,9 @@ const emptyStats: ProductStats = {
 };
 
 const emptyNewProduct: NewProductForm = {
-  inWawican: true,
-  inDoktorabc: false,
   wawicanName: "",
   doktorabcName: "",
   kultivar: "",
-  ourName: "",
   verified: false,
 };
 
@@ -244,14 +237,17 @@ export function ProductMappingApp() {
 
   async function createProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const wawicanName = newProduct.wawicanName.trim();
+    const doktorabcName = newProduct.doktorabcName.trim();
+    const kultivar = newProduct.kultivar.trim();
 
-    if (!newProduct.inWawican && !newProduct.inDoktorabc) {
-      setCreateMessage("Mindestens eine Plattform wählen.");
+    if (!wawicanName && !doktorabcName) {
+      setCreateMessage("DoktorABC Name oder Wawican Name ist Pflicht.");
       return;
     }
 
-    if ((newProduct.inWawican && !newProduct.wawicanName.trim()) || (newProduct.inDoktorabc && !newProduct.doktorabcName.trim())) {
-      setCreateMessage("Gewählte Plattformen brauchen exakte Namen.");
+    if (wawicanName && !kultivar) {
+      setCreateMessage("Kultivar ist Pflicht, wenn Wawican Name gesetzt ist.");
       return;
     }
 
@@ -266,13 +262,10 @@ export function ProductMappingApp() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          ourName: newProduct.ourName,
           kultivar: newProduct.kultivar,
           verified: newProduct.verified,
           platforms: {
-            wawican: newProduct.inWawican,
             wawicanName: newProduct.wawicanName,
-            doktorabc: newProduct.inDoktorabc,
             doktorabcName: newProduct.doktorabcName,
           },
         }),
@@ -306,9 +299,8 @@ export function ProductMappingApp() {
   );
 
   const canCreateProduct =
-    (newProduct.inWawican || newProduct.inDoktorabc) &&
-    (!newProduct.inWawican || Boolean(newProduct.wawicanName.trim())) &&
-    (!newProduct.inDoktorabc || Boolean(newProduct.doktorabcName.trim()));
+    Boolean(newProduct.wawicanName.trim() || newProduct.doktorabcName.trim()) &&
+    (!newProduct.wawicanName.trim() || Boolean(newProduct.kultivar.trim()));
 
   return (
     <main className="app-shell">
@@ -344,89 +336,103 @@ export function ProductMappingApp() {
       </section>
 
       <section className="create-strip">
-        <button className="primary-action" type="button" onClick={() => setShowCreateForm((value) => !value)}>
-          {showCreateForm ? <X size={18} /> : <Plus size={18} />}
+        <button
+          className="primary-action"
+          type="button"
+          onClick={() => {
+            setCreateMessage("");
+            setNewProduct(emptyNewProduct);
+            setShowCreateForm(true);
+          }}
+        >
+          <Plus size={18} />
           Produkt hinzufügen
         </button>
-        {createMessage ? <span className={createMessage === "Produkt gespeichert." ? "create-note success" : "create-note"}>{createMessage}</span> : null}
+        {createMessage && !showCreateForm ? <span className={createMessage === "Produkt gespeichert." ? "create-note success" : "create-note"}>{createMessage}</span> : null}
       </section>
 
       {showCreateForm ? (
-        <form className="create-card" onSubmit={createProduct}>
-          <div className="platform-picker" aria-label="Plattformen">
-            <button
-              className={newProduct.inWawican ? "active" : ""}
-              type="button"
-              onClick={() => updateNewProduct({ inWawican: !newProduct.inWawican })}
-            >
-              Wawican
-            </button>
-            <button
-              className={newProduct.inDoktorabc ? "active" : ""}
-              type="button"
-              onClick={() => updateNewProduct({ inDoktorabc: !newProduct.inDoktorabc })}
-            >
-              DoktorABC
-            </button>
-          </div>
+        <div className="modal-backdrop" role="presentation">
+          <form className="modal-card" onSubmit={createProduct} role="dialog" aria-modal="true" aria-labelledby="create-product-title">
+            <div className="modal-head">
+              <div>
+                <p>Produkt</p>
+                <h2 id="create-product-title">Produkt hinzufügen</h2>
+              </div>
+              <button
+                className="modal-close"
+                type="button"
+                onClick={() => {
+                  setShowCreateForm(false);
+                  setCreateMessage("");
+                }}
+                aria-label="Formular schließen"
+              >
+                <X size={18} />
+              </button>
+            </div>
 
-          <div className="create-grid">
-            {newProduct.inWawican ? (
+            <div className="create-grid">
+              <label>
+                <span>DoktorABC Name</span>
+                <input
+                  autoFocus
+                  value={newProduct.doktorabcName}
+                  onChange={(event) => updateNewProduct({ doktorabcName: event.target.value })}
+                  placeholder="Exakter DoktorABC Name"
+                />
+              </label>
+
               <label>
                 <span>Wawican Name</span>
                 <input
                   value={newProduct.wawicanName}
                   onChange={(event) => updateNewProduct({ wawicanName: event.target.value })}
-                  placeholder="Exakter Name"
+                  placeholder="Exakter Wawican Name"
                 />
               </label>
-            ) : null}
 
-            {newProduct.inDoktorabc ? (
               <label>
-                <span>DoktorABC Name</span>
+                <span>{newProduct.wawicanName.trim() ? "Kultivar *" : "Kultivar"}</span>
                 <input
-                  value={newProduct.doktorabcName}
-                  onChange={(event) => updateNewProduct({ doktorabcName: event.target.value })}
-                  placeholder="Exakter Name"
+                  value={newProduct.kultivar}
+                  onChange={(event) => updateNewProduct({ kultivar: event.target.value })}
+                  placeholder={newProduct.wawicanName.trim() ? "Pflicht bei Wawican" : "Optional"}
+                  required={Boolean(newProduct.wawicanName.trim())}
                 />
               </label>
-            ) : null}
+            </div>
 
-            <label>
-              <span>Kultivar</span>
-              <input
-                value={newProduct.kultivar}
-                onChange={(event) => updateNewProduct({ kultivar: event.target.value })}
-                placeholder="Optional"
-              />
-            </label>
+            {createMessage ? <div className="modal-error">{createMessage}</div> : null}
 
-            <label>
-              <span>Our name</span>
-              <input
-                value={newProduct.ourName}
-                onChange={(event) => updateNewProduct({ ourName: event.target.value })}
-                placeholder="Optional"
-              />
-            </label>
-          </div>
-
-          <div className="create-actions">
-            <label className="check-line">
-              <input
-                type="checkbox"
-                checked={newProduct.verified}
-                onChange={(event) => updateNewProduct({ verified: event.target.checked })}
-              />
-              <span>OK</span>
-            </label>
-            <button className="save-action" type="submit" disabled={!canCreateProduct || creatingProduct}>
-              {creatingProduct ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
-              Speichern
-            </button>
-          </div>
-        </form>
+            <div className="create-actions">
+              <label className="check-line">
+                <input
+                  type="checkbox"
+                  checked={newProduct.verified}
+                  onChange={(event) => updateNewProduct({ verified: event.target.checked })}
+                />
+                <span>OK</span>
+              </label>
+              <div className="modal-actions">
+                <button
+                  className="secondary-action"
+                  type="button"
+                  onClick={() => {
+                    setShowCreateForm(false);
+                    setCreateMessage("");
+                  }}
+                >
+                  Abbrechen
+                </button>
+                <button className="save-action" type="submit" disabled={!canCreateProduct || creatingProduct}>
+                  {creatingProduct ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
+                  Speichern
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
       ) : null}
 
       <section className="search-panel">
@@ -435,7 +441,7 @@ export function ProductMappingApp() {
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Wawican, DoktorABC, Kultivar oder Name"
+            placeholder="Wawican, DoktorABC oder Kultivar"
           />
           {query ? (
             <button className="clear-button" type="button" onClick={() => setQuery("")} aria-label="Suche leeren">

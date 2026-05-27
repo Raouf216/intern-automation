@@ -4,7 +4,6 @@ export const dynamic = "force-dynamic";
 
 type MappingViewRow = {
   canonical_id: string;
-  our_name: string | null;
   kultivar: string | null;
   status: "verified" | "needs_review" | "archived" | string;
   product_kind: "standard" | "deal" | string;
@@ -20,7 +19,6 @@ type MappingViewRow = {
 type ProductRow = {
   id: string;
   canonicalId: string;
-  ourName: string;
   kultivar: string;
   status: string;
   productKind: string;
@@ -101,7 +99,6 @@ function productFromViewRow(row: MappingViewRow): ProductRow {
   return {
     id: idParts.join("::"),
     canonicalId,
-    ourName: textValue(row.our_name),
     kultivar: textValue(row.kultivar),
     status: textValue(row.status),
     productKind: textValue(row.product_kind) || "standard",
@@ -123,7 +120,6 @@ function matchesQuery(row: MappingViewRow, terms: string[]) {
   const haystack = normalize(
     [
       row.canonical_id,
-      row.our_name,
       row.kultivar,
       row.status,
       row.product_kind,
@@ -185,7 +181,7 @@ export async function GET(request: Request) {
 
     url.searchParams.set(
       "select",
-      "canonical_id,our_name,kultivar,status,product_kind,review_reason,wawican_name,doktorabc_name,wawican_search_key,doktorabc_search_key,wawican_mapping_status,doktorabc_mapping_status"
+      "canonical_id,kultivar,status,product_kind,review_reason,wawican_name,doktorabc_name,wawican_search_key,doktorabc_search_key,wawican_mapping_status,doktorabc_mapping_status"
     );
     url.searchParams.set("order", "product_kind.asc,canonical_id.asc");
     url.searchParams.set("limit", "1000");

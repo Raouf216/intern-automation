@@ -69,7 +69,12 @@ a {
 .check-line,
 .search-box,
 .abrechnung-toolbar,
+.abrechnung-card-head,
 .abrechnung-empty-card,
+.abrechnung-details,
+.abrechnung-details div,
+.product-line-head,
+.batch-row,
 .filter-row,
 .filter-row button,
 .verify-button,
@@ -559,6 +564,218 @@ h2 {
   padding-bottom: 18px;
 }
 
+.abrechnung-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.abrechnung-card-head {
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfefd;
+}
+
+.abrechnung-rank {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(8, 111, 157, 0.22);
+  border-radius: 8px;
+  color: var(--blue);
+  background: var(--blue-soft);
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.abrechnung-title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.abrechnung-title p,
+.product-line-head p {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.abrechnung-title h2 {
+  font-size: 22px;
+  line-height: 1.18;
+  overflow-wrap: anywhere;
+}
+
+.abrechnung-meta-grid,
+.product-line-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.abrechnung-meta-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.abrechnung-meta-grid div,
+.product-line-grid div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface-strong);
+}
+
+.abrechnung-meta-grid span,
+.product-line-grid span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.abrechnung-meta-grid strong,
+.product-line-grid strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 950;
+  overflow-wrap: anywhere;
+}
+
+.abrechnung-details {
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 16px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.abrechnung-details div {
+  min-height: 34px;
+  min-width: 0;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--label);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.abrechnung-details svg {
+  flex: 0 0 auto;
+  color: var(--blue);
+}
+
+.abrechnung-details span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.abrechnung-products {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.abrechnung-product {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.product-line-head {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  background: var(--surface-strong);
+}
+
+.product-line-head h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.product-code {
+  width: max-content;
+  max-width: 220px;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(8, 111, 157, 0.22);
+  border-radius: 8px;
+  padding: 0 9px;
+  color: var(--blue);
+  background: var(--blue-soft);
+  font-size: 12px;
+  font-weight: 950;
+  overflow-wrap: anywhere;
+}
+
+.product-line-grid {
+  grid-template-columns: 1.4fr repeat(4, minmax(0, 1fr));
+  padding: 12px;
+}
+
+.batch-list {
+  display: grid;
+  gap: 7px;
+  padding: 0 12px 12px;
+}
+
+.batch-row {
+  flex-wrap: wrap;
+  gap: 8px;
+  border: 1px solid rgba(5, 122, 85, 0.18);
+  border-radius: 8px;
+  padding: 9px 10px;
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.batch-row.muted {
+  color: var(--muted);
+  border-color: var(--line);
+  background: var(--surface-strong);
+}
+
+.abrechnung-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 16px 16px;
+}
+
+.abrechnung-foot span {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 9px;
+  color: var(--muted);
+  background: var(--surface-strong);
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .abrechnung-empty-card {
   min-height: 132px;
   gap: 14px;
@@ -631,6 +848,10 @@ h2 {
   font-size: 13px;
   font-weight: 900;
   overflow-wrap: anywhere;
+}
+
+.error-box.standalone {
+  margin: 0 0 14px;
 }
 
 .table-wrap {
@@ -769,6 +990,11 @@ tbody tr:hover {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .abrechnung-meta-grid,
+  .product-line-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .option-grid {
     grid-template-columns: 1fr;
   }
@@ -798,6 +1024,7 @@ tbody tr:hover {
   }
 
   .topbar,
+  .abrechnung-card-head,
   .table-head {
     align-items: stretch;
     flex-direction: column;
@@ -826,5 +1053,10 @@ tbody tr:hover {
   .subnav a,
   .table-state {
     justify-content: center;
+  }
+
+  .abrechnung-meta-grid,
+  .product-line-grid {
+    grid-template-columns: 1fr;
   }
 }

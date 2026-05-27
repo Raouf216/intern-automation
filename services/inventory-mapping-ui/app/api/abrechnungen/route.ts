@@ -1,0 +1,411 @@
+import { NextResponse } from "next/server";
+
+export const dynamic = "force-dynamic";
+
+type JsonRecord = Record<string, unknown>;
+
+type AbrechnungRow = {
+  id: string;
+  status: string | null;
+  supplier_name: string | null;
+  sender_email: string | null;
+  email_subject: string | null;
+  received_at: string | null;
+  rechnungsnummer: string | null;
+  rechnungsdatum: string | null;
+  total_netto: number | string | null;
+  total_brutto: number | string | null;
+  currency: string | null;
+  ai_confidence: number | string | null;
+  ai_reason: string | null;
+  raw_ai_output: unknown;
+  review_note: string | null;
+  created_at: string | null;
+};
+
+type DocumentRow = {
+  id: string;
+  abrechnung_id: string;
+  file_name: string | null;
+  mime_type: string | null;
+  file_kind: string | null;
+  created_at: string | null;
+};
+
+type ProductLineRow = {
+  id: string;
+  abrechnung_id: string;
+  line_number: number | string | null;
+  product_name_raw: string | null;
+  quantity: number | string | null;
+  quantity_unit: string | null;
+  unit_price_netto: number | string | null;
+  unit_price_brutto: number | string | null;
+  line_netto: number | string | null;
+  line_brutto: number | string | null;
+  vat_rate: number | string | null;
+  currency: string | null;
+  match_status: string | null;
+  ai_confidence: number | string | null;
+  raw_line: unknown;
+  created_at: string | null;
+};
+
+type BatchRow = {
+  id: string;
+  product_line_id: string;
+  chargennummer: string | null;
+  expiry_date: string | null;
+  quantity: number | string | null;
+  quantity_unit: string | null;
+  ai_confidence: number | string | null;
+  raw_batch: unknown;
+  created_at: string | null;
+};
+
+function requiredEnv(name: string) {
+  const value = process.env[name];
+
+  if (!value?.trim()) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+
+  return value.trim().replace(/^["']|["']$/g, "");
+}
+
+function supabaseUrl() {
+  const value = requiredEnv("SUPABASE_URL").replace(/\/+$/, "");
+
+  try {
+    return new URL(value).href.replace(/\/+$/, "");
+  } catch {
+    throw new Error("Invalid SUPABASE_URL. Use a full URL such as http://supabase-kong:8000.");
+  }
+}
+
+function schemaName() {
+  return (process.env.SUPABASE_ABRECHNUNG_SCHEMA || "private").trim() || "private";
+}
+
+function supabaseHeaders() {
+  const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
+  const schema = schemaName();
+
+  return {
+    apikey: serviceRoleKey,
+    Authorization: `Bearer ${serviceRoleKey}`,
+    "Accept-Profile": schema,
+    "Content-Profile": schema,
+    "Content-Type": "application/json",
+  };
+}
+
+function tableName(envName: string, fallback: string) {
+  return (process.env[envName] || fallback).trim() || fallback;
+}
+
+function restUrl(table: string) {
+  return `${supabaseUrl()}/rest/v1/${encodeURIComponent(table)}`;
+}
+
+function normalize(value: string) {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9/]+/g, " ")
+    .trim();
+}
+
+function splitTerms(query: string) {
+  return normalize(query)
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean);
+}
+
+function stringValue(value: unknown) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim();
+}
+
+function numberValue(value: unknown) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+
+  const text = String(value).trim().replace(/\s/g, "");
+  const normalized = text.includes(",") && text.includes(".") ? text.replace(/\./g, "").replace(",", ".") : text.replace(",", ".");
+  const parsed = Number(normalized);
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function jsonRecord(value: unknown): JsonRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as JsonRecord;
+}
+
+function jsonArray(value: unknown): JsonRecord[] {
+  return Array.isArray(value) ? value.map(jsonRecord) : [];
+}
+
+function uniqueValues(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.map((value) => value?.trim()).filter(Boolean) as string[]));
+}
+
+async function fetchJson<T>(url: URL) {
+  const response = await fetch(url, {
+    headers: supabaseHeaders(),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Supabase Abrechnung lookup failed (${response.status}): ${detail}`);
+  }
+
+  return (await response.json()) as T;
+}
+
+function inFilter(values: string[]) {
+  return `in.(${values.join(",")})`;
+}
+
+function matchesQuery(abrechnung: ReturnType<typeof buildAbrechnung>, terms: string[]) {
+  if (!terms.length) return true;
+
+  const haystack = normalize(
+    [
+      abrechnung.supplierName,
+      abrechnung.sellerName,
+      abrechnung.senderEmail,
+      abrechnung.emailSubject,
+      abrechnung.rechnungsnummer,
+      abrechnung.debitorNumber,
+      abrechnung.rechnungsdatum,
+      abrechnung.receivedAt,
+      abrechnung.status,
+      ...abrechnung.products.flatMap((product) => [
+        product.productName,
+        product.productCode,
+        product.matchStatus,
+        ...product.batches.flatMap((batch) => [batch.chargennummer, batch.expiryDate]),
+      ]),
+    ].join(" ")
+  );
+
+  return terms.every((term) => haystack.includes(term));
+}
+
+function buildAbrechnung(
+  row: AbrechnungRow,
+  documents: DocumentRow[],
+  lines: ProductLineRow[],
+  batchesByLineId: Map<string, BatchRow[]>
+) {
+  const rawAi = jsonRecord(row.raw_ai_output);
+  const rawInvoice = jsonRecord(rawAi.invoice);
+
+  const products = lines
+    .sort((a, b) => Number(a.line_number || 0) - Number(b.line_number || 0))
+    .map((line) => {
+      const rawLine = jsonRecord(line.raw_line);
+      const lineBatches = (batchesByLineId.get(line.id) || []).map((batch) => {
+        const rawBatch = jsonRecord(batch.raw_batch);
+
+        return {
+          id: batch.id,
+          chargennummer: stringValue(batch.chargennummer),
+          expiryDate: stringValue(batch.expiry_date),
+          quantity: numberValue(batch.quantity),
+          quantityUnit: stringValue(batch.quantity_unit) || "g",
+          quantityPieces: numberValue(rawBatch.quantity_pieces),
+          unitWeightG: numberValue(rawBatch.unit_weight_g),
+          totalQuantityG: numberValue(rawBatch.total_quantity_g) ?? numberValue(batch.quantity),
+          aiConfidence: numberValue(batch.ai_confidence),
+        };
+      });
+
+      return {
+        id: line.id,
+        lineNumber: numberValue(line.line_number),
+        productName: stringValue(line.product_name_raw),
+        productCode: stringValue(rawLine.product_code_raw),
+        quantity: numberValue(line.quantity),
+        quantityUnit: stringValue(line.quantity_unit) || "g",
+        quantityPieces: numberValue(rawLine.quantity_pieces),
+        unitWeightG: numberValue(rawLine.unit_weight_g),
+        totalQuantityG: numberValue(rawLine.total_quantity_g) ?? numberValue(line.quantity),
+        unitPriceNetto: numberValue(line.unit_price_netto),
+        unitPriceBrutto: numberValue(line.unit_price_brutto),
+        lineNetto: numberValue(line.line_netto),
+        lineBrutto: numberValue(line.line_brutto),
+        vatRate: numberValue(line.vat_rate),
+        currency: stringValue(line.currency) || stringValue(row.currency) || "EUR",
+        matchStatus: stringValue(line.match_status),
+        aiConfidence: numberValue(line.ai_confidence),
+        batches: lineBatches,
+      };
+    });
+
+  const rawProducts = jsonArray(rawAi.products);
+  const totalVatFromRaw = numberValue(rawInvoice.total_vat);
+
+  return {
+    id: row.id,
+    status: stringValue(row.status) || "needs_review",
+    supplierName: stringValue(row.supplier_name) || stringValue(rawInvoice.supplier_name),
+    sellerName: stringValue(rawInvoice.seller_name),
+    customerName: stringValue(rawInvoice.customer_name),
+    senderEmail: stringValue(row.sender_email),
+    emailSubject: stringValue(row.email_subject),
+    receivedAt: stringValue(row.received_at),
+    rechnungsnummer: stringValue(row.rechnungsnummer) || stringValue(rawInvoice.rechnungsnummer),
+    debitorNumber: stringValue(rawInvoice.debitor_number),
+    rechnungsdatum: stringValue(row.rechnungsdatum) || stringValue(rawInvoice.rechnungsdatum),
+    faelligkeitsdatum: stringValue(rawInvoice.faelligkeitsdatum),
+    totalNetto: numberValue(row.total_netto),
+    totalVat: totalVatFromRaw,
+    totalBrutto: numberValue(row.total_brutto),
+    currency: stringValue(row.currency) || stringValue(rawInvoice.currency) || "EUR",
+    aiConfidence: numberValue(row.ai_confidence),
+    aiReason: stringValue(row.ai_reason),
+    reviewNote: stringValue(row.review_note),
+    createdAt: stringValue(row.created_at),
+    documents: documents.map((document) => ({
+      id: document.id,
+      fileName: stringValue(document.file_name),
+      mimeType: stringValue(document.mime_type),
+      fileKind: stringValue(document.file_kind),
+      createdAt: stringValue(document.created_at),
+    })),
+    products: products.length ? products : rawProducts.map((product, index) => ({
+      id: `${row.id}-raw-${index}`,
+      lineNumber: numberValue(product.line_number) ?? index + 1,
+      productName: stringValue(product.product_name_raw),
+      productCode: stringValue(product.product_code_raw),
+      quantity: numberValue(product.total_quantity_g),
+      quantityUnit: "g",
+      quantityPieces: numberValue(product.quantity_pieces),
+      unitWeightG: numberValue(product.unit_weight_g),
+      totalQuantityG: numberValue(product.total_quantity_g),
+      unitPriceNetto: numberValue(product.unit_price_netto),
+      unitPriceBrutto: numberValue(product.unit_price_brutto),
+      lineNetto: numberValue(product.line_netto),
+      lineBrutto: numberValue(product.line_brutto),
+      vatRate: numberValue(product.vat_rate),
+      currency: stringValue(product.currency) || stringValue(row.currency) || "EUR",
+      matchStatus: "",
+      aiConfidence: null,
+      batches: jsonArray(product.batches).map((batch, batchIndex) => ({
+        id: `${row.id}-raw-${index}-${batchIndex}`,
+        chargennummer: stringValue(batch.chargennummer),
+        expiryDate: stringValue(batch.expiry_date),
+        quantity: numberValue(batch.total_quantity_g),
+        quantityUnit: "g",
+        quantityPieces: numberValue(batch.quantity_pieces),
+        unitWeightG: numberValue(batch.unit_weight_g),
+        totalQuantityG: numberValue(batch.total_quantity_g),
+        aiConfidence: null,
+      })),
+    })),
+  };
+}
+
+export async function GET(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const query = searchParams.get("q") || "";
+    const limit = Math.min(Math.max(Number(searchParams.get("limit")) || 100, 1), 200);
+    const terms = splitTerms(query);
+
+    const abrechnungenTable = tableName("SUPABASE_ABRECHNUNGEN_TABLE", "abrechnungen");
+    const documentsTable = tableName("SUPABASE_ABRECHNUNG_DOCUMENTS_TABLE", "abrechnung_documents");
+    const linesTable = tableName("SUPABASE_ABRECHNUNG_PRODUCT_LINES_TABLE", "abrechnung_product_lines");
+    const batchesTable = tableName("SUPABASE_ABRECHNUNG_PRODUCT_BATCHES_TABLE", "abrechnung_product_batches");
+
+    const abrechnungenUrl = new URL(restUrl(abrechnungenTable));
+    abrechnungenUrl.searchParams.set(
+      "select",
+      "id,status,supplier_name,sender_email,email_subject,received_at,rechnungsnummer,rechnungsdatum,total_netto,total_brutto,currency,ai_confidence,ai_reason,raw_ai_output,review_note,created_at"
+    );
+    abrechnungenUrl.searchParams.set("order", "received_at.desc.nullslast,rechnungsdatum.desc.nullslast,created_at.desc");
+    abrechnungenUrl.searchParams.set("limit", String(limit));
+
+    const rows = await fetchJson<AbrechnungRow[]>(abrechnungenUrl);
+    const abrechnungIds = uniqueValues(rows.map((row) => row.id));
+
+    if (!abrechnungIds.length) {
+      return NextResponse.json({ ok: true, query, count: 0, abrechnungen: [] });
+    }
+
+    const documentsUrl = new URL(restUrl(documentsTable));
+    documentsUrl.searchParams.set("select", "id,abrechnung_id,file_name,mime_type,file_kind,created_at");
+    documentsUrl.searchParams.set("abrechnung_id", inFilter(abrechnungIds));
+    documentsUrl.searchParams.set("order", "created_at.asc");
+
+    const linesUrl = new URL(restUrl(linesTable));
+    linesUrl.searchParams.set(
+      "select",
+      "id,abrechnung_id,line_number,product_name_raw,quantity,quantity_unit,unit_price_netto,unit_price_brutto,line_netto,line_brutto,vat_rate,currency,match_status,ai_confidence,raw_line,created_at"
+    );
+    linesUrl.searchParams.set("abrechnung_id", inFilter(abrechnungIds));
+    linesUrl.searchParams.set("order", "line_number.asc.nullslast,created_at.asc");
+
+    const [documents, lines] = await Promise.all([fetchJson<DocumentRow[]>(documentsUrl), fetchJson<ProductLineRow[]>(linesUrl)]);
+    const lineIds = uniqueValues(lines.map((line) => line.id));
+    let batches: BatchRow[] = [];
+
+    if (lineIds.length) {
+      const batchesUrl = new URL(restUrl(batchesTable));
+      batchesUrl.searchParams.set("select", "id,product_line_id,chargennummer,expiry_date,quantity,quantity_unit,ai_confidence,raw_batch,created_at");
+      batchesUrl.searchParams.set("product_line_id", inFilter(lineIds));
+      batchesUrl.searchParams.set("order", "expiry_date.asc.nullslast,created_at.asc");
+      batches = await fetchJson<BatchRow[]>(batchesUrl);
+    }
+
+    const documentsByAbrechnungId = new Map<string, DocumentRow[]>();
+    const linesByAbrechnungId = new Map<string, ProductLineRow[]>();
+    const batchesByLineId = new Map<string, BatchRow[]>();
+
+    for (const document of documents) {
+      const current = documentsByAbrechnungId.get(document.abrechnung_id) || [];
+      current.push(document);
+      documentsByAbrechnungId.set(document.abrechnung_id, current);
+    }
+
+    for (const line of lines) {
+      const current = linesByAbrechnungId.get(line.abrechnung_id) || [];
+      current.push(line);
+      linesByAbrechnungId.set(line.abrechnung_id, current);
+    }
+
+    for (const batch of batches) {
+      const current = batchesByLineId.get(batch.product_line_id) || [];
+      current.push(batch);
+      batchesByLineId.set(batch.product_line_id, current);
+    }
+
+    const abrechnungen = rows
+      .map((row) => buildAbrechnung(row, documentsByAbrechnungId.get(row.id) || [], linesByAbrechnungId.get(row.id) || [], batchesByLineId))
+      .filter((abrechnung) => matchesQuery(abrechnung, terms));
+
+    return NextResponse.json({
+      ok: true,
+      query,
+      count: abrechnungen.length,
+      abrechnungen,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown Abrechnung lookup error.";
+
+    return NextResponse.json(
+      {
+        ok: false,
+        error: message,
+        abrechnungen: [],
+      },
+      { status: 500 }
+    );
+  }
+}

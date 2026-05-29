@@ -780,6 +780,62 @@ h2 {
   font-weight: 900;
 }
 
+.review-note-issue {
+  min-width: min(100%, 420px);
+  display: grid;
+  gap: 7px;
+  border: 1px solid rgba(180, 35, 49, 0.24);
+  border-radius: 8px;
+  padding: 9px;
+  color: var(--red);
+  background: var(--red-soft);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.review-note-issue strong {
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.abrechnung-foot .review-note-issue .issue-position {
+  min-height: 0;
+  display: block;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  color: var(--ink);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 950;
+  overflow-wrap: anywhere;
+}
+
+.issue-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.abrechnung-foot .review-note-issue .issue-chip {
+  min-height: 24px;
+  border: 1px solid rgba(180, 35, 49, 0.24);
+  border-radius: 8px;
+  padding: 0 8px;
+  color: var(--red);
+  background: #ffffff;
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.review-note-issue p {
+  margin: 0;
+  color: var(--label);
+  overflow-wrap: anywhere;
+}
+
 .abrechnung-empty-card {
   min-height: 132px;
   gap: 14px;

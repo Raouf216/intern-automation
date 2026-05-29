@@ -152,6 +152,54 @@ function statusLabel(status: string) {
   return status || "Prüfen";
 }
 
+function parseReviewIssue(note: string) {
+  const text = note.trim();
+  if (!text.startsWith("Abweichung:")) return null;
+
+  const sections = text
+    .split("|")
+    .map((section) => section.trim())
+    .filter(Boolean);
+  const position = sections[0]?.replace(/^Abweichung:\s*/i, "").trim() || "Abweichung";
+  const area = sections.find((section) => section.toLowerCase().startsWith("bereich:"))?.replace(/^Bereich:\s*/i, "");
+  const detail = sections.find((section) => section.toLowerCase().startsWith("hinweis:"))?.replace(/^Hinweis:\s*/i, "").trim() || "";
+  const issueTypes = area
+    ? area
+        .split(",")
+        .map((issueType) => issueType.trim())
+        .filter(Boolean)
+    : [];
+
+  return {
+    position,
+    issueTypes,
+    detail,
+  };
+}
+
+function ReviewNoteDisplay({ note }: { note: string }) {
+  const issue = parseReviewIssue(note);
+
+  if (!issue) return <span>{note}</span>;
+
+  return (
+    <div className="review-note-issue">
+      <strong>Abweichung</strong>
+      <span className="issue-position">{issue.position}</span>
+      {issue.issueTypes.length ? (
+        <div className="issue-chip-row">
+          {issue.issueTypes.map((issueType) => (
+            <span className="issue-chip" key={issueType}>
+              {issueType}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {issue.detail ? <p>{issue.detail}</p> : null}
+    </div>
+  );
+}
+
 export function AbrechnungenApp() {
   const [query, setQuery] = useState("");
   const [abrechnungen, setAbrechnungen] = useState<Abrechnung[]>([]);
@@ -480,7 +528,7 @@ export function AbrechnungenApp() {
                 {abrechnung.sellerName ? <span>Verkäufer: {abrechnung.sellerName}</span> : null}
                 {abrechnung.debitorNumber ? <span>Debitor: {abrechnung.debitorNumber}</span> : null}
                 {abrechnung.aiConfidence !== null ? <span>AI: {formatNumber(Math.round(abrechnung.aiConfidence * 100), " %")}</span> : null}
-                {abrechnung.reviewNote ? <span>{abrechnung.reviewNote}</span> : null}
+                {abrechnung.reviewNote ? <ReviewNoteDisplay note={abrechnung.reviewNote} /> : null}
               </footer>
             ) : null}
           </article>

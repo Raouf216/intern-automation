@@ -140,6 +140,40 @@ function numberValue(value: unknown) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function roundMoney(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function calculatedGross(netto: number | null, vatRate: number | null) {
+  if (netto === null || vatRate === null) return null;
+  return roundMoney(netto * (1 + vatRate / 100));
+}
+
+function pad2(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function parseLooseDate(value: unknown) {
+  const text = stringValue(value);
+  if (!text) return "";
+
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (isoMatch) return text;
+
+  const numericMatch = /^(\d{1,2})[./-](\d{1,2})[./-](\d{2}|\d{4})$/.exec(text);
+  if (!numericMatch) return "";
+
+  const day = Number(numericMatch[1]);
+  const month = Number(numericMatch[2]);
+  let year = Number(numericMatch[3]);
+  if (numericMatch[3].length === 2) year += 2000;
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return "";
+
+  return `${String(year).padStart(4, "0")}-${pad2(month)}-${pad2(day)}`;
+}
+
 function jsonRecord(value: unknown): JsonRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as JsonRecord;
@@ -210,13 +244,19 @@ function buildAbrechnung(
     .sort((a, b) => Number(a.line_number || 0) - Number(b.line_number || 0))
     .map((line) => {
       const rawLine = jsonRecord(line.raw_line);
+      const lineNetto = numberValue(line.line_netto);
+      const vatRate = numberValue(line.vat_rate);
+      const unitPriceNetto = numberValue(line.unit_price_netto);
+      const unitPriceBrutto = numberValue(line.unit_price_brutto) ?? calculatedGross(unitPriceNetto, vatRate);
+      const lineBrutto = numberValue(line.line_brutto) ?? calculatedGross(lineNetto, vatRate) ?? (lines.length === 1 ? numberValue(row.total_brutto) : null);
       const lineBatches = (batchesByLineId.get(line.id) || []).map((batch) => {
         const rawBatch = jsonRecord(batch.raw_batch);
+        const chargennummer = stringValue(batch.chargennummer);
 
         return {
           id: batch.id,
-          chargennummer: stringValue(batch.chargennummer),
-          expiryDate: stringValue(batch.expiry_date),
+          chargennummer,
+          expiryDate: stringValue(batch.expiry_date) || parseLooseDate(rawBatch.expiry_date),
           quantity: numberValue(batch.quantity),
           quantityUnit: stringValue(batch.quantity_unit) || "g",
           quantityPieces: numberValue(rawBatch.quantity_pieces),
@@ -236,11 +276,11 @@ function buildAbrechnung(
         quantityPieces: numberValue(rawLine.quantity_pieces),
         unitWeightG: numberValue(rawLine.unit_weight_g),
         totalQuantityG: numberValue(rawLine.total_quantity_g) ?? numberValue(line.quantity),
-        unitPriceNetto: numberValue(line.unit_price_netto),
-        unitPriceBrutto: numberValue(line.unit_price_brutto),
-        lineNetto: numberValue(line.line_netto),
-        lineBrutto: numberValue(line.line_brutto),
-        vatRate: numberValue(line.vat_rate),
+        unitPriceNetto,
+        unitPriceBrutto,
+        lineNetto,
+        lineBrutto,
+        vatRate,
         currency: stringValue(line.currency) || stringValue(row.currency) || "EUR",
         matchStatus: stringValue(line.match_status),
         aiConfidence: numberValue(line.ai_confidence),
@@ -290,9 +330,9 @@ function buildAbrechnung(
       unitWeightG: numberValue(product.unit_weight_g),
       totalQuantityG: numberValue(product.total_quantity_g),
       unitPriceNetto: numberValue(product.unit_price_netto),
-      unitPriceBrutto: numberValue(product.unit_price_brutto),
+      unitPriceBrutto: numberValue(product.unit_price_brutto) ?? calculatedGross(numberValue(product.unit_price_netto), numberValue(product.vat_rate)),
       lineNetto: numberValue(product.line_netto),
-      lineBrutto: numberValue(product.line_brutto),
+      lineBrutto: numberValue(product.line_brutto) ?? calculatedGross(numberValue(product.line_netto), numberValue(product.vat_rate)) ?? (rawProducts.length === 1 ? numberValue(row.total_brutto) : null),
       vatRate: numberValue(product.vat_rate),
       currency: stringValue(product.currency) || stringValue(row.currency) || "EUR",
       matchStatus: "",
@@ -300,7 +340,7 @@ function buildAbrechnung(
       batches: jsonArray(product.batches).map((batch, batchIndex) => ({
         id: `${row.id}-raw-${index}-${batchIndex}`,
         chargennummer: stringValue(batch.chargennummer),
-        expiryDate: stringValue(batch.expiry_date),
+        expiryDate: stringValue(batch.expiry_date) || parseLooseDate(batch.expiry_date),
         quantity: numberValue(batch.total_quantity_g),
         quantityUnit: "g",
         quantityPieces: numberValue(batch.quantity_pieces),

@@ -5,6 +5,7 @@ import {
   ArrowDownWideNarrow,
   Boxes,
   CalendarDays,
+  CheckCircle2,
   FileText,
   Inbox,
   Loader2,
@@ -12,6 +13,7 @@ import {
   ReceiptText,
   Search,
   X,
+  XCircle,
 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -87,6 +89,25 @@ type AbrechnungenResponse = {
   abrechnungen?: Abrechnung[];
 };
 
+type ReviewResponse = {
+  ok?: boolean;
+  error?: string;
+  id?: string;
+  status?: string;
+  reviewNote?: string;
+};
+
+type ReviewIssue = "product" | "quantity" | "charge" | "expiry" | "price" | "other";
+
+const reviewIssueOptions: Array<{ key: ReviewIssue; label: string }> = [
+  { key: "product", label: "Produkt" },
+  { key: "quantity", label: "Menge" },
+  { key: "charge", label: "Charge" },
+  { key: "expiry", label: "Ablaufdatum" },
+  { key: "price", label: "Preis" },
+  { key: "other", label: "Sonstiges" },
+];
+
 function displayValue(value: string | null | undefined, fallback = "—") {
   return value?.trim() || fallback;
 }
@@ -134,8 +155,97 @@ function statusLabel(status: string) {
 export function AbrechnungenApp() {
   const [query, setQuery] = useState("");
   const [abrechnungen, setAbrechnungen] = useState<Abrechnung[]>([]);
+  const [reviewTarget, setReviewTarget] = useState<Abrechnung | null>(null);
+  const [reviewIssueMode, setReviewIssueMode] = useState(false);
+  const [reviewIssueTypes, setReviewIssueTypes] = useState<ReviewIssue[]>([]);
+  const [reviewPositionId, setReviewPositionId] = useState("all");
+  const [reviewDetail, setReviewDetail] = useState("");
+  const [reviewing, setReviewing] = useState<"verified" | "needs_review" | "">("");
+  const [reviewError, setReviewError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  const resetReviewForm = () => {
+    setReviewIssueMode(false);
+    setReviewIssueTypes([]);
+    setReviewPositionId("all");
+    setReviewDetail("");
+    setReviewError("");
+  };
+
+  const openReviewDialog = (abrechnung: Abrechnung) => {
+    setReviewTarget(abrechnung);
+    resetReviewForm();
+  };
+
+  const closeReviewDialog = () => {
+    if (reviewing) return;
+    setReviewTarget(null);
+    resetReviewForm();
+  };
+
+  const toggleReviewIssue = (issueType: ReviewIssue) => {
+    setReviewIssueTypes((current) => (current.includes(issueType) ? current.filter((item) => item !== issueType) : [...current, issueType]));
+    setReviewError("");
+  };
+
+  const reviewPositionLabel = () => {
+    if (!reviewTarget || reviewPositionId === "all") return "Gesamte Abrechnung";
+
+    const product = reviewTarget.products.find((item) => item.id === reviewPositionId);
+    if (!product) return "Gesamte Abrechnung";
+
+    return `Position ${product.lineNumber ?? "?"}: ${displayValue(product.productName, "Unbekanntes Produkt")}`;
+  };
+
+  const submitReview = async (decision: "verified" | "needs_review") => {
+    if (!reviewTarget || reviewing) return;
+
+    if (decision === "needs_review" && reviewIssueTypes.length === 0) {
+      setReviewError("Bitte wähle mindestens einen Bereich aus.");
+      return;
+    }
+
+    setReviewing(decision);
+    setReviewError("");
+
+    try {
+      const response = await fetch("/api/abrechnungen/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: reviewTarget.id,
+          decision,
+          issueTypes: decision === "needs_review" ? reviewIssueTypes : [],
+          positionLabel: decision === "needs_review" ? reviewPositionLabel() : "",
+          detail: decision === "needs_review" ? reviewDetail : "",
+        }),
+      });
+      const payload = (await response.json()) as ReviewResponse;
+
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || `Abrechnung review failed (${response.status}).`);
+      }
+
+      setAbrechnungen((current) =>
+        current.map((abrechnung) =>
+          abrechnung.id === reviewTarget.id
+            ? {
+                ...abrechnung,
+                status: payload.status || decision,
+                reviewNote: payload.reviewNote || abrechnung.reviewNote,
+              }
+            : abrechnung
+        )
+      );
+      setReviewTarget(null);
+      resetReviewForm();
+    } catch (requestError) {
+      setReviewError(requestError instanceof Error ? requestError.message : "Abrechnung review failed.");
+    } finally {
+      setReviewing("");
+    }
+  };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -258,7 +368,16 @@ export function AbrechnungenApp() {
                 <p>{displayValue(abrechnung.emailSubject, "E-Mail")}</p>
                 <h2>{displayValue(abrechnung.supplierName, "Unbekannter Großhändler")}</h2>
               </div>
-              <span className={`status ${abrechnung.status}`}>{statusLabel(abrechnung.status)}</span>
+              <button
+                className={`review-status-button status ${abrechnung.status}`}
+                type="button"
+                onClick={() => {
+                  openReviewDialog(abrechnung);
+                }}
+                title="Abrechnung mit der Ware vor Ort prüfen"
+              >
+                {statusLabel(abrechnung.status)}
+              </button>
             </header>
 
             <div className="abrechnung-meta-grid">
@@ -367,6 +486,97 @@ export function AbrechnungenApp() {
           </article>
         ))}
       </section>
+
+      {reviewTarget ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="review-title">
+          <section className="modal-card review-card">
+            <div className="modal-head">
+              <div>
+                <p>Abrechnung prüfen</p>
+                <h2 id="review-title">{displayValue(reviewTarget.supplierName, "Unbekannter Großhändler")}</h2>
+              </div>
+              <button className="modal-close" type="button" onClick={closeReviewDialog} aria-label="Schließen" disabled={Boolean(reviewing)}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="review-question">
+              <p>Stimmen die Produkte, Mengen, Chargen und Ablaufdaten mit der Ware vor Ort überein?</p>
+              <span>Rechnung {displayValue(reviewTarget.rechnungsnummer)} · {reviewTarget.products.length} Positionen</span>
+            </div>
+
+            {reviewIssueMode ? (
+              <div className="review-issue-form">
+                <label>
+                  <span>Betroffene Position</span>
+                  <select value={reviewPositionId} onChange={(event) => setReviewPositionId(event.target.value)} disabled={Boolean(reviewing)}>
+                    <option value="all">Gesamte Abrechnung</option>
+                    {reviewTarget.products.map((product) => (
+                      <option key={product.id} value={product.id}>
+                        Position {product.lineNumber ?? "?"}: {displayValue(product.productName, "Unbekanntes Produkt")}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div>
+                  <span>Was stimmt nicht?</span>
+                  <div className="review-issue-grid">
+                    {reviewIssueOptions.map((option) => (
+                      <label className="review-check" key={option.key}>
+                        <input
+                          type="checkbox"
+                          checked={reviewIssueTypes.includes(option.key)}
+                          onChange={() => toggleReviewIssue(option.key)}
+                          disabled={Boolean(reviewing)}
+                        />
+                        {option.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <label>
+                  <span>Kurzer Hinweis</span>
+                  <textarea
+                    value={reviewDetail}
+                    onChange={(event) => setReviewDetail(event.target.value)}
+                    placeholder="Optional"
+                    maxLength={500}
+                    disabled={Boolean(reviewing)}
+                  />
+                </label>
+              </div>
+            ) : null}
+
+            {reviewError ? <div className="modal-error">{reviewError}</div> : null}
+
+            <div className="modal-actions">
+              {reviewIssueMode ? (
+                <button className="secondary-action" type="button" onClick={() => setReviewIssueMode(false)} disabled={Boolean(reviewing)}>
+                  Zurück
+                </button>
+              ) : (
+                <button className="review-no-action" type="button" onClick={() => setReviewIssueMode(true)} disabled={Boolean(reviewing)}>
+                  <XCircle size={18} />
+                  Nein, Abweichung
+                </button>
+              )}
+              {reviewIssueMode ? (
+                <button className="review-save-issue-action" type="button" onClick={() => void submitReview("needs_review")} disabled={Boolean(reviewing)}>
+                  {reviewing === "needs_review" ? <Loader2 className="spin" size={18} /> : <XCircle size={18} />}
+                  Abweichung speichern
+                </button>
+              ) : (
+                <button className="review-yes-action" type="button" onClick={() => void submitReview("verified")} disabled={Boolean(reviewing)}>
+                  {reviewing === "verified" ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
+                  Ja, stimmt
+                </button>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

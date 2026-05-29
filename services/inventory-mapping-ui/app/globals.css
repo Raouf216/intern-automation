@@ -66,6 +66,9 @@ a {
 .primary-action,
 .save-action,
 .secondary-action,
+.review-no-action,
+.review-save-issue-action,
+.review-yes-action,
 .check-line,
 .search-box,
 .abrechnung-toolbar,
@@ -83,6 +86,7 @@ a {
 .error-box,
 .pill,
 .status,
+.review-status-button,
 .verified-action {
   display: flex;
   align-items: center;
@@ -945,6 +949,16 @@ tbody tr:hover {
   background: var(--red-soft);
 }
 
+.review-status-button {
+  border: 0;
+  justify-content: center;
+}
+
+.review-status-button:hover {
+  outline: 2px solid rgba(8, 111, 157, 0.16);
+  outline-offset: 2px;
+}
+
 .pill.missing {
   color: var(--blue);
   background: var(--blue-soft);
@@ -976,6 +990,138 @@ tbody tr:hover {
 .verified-action {
   color: var(--green);
   background: var(--green-soft);
+}
+
+.review-card {
+  width: min(560px, 100%);
+}
+
+.review-question {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--surface-strong);
+}
+
+.review-question p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 950;
+  line-height: 1.35;
+}
+
+.review-question span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.review-no-action,
+.review-save-issue-action,
+.review-yes-action {
+  min-height: 42px;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 0 14px;
+  font-size: 14px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.review-no-action {
+  border: 1px solid rgba(180, 35, 49, 0.24);
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.review-save-issue-action {
+  border: 1px solid rgba(180, 35, 49, 0.24);
+  color: #ffffff;
+  background: var(--red);
+}
+
+.review-yes-action {
+  border: 1px solid rgba(5, 122, 85, 0.35);
+  color: #ffffff;
+  background: var(--green);
+}
+
+.review-no-action:disabled,
+.review-save-issue-action:disabled,
+.review-yes-action:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.review-issue-form {
+  display: grid;
+  gap: 12px;
+}
+
+.review-issue-form label,
+.review-issue-form > div {
+  display: grid;
+  gap: 6px;
+}
+
+.review-issue-form span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.review-issue-form select,
+.review-issue-form textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--surface);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 850;
+  letter-spacing: 0;
+}
+
+.review-issue-form select {
+  min-height: 42px;
+  padding: 0 10px;
+}
+
+.review-issue-form textarea {
+  min-height: 84px;
+  resize: vertical;
+  padding: 10px;
+}
+
+.review-issue-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.review-check {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--label);
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.review-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--red);
 }
 
 .empty-row {
@@ -1057,6 +1203,10 @@ tbody tr:hover {
 
   .abrechnung-meta-grid,
   .product-line-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .review-issue-grid {
     grid-template-columns: 1fr;
   }
 }

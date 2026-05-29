@@ -136,6 +136,17 @@ function formatNumber(value: number | null, suffix = "") {
   return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 3 }).format(value)}${suffix}`;
 }
 
+function formatMoneyPerGram(value: number | null, currency: string) {
+  if (value === null || value === undefined) return "—";
+  const formatted = new Intl.NumberFormat("de-DE", {
+    style: "currency",
+    currency: currency || "EUR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 3,
+  }).format(value);
+  return `${formatted} / g`;
+}
+
 function formatQuantity(line: ProductLine | Batch) {
   const pieceText = line.quantityPieces !== null && line.unitWeightG !== null ? `${formatNumber(line.quantityPieces)} x ${formatNumber(line.unitWeightG, " g")}` : "";
   const total = line.totalQuantityG ?? line.quantity;
@@ -198,6 +209,24 @@ function ReviewNoteDisplay({ note }: { note: string }) {
       {issue.detail ? <p>{issue.detail}</p> : null}
     </div>
   );
+}
+
+function lineTotalGrams(product: ProductLine) {
+  if (product.totalQuantityG !== null) return product.totalQuantityG;
+  if (product.quantityPieces !== null && product.unitWeightG !== null) return product.quantityPieces * product.unitWeightG;
+  if (product.quantity !== null && (product.quantityUnit || "g").toLowerCase().includes("g")) return product.quantity;
+  return null;
+}
+
+function calculatePricePerGram(product: ProductLine, kind: "netto" | "brutto") {
+  const totalGrams = lineTotalGrams(product);
+  const lineAmount = kind === "netto" ? product.lineNetto : product.lineBrutto;
+  if (lineAmount !== null && totalGrams !== null && totalGrams > 0) return lineAmount / totalGrams;
+
+  const unitAmount = kind === "netto" ? product.unitPriceNetto : product.unitPriceBrutto;
+  if (unitAmount !== null && product.unitWeightG !== null && product.unitWeightG > 0) return unitAmount / product.unitWeightG;
+
+  return null;
 }
 
 export function AbrechnungenApp() {
@@ -471,56 +500,69 @@ export function AbrechnungenApp() {
             </div>
 
             <div className="abrechnung-products">
-              {abrechnung.products.map((product) => (
-                <section className="abrechnung-product" key={product.id}>
-                  <div className="product-line-head">
-                    <div>
-                      <p>Position {product.lineNumber ?? "—"}</p>
-                      <h3>{displayValue(product.productName, "Unbekanntes Produkt")}</h3>
-                    </div>
-                    {product.productCode ? <span className="product-code">{product.productCode}</span> : null}
-                  </div>
+              {abrechnung.products.map((product) => {
+                const nettoPerGram = calculatePricePerGram(product, "netto");
+                const bruttoPerGram = calculatePricePerGram(product, "brutto");
 
-                  <div className="product-line-grid">
-                    <div>
-                      <span>Menge</span>
-                      <strong>{formatQuantity(product)}</strong>
-                    </div>
-                    <div>
-                      <span>Einzelpreis netto</span>
-                      <strong>{formatMoney(product.unitPriceNetto, product.currency)}</strong>
-                    </div>
-                    <div>
-                      <span>Netto</span>
-                      <strong>{formatMoney(product.lineNetto, product.currency)}</strong>
-                    </div>
-                    <div>
-                      <span>Brutto</span>
-                      <strong>{formatMoney(product.lineBrutto, product.currency)}</strong>
-                    </div>
-                    <div>
-                      <span>MwSt.</span>
-                      <strong>{product.vatRate === null ? "—" : `${formatNumber(product.vatRate)} %`}</strong>
-                    </div>
-                  </div>
-
-                  <div className="batch-list">
-                    {product.batches.length ? (
-                      product.batches.map((batch) => (
-                        <div className="batch-row" key={batch.id}>
-                          <span>Charge {displayValue(batch.chargennummer)}</span>
-                          <span>Ablauf {formatDate(batch.expiryDate)}</span>
-                          <span>{formatQuantity(batch)}</span>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="batch-row muted">
-                        <span>Keine Charge gespeichert</span>
+                return (
+                  <section className="abrechnung-product" key={product.id}>
+                    <div className="product-line-head">
+                      <div>
+                        <p>Position {product.lineNumber ?? "—"}</p>
+                        <h3>{displayValue(product.productName, "Unbekanntes Produkt")}</h3>
                       </div>
-                    )}
-                  </div>
-                </section>
-              ))}
+                      {product.productCode ? <span className="product-code">{product.productCode}</span> : null}
+                    </div>
+
+                    <div className="product-line-grid">
+                      <div>
+                        <span>Menge</span>
+                        <strong>{formatQuantity(product)}</strong>
+                      </div>
+                      <div>
+                        <span>Einzelpreis netto</span>
+                        <strong>{formatMoney(product.unitPriceNetto, product.currency)}</strong>
+                      </div>
+                      <div>
+                        <span>Netto €/g</span>
+                        <strong>{formatMoneyPerGram(nettoPerGram, product.currency)}</strong>
+                      </div>
+                      <div>
+                        <span>Netto</span>
+                        <strong>{formatMoney(product.lineNetto, product.currency)}</strong>
+                      </div>
+                      <div>
+                        <span>Brutto</span>
+                        <strong>{formatMoney(product.lineBrutto, product.currency)}</strong>
+                      </div>
+                      <div>
+                        <span>Brutto €/g</span>
+                        <strong>{formatMoneyPerGram(bruttoPerGram, product.currency)}</strong>
+                      </div>
+                      <div>
+                        <span>MwSt.</span>
+                        <strong>{product.vatRate === null ? "—" : `${formatNumber(product.vatRate)} %`}</strong>
+                      </div>
+                    </div>
+
+                    <div className="batch-list">
+                      {product.batches.length ? (
+                        product.batches.map((batch) => (
+                          <div className="batch-row" key={batch.id}>
+                            <span>Charge {displayValue(batch.chargennummer)}</span>
+                            <span>Ablauf {formatDate(batch.expiryDate)}</span>
+                            <span>{formatQuantity(batch)}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="batch-row muted">
+                          <span>Keine Charge gespeichert</span>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                );
+              })}
             </div>
 
             {(abrechnung.sellerName || abrechnung.debitorNumber || abrechnung.aiReason || abrechnung.reviewNote) ? (

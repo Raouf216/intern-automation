@@ -12,6 +12,7 @@ import {
   Mail,
   ReceiptText,
   Search,
+  Send,
   X,
   XCircle,
 } from "lucide-react";
@@ -97,6 +98,52 @@ type ReviewResponse = {
   reviewNote?: string;
 };
 
+type ProductMapping = {
+  id: string;
+  canonicalId: string;
+  kultivar: string;
+  status: string;
+  productKind: string;
+  reviewReason: string;
+  wawicanName: string;
+  doktorabcName: string;
+  wawicanSearchKey: string;
+  doktorabcSearchKey: string;
+  wawicanStatus: string;
+  doktorabcStatus: string;
+};
+
+type ProductsResponse = {
+  ok?: boolean;
+  error?: string;
+  products?: ProductMapping[];
+};
+
+type StockUploadTarget = {
+  abrechnung: Abrechnung;
+  product: ProductLine;
+  batch: Batch;
+};
+
+type StockUploadForm = {
+  rechnungsnummer: string;
+  productName: string;
+  chargeNumber: string;
+  expiryDate: string;
+  availableGrams: string;
+  nettoPerGram: string;
+  bruttoPerGram: string;
+  totalNetto: string;
+  totalBrutto: string;
+  doktorabcName: string;
+  wawicanName: string;
+  wawicanKultivar: string;
+  doktorabcGrams: string;
+  doktorabcPercent: string;
+  wawicanGrams: string;
+  wawicanPercent: string;
+};
+
 type ReviewIssue = "product" | "quantity" | "charge" | "expiry" | "price" | "other";
 
 const reviewIssueOptions: Array<{ key: ReviewIssue; label: string }> = [
@@ -107,6 +154,25 @@ const reviewIssueOptions: Array<{ key: ReviewIssue; label: string }> = [
   { key: "price", label: "Preis" },
   { key: "other", label: "Sonstiges" },
 ];
+
+const emptyStockUploadForm: StockUploadForm = {
+  rechnungsnummer: "",
+  productName: "",
+  chargeNumber: "",
+  expiryDate: "",
+  availableGrams: "",
+  nettoPerGram: "",
+  bruttoPerGram: "",
+  totalNetto: "",
+  totalBrutto: "",
+  doktorabcName: "",
+  wawicanName: "",
+  wawicanKultivar: "",
+  doktorabcGrams: "",
+  doktorabcPercent: "",
+  wawicanGrams: "",
+  wawicanPercent: "",
+};
 
 function displayValue(value: string | null | undefined, fallback = "—") {
   return value?.trim() || fallback;
@@ -136,6 +202,12 @@ function formatNumber(value: number | null, suffix = "") {
   return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 3 }).format(value)}${suffix}`;
 }
 
+function formatInputNumber(value: number, fractionDigits = 2) {
+  if (!Number.isFinite(value)) return "";
+  const rounded = Number(value.toFixed(fractionDigits));
+  return String(rounded).replace(".", ",");
+}
+
 function formatMoneyPerGram(value: number | null, currency: string) {
   if (value === null || value === undefined) return "—";
   const formatted = new Intl.NumberFormat("de-DE", {
@@ -154,6 +226,32 @@ function formatQuantity(line: ProductLine | Batch) {
 
   if (pieceText && totalText) return `${pieceText} = ${totalText}`;
   return totalText || pieceText || "—";
+}
+
+function parseDecimalInput(value: string) {
+  const cleaned = value.trim().replace(/\s/g, "").replace(/[^\d,.-]/g, "");
+  if (!cleaned) return null;
+  const normalized =
+    cleaned.includes(",") && cleaned.includes(".") ? cleaned.replace(/\./g, "").replace(",", ".") : cleaned.includes(",") ? cleaned.replace(",", ".") : cleaned;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeText(value: string) {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9/]+/g, " ")
+    .trim();
+}
+
+function uniqueTerms(value: string) {
+  return Array.from(new Set(normalizeText(value).split(/\s+/).filter((term) => term.length > 1)));
 }
 
 function statusLabel(status: string) {
@@ -218,6 +316,13 @@ function lineTotalGrams(product: ProductLine) {
   return null;
 }
 
+function batchTotalGrams(batch: Batch) {
+  if (batch.totalQuantityG !== null) return batch.totalQuantityG;
+  if (batch.quantity !== null) return batch.quantity;
+  if (batch.quantityPieces !== null && batch.unitWeightG !== null) return batch.quantityPieces * batch.unitWeightG;
+  return null;
+}
+
 function calculatePricePerGram(product: ProductLine, kind: "netto" | "brutto") {
   const totalGrams = lineTotalGrams(product);
   const lineAmount = kind === "netto" ? product.lineNetto : product.lineBrutto;
@@ -229,9 +334,117 @@ function calculatePricePerGram(product: ProductLine, kind: "netto" | "brutto") {
   return null;
 }
 
+function scoreProductMapping(product: ProductLine, mapping: ProductMapping, platform: "doktorabc" | "wawican") {
+  const platformName = platform === "doktorabc" ? mapping.doktorabcName : mapping.wawicanName;
+  if (!platformName) return -1;
+
+  const terms = uniqueTerms([product.productName, product.productCode].filter(Boolean).join(" "));
+  const haystack = normalizeText([platformName, mapping.kultivar, mapping.doktorabcSearchKey, mapping.wawicanSearchKey, mapping.canonicalId].filter(Boolean).join(" "));
+  const directNeedle = normalizeText(product.productName);
+  let score = 0;
+
+  if (directNeedle && haystack.includes(directNeedle)) score += 8;
+  for (const term of terms) {
+    if (haystack.includes(term)) score += term.length > 3 ? 3 : 1;
+  }
+  if (mapping.status === "verified") score += 1;
+
+  return score;
+}
+
+function bestMappingSuggestion(product: ProductLine, products: ProductMapping[], platform: "doktorabc" | "wawican") {
+  let best: ProductMapping | null = null;
+  let bestScore = -1;
+
+  for (const mapping of products) {
+    const score = scoreProductMapping(product, mapping, platform);
+    if (score > bestScore) {
+      best = mapping;
+      bestScore = score;
+    }
+  }
+
+  return bestScore > 0 ? best : null;
+}
+
+function uniqueProductOptions(products: ProductMapping[], platform: "doktorabc" | "wawican") {
+  const seen = new Set<string>();
+  const options: ProductMapping[] = [];
+
+  for (const product of products) {
+    const name = platform === "doktorabc" ? product.doktorabcName.trim() : product.wawicanName.trim();
+    if (!name) continue;
+    const key = platform === "doktorabc" ? name.toLowerCase() : `${name.toLowerCase()}::${product.kultivar.trim().toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    options.push(product);
+  }
+
+  return options.sort((a, b) => {
+    const left = platform === "doktorabc" ? a.doktorabcName : `${a.wawicanName} ${a.kultivar}`;
+    const right = platform === "doktorabc" ? b.doktorabcName : `${b.wawicanName} ${b.kultivar}`;
+    return left.localeCompare(right, "de");
+  });
+}
+
+function findDoktorabcOption(options: ProductMapping[], name: string) {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  return options.find((option) => option.doktorabcName.trim() === trimmed) || null;
+}
+
+function findWawicanOption(options: ProductMapping[], name: string, kultivar: string) {
+  const trimmedName = name.trim();
+  const trimmedKultivar = kultivar.trim();
+  if (!trimmedName || !trimmedKultivar) return null;
+  return options.find((option) => option.wawicanName.trim() === trimmedName && option.kultivar.trim() === trimmedKultivar) || null;
+}
+
+function stockAmount(value: string) {
+  const parsed = parseDecimalInput(value);
+  return parsed !== null && parsed > 0 ? parsed : 0;
+}
+
+function formatStockInput(value: number | null, fractionDigits = 2) {
+  if (value === null || value === undefined) return "";
+  return formatInputNumber(value, fractionDigits);
+}
+
+function calculatedBatchTotal(batchGrams: number | null, pricePerGram: number | null) {
+  if (batchGrams === null || pricePerGram === null) return null;
+  return batchGrams * pricePerGram;
+}
+
+function initialStockUploadForm(target: StockUploadTarget, products: ProductMapping[]): StockUploadForm {
+  const batchGrams = batchTotalGrams(target.batch);
+  const nettoPerGram = calculatePricePerGram(target.product, "netto");
+  const bruttoPerGram = calculatePricePerGram(target.product, "brutto");
+  const doktorabcSuggestion = bestMappingSuggestion(target.product, products, "doktorabc");
+  const wawicanSuggestion = bestMappingSuggestion(target.product, products, "wawican");
+
+  return {
+    ...emptyStockUploadForm,
+    rechnungsnummer: target.abrechnung.rechnungsnummer,
+    productName: target.product.productName,
+    chargeNumber: target.batch.chargennummer,
+    expiryDate: target.batch.expiryDate,
+    availableGrams: formatStockInput(batchGrams, 2),
+    nettoPerGram: formatStockInput(nettoPerGram, 3),
+    bruttoPerGram: formatStockInput(bruttoPerGram, 3),
+    totalNetto: formatStockInput(calculatedBatchTotal(batchGrams, nettoPerGram), 2),
+    totalBrutto: formatStockInput(calculatedBatchTotal(batchGrams, bruttoPerGram), 2),
+    doktorabcName: doktorabcSuggestion?.doktorabcName || "",
+    wawicanName: wawicanSuggestion?.wawicanName || "",
+    wawicanKultivar: wawicanSuggestion?.kultivar || "",
+  };
+}
+
 export function AbrechnungenApp() {
   const [query, setQuery] = useState("");
   const [abrechnungen, setAbrechnungen] = useState<Abrechnung[]>([]);
+  const [productMappings, setProductMappings] = useState<ProductMapping[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsError, setProductsError] = useState("");
   const [reviewTarget, setReviewTarget] = useState<Abrechnung | null>(null);
   const [reviewIssueMode, setReviewIssueMode] = useState(false);
   const [reviewIssueTypes, setReviewIssueTypes] = useState<ReviewIssue[]>([]);
@@ -239,8 +452,39 @@ export function AbrechnungenApp() {
   const [reviewDetail, setReviewDetail] = useState("");
   const [reviewing, setReviewing] = useState<"verified" | "needs_review" | "">("");
   const [reviewError, setReviewError] = useState("");
+  const [stockUploadTarget, setStockUploadTarget] = useState<StockUploadTarget | null>(null);
+  const [stockUploadForm, setStockUploadForm] = useState<StockUploadForm>(emptyStockUploadForm);
+  const [stockUploadNotice, setStockUploadNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const doktorabcOptions = uniqueProductOptions(productMappings, "doktorabc");
+  const wawicanOptions = uniqueProductOptions(productMappings, "wawican");
+  const wawicanKultivarOptions = Array.from(
+    new Set(
+      wawicanOptions
+        .filter((option) => !stockUploadForm.wawicanName.trim() || option.wawicanName.trim() === stockUploadForm.wawicanName.trim())
+        .map((option) => option.kultivar.trim())
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b, "de"));
+  const selectedDoktorabcOption = findDoktorabcOption(doktorabcOptions, stockUploadForm.doktorabcName);
+  const selectedWawicanOption = findWawicanOption(wawicanOptions, stockUploadForm.wawicanName, stockUploadForm.wawicanKultivar);
+  const stockAvailableGrams = stockAmount(stockUploadForm.availableGrams);
+  const stockDoktorabcGrams = stockAmount(stockUploadForm.doktorabcGrams);
+  const stockWawicanGrams = stockAmount(stockUploadForm.wawicanGrams);
+  const stockAllocatedGrams = stockDoktorabcGrams + stockWawicanGrams;
+  const stockAllocationDiff = stockAvailableGrams - stockAllocatedGrams;
+  const stockDoktorabcNeedsProduct = stockDoktorabcGrams > 0;
+  const stockWawicanNeedsProduct = stockWawicanGrams > 0;
+  const stockOptionId = stockUploadTarget?.batch.id.replace(/[^a-zA-Z0-9_-]/g, "") || "stock-upload";
+  const stockCanPrepare = Boolean(
+    stockUploadTarget &&
+      stockAvailableGrams > 0 &&
+      stockAllocatedGrams > 0 &&
+      Math.abs(stockAllocationDiff) <= 0.01 &&
+      (!stockDoktorabcNeedsProduct || selectedDoktorabcOption) &&
+      (!stockWawicanNeedsProduct || selectedWawicanOption)
+  );
 
   const resetReviewForm = () => {
     setReviewIssueMode(false);
@@ -259,6 +503,90 @@ export function AbrechnungenApp() {
     if (reviewing) return;
     setReviewTarget(null);
     resetReviewForm();
+  };
+
+  const openStockUploadDialog = (abrechnung: Abrechnung, product: ProductLine, batch: Batch) => {
+    const target = { abrechnung, product, batch };
+    setStockUploadTarget(target);
+    setStockUploadForm(initialStockUploadForm(target, productMappings));
+    setStockUploadNotice("");
+  };
+
+  const closeStockUploadDialog = () => {
+    setStockUploadTarget(null);
+    setStockUploadForm(emptyStockUploadForm);
+    setStockUploadNotice("");
+  };
+
+  const updateStockUploadField = (field: keyof StockUploadForm, value: string) => {
+    setStockUploadNotice("");
+    setStockUploadForm((current) => {
+      const next = {
+        ...current,
+        [field]: value,
+      };
+
+      if (field === "availableGrams" || field === "nettoPerGram" || field === "bruttoPerGram") {
+        const grams = field === "availableGrams" ? parseDecimalInput(value) : parseDecimalInput(current.availableGrams);
+        const netto = field === "nettoPerGram" ? parseDecimalInput(value) : parseDecimalInput(current.nettoPerGram);
+        const brutto = field === "bruttoPerGram" ? parseDecimalInput(value) : parseDecimalInput(current.bruttoPerGram);
+        if (grams !== null && netto !== null) next.totalNetto = formatStockInput(grams * netto, 2);
+        if (grams !== null && brutto !== null) next.totalBrutto = formatStockInput(grams * brutto, 2);
+      }
+
+      if (field === "wawicanName") {
+        const match = wawicanOptions.find((option) => option.wawicanName.trim() === value.trim());
+        if (match) next.wawicanKultivar = match.kultivar;
+      }
+
+      return next;
+    });
+  };
+
+  const updateStockAllocation = (platform: "doktorabc" | "wawican", unit: "grams" | "percent", value: string) => {
+    setStockUploadNotice("");
+    setStockUploadForm((current) => {
+      const available = stockAmount(current.availableGrams);
+      const parsed = parseDecimalInput(value);
+      const ownGrams = parsed === null ? null : unit === "percent" ? (available * clamp(parsed, 0, 100)) / 100 : clamp(parsed, 0, available);
+
+      if (ownGrams === null) {
+        return {
+          ...current,
+          [platform === "doktorabc" ? (unit === "grams" ? "doktorabcGrams" : "doktorabcPercent") : unit === "grams" ? "wawicanGrams" : "wawicanPercent"]: value,
+        };
+      }
+
+      const otherGrams = Math.max(0, available - ownGrams);
+      const ownPercent = available > 0 ? (ownGrams / available) * 100 : 0;
+      const otherPercent = available > 0 ? (otherGrams / available) * 100 : 0;
+
+      if (platform === "doktorabc") {
+        return {
+          ...current,
+          doktorabcGrams: formatStockInput(ownGrams, 2),
+          doktorabcPercent: formatStockInput(ownPercent, 2),
+          wawicanGrams: formatStockInput(otherGrams, 2),
+          wawicanPercent: formatStockInput(otherPercent, 2),
+        };
+      }
+
+      return {
+        ...current,
+        wawicanGrams: formatStockInput(ownGrams, 2),
+        wawicanPercent: formatStockInput(ownPercent, 2),
+        doktorabcGrams: formatStockInput(otherGrams, 2),
+        doktorabcPercent: formatStockInput(otherPercent, 2),
+      };
+    });
+  };
+
+  const prepareStockUpload = () => {
+    if (!stockUploadTarget || !stockCanPrepare) return;
+
+    setStockUploadNotice(
+      `Bereit: ${formatNumber(stockDoktorabcGrams, " g")} DoktorABC, ${formatNumber(stockWawicanGrams, " g")} Wawican. Der Bot ist noch nicht verbunden.`
+    );
   };
 
   const toggleReviewIssue = (issueType: ReviewIssue) => {
@@ -323,6 +651,40 @@ export function AbrechnungenApp() {
       setReviewing("");
     }
   };
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadProducts = async () => {
+      setProductsLoading(true);
+      setProductsError("");
+
+      try {
+        const response = await fetch("/api/products?kind=all", {
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        const payload = (await response.json()) as ProductsResponse;
+
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.error || `Product mapping lookup failed (${response.status}).`);
+        }
+
+        setProductMappings(payload.products || []);
+      } catch (requestError) {
+        if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+        setProductsError(requestError instanceof Error ? requestError.message : "Product mapping lookup failed.");
+      } finally {
+        if (!controller.signal.aborted) setProductsLoading(false);
+      }
+    };
+
+    void loadProducts();
+
+    return () => {
+      controller.abort();
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -552,6 +914,10 @@ export function AbrechnungenApp() {
                             <span>Charge {displayValue(batch.chargennummer)}</span>
                             <span>Ablauf {formatDate(batch.expiryDate)}</span>
                             <span>{formatQuantity(batch)}</span>
+                            <button className="batch-send-button" type="button" onClick={() => openStockUploadDialog(abrechnung, product, batch)}>
+                              <Send size={15} />
+                              Bestand senden
+                            </button>
                           </div>
                         ))
                       ) : (
@@ -576,6 +942,184 @@ export function AbrechnungenApp() {
           </article>
         ))}
       </section>
+
+      {stockUploadTarget ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="stock-upload-title">
+          <section className="modal-card stock-upload-card">
+            <div className="modal-head">
+              <div>
+                <p>Bestand senden</p>
+                <h2 id="stock-upload-title">{displayValue(stockUploadForm.productName, "Produkt")}</h2>
+              </div>
+              <button className="modal-close" type="button" onClick={closeStockUploadDialog} aria-label="Schließen">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="stock-source-strip">
+              <span>Rechnung {displayValue(stockUploadForm.rechnungsnummer)}</span>
+              <span>Position {stockUploadTarget.product.lineNumber ?? "—"}</span>
+              <span>Charge {displayValue(stockUploadForm.chargeNumber)}</span>
+            </div>
+
+            {productsError ? <div className="modal-error">{productsError}</div> : null}
+            {productsLoading ? (
+              <div className="stock-loading">
+                <Loader2 className="spin" size={17} />
+                <span>Produkte werden geladen…</span>
+              </div>
+            ) : null}
+
+            <div className="stock-edit-grid">
+              <label>
+                <span>Rechnungsnummer</span>
+                <input value={stockUploadForm.rechnungsnummer} onChange={(event) => updateStockUploadField("rechnungsnummer", event.target.value)} />
+              </label>
+              <label>
+                <span>Produkt</span>
+                <input value={stockUploadForm.productName} onChange={(event) => updateStockUploadField("productName", event.target.value)} />
+              </label>
+              <label>
+                <span>Charge</span>
+                <input value={stockUploadForm.chargeNumber} onChange={(event) => updateStockUploadField("chargeNumber", event.target.value)} />
+              </label>
+              <label>
+                <span>Ablaufdatum</span>
+                <input value={stockUploadForm.expiryDate} onChange={(event) => updateStockUploadField("expiryDate", event.target.value)} placeholder="TT.MM.JJJJ" />
+              </label>
+              <label>
+                <span>Menge gesamt (g)</span>
+                <input inputMode="decimal" value={stockUploadForm.availableGrams} onChange={(event) => updateStockUploadField("availableGrams", event.target.value)} />
+              </label>
+              <label>
+                <span>Netto €/g</span>
+                <input inputMode="decimal" value={stockUploadForm.nettoPerGram} onChange={(event) => updateStockUploadField("nettoPerGram", event.target.value)} />
+              </label>
+              <label>
+                <span>Brutto €/g</span>
+                <input inputMode="decimal" value={stockUploadForm.bruttoPerGram} onChange={(event) => updateStockUploadField("bruttoPerGram", event.target.value)} />
+              </label>
+              <label>
+                <span>Gesamt netto</span>
+                <input inputMode="decimal" value={stockUploadForm.totalNetto} onChange={(event) => updateStockUploadField("totalNetto", event.target.value)} />
+              </label>
+              <label>
+                <span>Gesamt brutto</span>
+                <input inputMode="decimal" value={stockUploadForm.totalBrutto} onChange={(event) => updateStockUploadField("totalBrutto", event.target.value)} />
+              </label>
+            </div>
+
+            <div className="stock-platform-grid">
+              <section className="stock-platform-panel">
+                <h3>DoktorABC</h3>
+                <label>
+                  <span>DoktorABC Produkt</span>
+                  <input
+                    list={`doktorabc-products-${stockOptionId}`}
+                    value={stockUploadForm.doktorabcName}
+                    onChange={(event) => updateStockUploadField("doktorabcName", event.target.value)}
+                    placeholder="Exakter DoktorABC Name"
+                  />
+                </label>
+                <div className="stock-split-grid">
+                  <label>
+                    <span>Gramm</span>
+                    <input inputMode="decimal" value={stockUploadForm.doktorabcGrams} onChange={(event) => updateStockAllocation("doktorabc", "grams", event.target.value)} />
+                  </label>
+                  <label>
+                    <span>Prozent</span>
+                    <input inputMode="decimal" value={stockUploadForm.doktorabcPercent} onChange={(event) => updateStockAllocation("doktorabc", "percent", event.target.value)} />
+                  </label>
+                </div>
+                {stockDoktorabcNeedsProduct && !selectedDoktorabcOption ? <p className="stock-field-warning">Bitte ein echtes DoktorABC Produkt auswählen.</p> : null}
+              </section>
+
+              <section className="stock-platform-panel">
+                <h3>Wawican</h3>
+                <label>
+                  <span>Wawican Name</span>
+                  <input
+                    list={`wawican-products-${stockOptionId}`}
+                    value={stockUploadForm.wawicanName}
+                    onChange={(event) => updateStockUploadField("wawicanName", event.target.value)}
+                    placeholder="Exakter Wawican Name"
+                  />
+                </label>
+                <label>
+                  <span>Kultivar</span>
+                  <input
+                    list={`wawican-kultivars-${stockOptionId}`}
+                    value={stockUploadForm.wawicanKultivar}
+                    onChange={(event) => updateStockUploadField("wawicanKultivar", event.target.value)}
+                    placeholder="Exakter Kultivar"
+                  />
+                </label>
+                <div className="stock-split-grid">
+                  <label>
+                    <span>Gramm</span>
+                    <input inputMode="decimal" value={stockUploadForm.wawicanGrams} onChange={(event) => updateStockAllocation("wawican", "grams", event.target.value)} />
+                  </label>
+                  <label>
+                    <span>Prozent</span>
+                    <input inputMode="decimal" value={stockUploadForm.wawicanPercent} onChange={(event) => updateStockAllocation("wawican", "percent", event.target.value)} />
+                  </label>
+                </div>
+                {stockWawicanNeedsProduct && !selectedWawicanOption ? <p className="stock-field-warning">Bitte echten Wawican Name und Kultivar auswählen.</p> : null}
+              </section>
+            </div>
+
+            <datalist id={`doktorabc-products-${stockOptionId}`}>
+              {doktorabcOptions.map((product) => (
+                <option key={`doktorabc-${product.id}`} value={product.doktorabcName} />
+              ))}
+            </datalist>
+            <datalist id={`wawican-products-${stockOptionId}`}>
+              {wawicanOptions.map((product) => (
+                <option key={`wawican-${product.id}`} value={product.wawicanName} />
+              ))}
+            </datalist>
+            <datalist id={`wawican-kultivars-${stockOptionId}`}>
+              {wawicanKultivarOptions.map((kultivar) => (
+                <option key={kultivar} value={kultivar} />
+              ))}
+            </datalist>
+
+            <div className="stock-payload-preview">
+              <div>
+                <span>Verfügbar</span>
+                <strong>{formatNumber(stockAvailableGrams, " g")}</strong>
+              </div>
+              <div>
+                <span>DoktorABC</span>
+                <strong>{formatNumber(stockDoktorabcGrams, " g")}</strong>
+              </div>
+              <div>
+                <span>Wawican</span>
+                <strong>{formatNumber(stockWawicanGrams, " g")}</strong>
+              </div>
+              <div className={Math.abs(stockAllocationDiff) <= 0.01 ? "ok" : "warn"}>
+                <span>Differenz</span>
+                <strong>{formatNumber(stockAllocationDiff, " g")}</strong>
+              </div>
+            </div>
+
+            {stockAllocatedGrams > 0 && Math.abs(stockAllocationDiff) > 0.01 ? (
+              <div className="modal-error">Die Gramm-Aufteilung muss genau zur verfügbaren Menge passen.</div>
+            ) : null}
+            {stockUploadNotice ? <div className="create-note success">{stockUploadNotice}</div> : null}
+
+            <div className="modal-actions">
+              <button className="secondary-action" type="button" onClick={closeStockUploadDialog}>
+                Abbrechen
+              </button>
+              <button className="save-action" type="button" onClick={prepareStockUpload} disabled={!stockCanPrepare}>
+                <Send size={18} />
+                Payload vorbereiten
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {reviewTarget ? (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="review-title">

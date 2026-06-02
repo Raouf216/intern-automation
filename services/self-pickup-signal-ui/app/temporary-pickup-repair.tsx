@@ -7,10 +7,10 @@ import {
   Loader2,
   PackageCheck,
   RefreshCw,
+  Search,
   ShieldCheck,
-  Wrench,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type RepairOrder = {
   id: string;
@@ -82,6 +82,13 @@ function formatRepairDate(value?: string | null) {
   });
 }
 
+function normalizeSearchValue(value?: string | null) {
+  return (value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
 async function parseRepairResponse<T>(response: Response): Promise<T> {
   const contentType = response.headers.get("content-type") || "";
 
@@ -91,17 +98,39 @@ async function parseRepairResponse<T>(response: Response): Promise<T> {
 }
 
 export function TemporaryPickupRepair() {
-  const [repairInput, setRepairInput] = useState(initialRepairIds);
+  const didAutoLoadRef = useRef(false);
   const [orders, setOrders] = useState<RepairOrder[]>([]);
   const [missingOrders, setMissingOrders] = useState<string[]>([]);
   const [hiddenCount, setHiddenCount] = useState(0);
-  const [message, setMessage] = useState("Temporäre Liste leer. Trage die betroffenen Bestell-IDs ein.");
+  const [message, setMessage] = useState("Bereit, die technische Reparatur-Liste zu laden.");
   const [status, setStatus] = useState<"idle" | "running" | "success" | "error">("idle");
   const [loading, setLoading] = useState(false);
   const [isMarkingSelected, setIsMarkingSelected] = useState(false);
   const [selectedRepairReferences, setSelectedRepairReferences] = useState<string[]>([]);
+  const [repairSearchTerm, setRepairSearchTerm] = useState("");
 
-  const repairTokens = useMemo(() => normalizeRepairInput(repairInput), [repairInput]);
+  const repairTokens = useMemo(() => normalizeRepairInput(initialRepairIds), []);
+  const normalizedRepairSearchTerm = normalizeSearchValue(repairSearchTerm.trim());
+  const visibleRepairOrders = useMemo(
+    () =>
+      normalizedRepairSearchTerm
+        ? orders.filter((order) =>
+            [order.order_reference, order.patient_name].some((value) =>
+              normalizeSearchValue(value).includes(normalizedRepairSearchTerm)
+            )
+          )
+        : orders,
+    [normalizedRepairSearchTerm, orders]
+  );
+  const hasRepairSearchMiss = Boolean(
+    normalizedRepairSearchTerm && orders.length && visibleRepairOrders.length === 0
+  );
+
+  useEffect(() => {
+    if (didAutoLoadRef.current) return;
+    didAutoLoadRef.current = true;
+    void loadRepairOrders();
+  }, []);
 
   async function loadRepairOrders() {
     if (!repairTokens.length) {
@@ -167,7 +196,9 @@ export function TemporaryPickupRepair() {
 
   function toggleAllRepairSelections() {
     setSelectedRepairReferences((selected) =>
-      selected.length === orders.length ? [] : orders.map((order) => order.order_reference)
+      selected.length === visibleRepairOrders.length
+        ? []
+        : visibleRepairOrders.map((order) => order.order_reference)
     );
   }
 
@@ -227,71 +258,53 @@ export function TemporaryPickupRepair() {
 
   return (
     <section className="repair-surface" aria-label="Temporäre Self Pickup Nachpflege">
-      <div className="repair-heading">
-        <div>
-          <p className="section-kicker">Technische Nachpflege</p>
-          <h2>Self Pickup Reparatur</h2>
-        </div>
-        <Wrench size={24} />
+      <div>
+        <p className="section-kicker">Technische Nachpflege</p>
+        <h2>Self Pickup Reparatur</h2>
       </div>
 
-      <div className="repair-grid">
-        <section className="secondary-bot-card repair-input-card" aria-label="Reparatur IDs">
+      <div className="repair-grid repair-grid-single">
+        <section className="secondary-bot-card manual-pickup-card repair-console-card" aria-label="Reparatur Bestellungen">
           <div>
-            <Wrench size={22} />
+            <PackageCheck size={22} />
             <span>
-              <b>Technische Liste</b>
-              <small>Nur fuer diese betroffenen Bestellungen</small>
+              <b>Self Pickup Reparatur</b>
+              <small>{orders.length ? `${orders.length} offene Reparatur-Bestellung(en)` : "Feste IDs aus Supabase"}</small>
             </span>
           </div>
-          <label className="field repair-id-field">
-            <span>Betroffene Bestell-IDs</span>
-            <textarea
-              value={repairInput}
-              onChange={(event) => setRepairInput(event.target.value)}
-              placeholder="JF02... eine ID pro Zeile oder mit Komma getrennt"
-              disabled={isBusy}
-            />
-          </label>
           <div className="pickup-list-actions repair-actions">
             <button className="inline-action-button repair-load-button" type="button" onClick={loadRepairOrders} disabled={isBusy || repairTokens.length === 0}>
               {loading ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}
-              <span>{loading ? "Lade" : "Liste laden"}</span>
+              <span>{loading ? "Lade Liste" : "Liste aktualisieren"}</span>
             </button>
             <button
               className="inline-action-button"
               type="button"
               onClick={toggleAllRepairSelections}
-              disabled={isBusy || orders.length === 0}
+              disabled={isBusy || visibleRepairOrders.length === 0}
             >
               <CheckCircle2 size={17} />
-              <span>{selectedRepairReferences.length === orders.length ? "Auswahl leeren" : "Alle auswählen"}</span>
+              <span>{selectedRepairReferences.length === visibleRepairOrders.length ? "Auswahl leeren" : "Alle auswählen"}</span>
             </button>
+            <label className="pickup-search-field">
+              <Search size={17} />
+              <input
+                value={repairSearchTerm}
+                onChange={(event) => setRepairSearchTerm(event.target.value)}
+                placeholder="Bestell-ID oder Name suchen"
+                aria-label="Reparatur Bestell-ID oder Name suchen"
+              />
+            </label>
           </div>
+
           <div className={`repair-message repair-message-${status}`}>
             {status === "running" ? <Loader2 size={17} className="spin" /> : status === "success" ? <CheckCircle2 size={17} /> : status === "error" ? <AlertTriangle size={17} /> : <ShieldCheck size={17} />}
             <p>{message}</p>
           </div>
-          {hiddenCount || missingOrders.length ? (
-            <div className="repair-meta">
-              {hiddenCount ? <span>{hiddenCount} schon markiert oder nicht offen</span> : null}
-              {missingOrders.length ? <span>Nicht gefunden: {missingOrders.join(", ")}</span> : null}
-            </div>
-          ) : null}
-        </section>
-
-        <section className="secondary-bot-card repair-orders-card" aria-label="Reparatur Bestellungen">
-          <div>
-            <PackageCheck size={22} />
-            <span>
-              <b>Reparatur-Auswahl</b>
-              <small>{orders.length ? `${orders.length} offene Bestellung(en)` : "Noch nichts geladen"}</small>
-            </span>
-          </div>
           <div className="pending-pickup-shell repair-pickup-shell">
             <div className="pending-pickup-list repair-order-list">
-              {orders.length ? (
-                orders.map((order) => (
+              {visibleRepairOrders.length ? (
+                visibleRepairOrders.map((order) => (
                   <label className="pending-pickup-row repair-pickup-row" key={order.id}>
                     <input
                       type="checkbox"
@@ -307,11 +320,19 @@ export function TemporaryPickupRepair() {
                     </span>
                   </label>
                 ))
+              ) : hasRepairSearchMiss ? (
+                <p className="empty-pickup-list">Diese Bestell-ID oder dieser Name existiert nicht in der Reparatur-Liste.</p>
               ) : (
                 <p className="empty-pickup-list">Keine offene Reparatur-Bestellung geladen.</p>
               )}
             </div>
           </div>
+          {hiddenCount || missingOrders.length ? (
+            <div className="repair-meta">
+              {hiddenCount ? <span>{hiddenCount} schon markiert oder nicht offen</span> : null}
+              {missingOrders.length ? <span>Nicht gefunden: {missingOrders.join(", ")}</span> : null}
+            </div>
+          ) : null}
           <button
             className="trigger-button pickup-mark-button repair-submit-button"
             type="button"

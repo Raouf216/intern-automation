@@ -788,7 +788,7 @@ body[data-theme="night"] .pending-pickup-row .pickup-patient-name {
   gap: 18px;
   border-top: 1px solid var(--line);
   padding: 28px;
-  background: color-mix(in srgb, var(--surface-strong) 94%, var(--gold) 6%);
+  background: var(--surface-strong);
 }
 
 .repair-heading {
@@ -807,6 +807,10 @@ body[data-theme="night"] .pending-pickup-row .pickup-patient-name {
   display: grid;
   grid-template-columns: minmax(300px, 0.55fr) minmax(360px, 1fr);
   gap: 18px;
+}
+
+.repair-grid-single {
+  grid-template-columns: minmax(320px, 720px);
 }
 
 .repair-input-card,
@@ -847,6 +851,14 @@ body[data-theme="night"] .pending-pickup-row .pickup-patient-name {
 
 .repair-actions {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.repair-console-card {
+  max-width: 720px;
+}
+
+.repair-console-card > .repair-message {
+  display: flex;
 }
 
 .repair-message {

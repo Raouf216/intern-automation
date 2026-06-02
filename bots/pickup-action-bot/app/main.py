@@ -3484,7 +3484,9 @@ def try_pickup_done_on_current_page(page, order_reference, dry_run):
                 wait_for_click_blockers_clear(page)
                 button_snapshot = pickup_done_button_snapshot(button)
                 button_enabled = pickup_done_snapshot_enabled(button_snapshot)
+                log_event("pickup_done_trial_click_about_to_click", order_reference=order_reference, dry_run=dry_run, url=page.url)
                 button.click(timeout=PICKUP_DONE_BUTTON_STATE_TIMEOUT_MS, trial=True)
+                log_event("pickup_done_trial_click_done", order_reference=order_reference, dry_run=dry_run, url=page.url)
 
                 attempt.update(
                     {
@@ -3510,7 +3512,9 @@ def try_pickup_done_on_current_page(page, order_reference, dry_run):
                         "button_ready_attempts": attempts,
                     }
 
+                log_event("pickup_done_click_about_to_click", order_reference=order_reference, url=page.url)
                 button.click(timeout=PICKUP_DONE_BUTTON_CLICK_TIMEOUT_MS)
+                log_event("pickup_done_click_done", order_reference=order_reference, url=page.url)
                 click_result = wait_for_pickup_done_click_result(page, order_reference)
                 still_visible = click_result.get("status") == "still_visible"
 

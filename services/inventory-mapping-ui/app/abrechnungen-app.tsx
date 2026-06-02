@@ -49,6 +49,12 @@ type ProductLine = {
   currency: string;
   matchStatus: string;
   aiConfidence: number | null;
+  platformSuggestions: {
+    doktorabcName: string;
+    wawicanName: string;
+    wawicanKultivar: string;
+    status: string;
+  };
   batches: Batch[];
 };
 
@@ -400,6 +406,11 @@ function findWawicanOption(options: ProductMapping[], name: string, kultivar: st
   return options.find((option) => option.wawicanName.trim() === trimmedName && option.kultivar.trim() === trimmedKultivar) || null;
 }
 
+function suggestionValue(value: string) {
+  const trimmed = value.trim();
+  return trimmed && trimmed.toUpperCase() !== "UNKNOWN" ? trimmed : "";
+}
+
 function stockAmount(value: string) {
   const parsed = parseDecimalInput(value);
   return parsed !== null && parsed > 0 ? parsed : 0;
@@ -421,6 +432,12 @@ function initialStockUploadForm(target: StockUploadTarget, products: ProductMapp
   const bruttoPerGram = calculatePricePerGram(target.product, "brutto");
   const doktorabcSuggestion = bestMappingSuggestion(target.product, products, "doktorabc");
   const wawicanSuggestion = bestMappingSuggestion(target.product, products, "wawican");
+  const storedDoktorabcName = suggestionValue(target.product.platformSuggestions.doktorabcName);
+  const storedWawicanName = suggestionValue(target.product.platformSuggestions.wawicanName);
+  const storedWawicanKultivar = suggestionValue(target.product.platformSuggestions.wawicanKultivar);
+  const storedDoktorabcOption = storedDoktorabcName ? findDoktorabcOption(uniqueProductOptions(products, "doktorabc"), storedDoktorabcName) : null;
+  const storedWawicanOption =
+    storedWawicanName && storedWawicanKultivar ? findWawicanOption(uniqueProductOptions(products, "wawican"), storedWawicanName, storedWawicanKultivar) : null;
 
   return {
     ...emptyStockUploadForm,
@@ -433,9 +450,9 @@ function initialStockUploadForm(target: StockUploadTarget, products: ProductMapp
     bruttoPerGram: formatStockInput(bruttoPerGram, 3),
     totalNetto: formatStockInput(calculatedBatchTotal(batchGrams, nettoPerGram), 2),
     totalBrutto: formatStockInput(calculatedBatchTotal(batchGrams, bruttoPerGram), 2),
-    doktorabcName: doktorabcSuggestion?.doktorabcName || "",
-    wawicanName: wawicanSuggestion?.wawicanName || "",
-    wawicanKultivar: wawicanSuggestion?.kultivar || "",
+    doktorabcName: storedDoktorabcOption?.doktorabcName || doktorabcSuggestion?.doktorabcName || "",
+    wawicanName: storedWawicanOption?.wawicanName || wawicanSuggestion?.wawicanName || "",
+    wawicanKultivar: storedWawicanOption?.kultivar || wawicanSuggestion?.kultivar || "",
   };
 }
 

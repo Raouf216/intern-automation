@@ -51,6 +51,13 @@ type ProductLineRow = {
   created_at: string | null;
 };
 
+type PlatformSuggestions = {
+  doktorabcName: string;
+  wawicanName: string;
+  wawicanKultivar: string;
+  status: string;
+};
+
 type BatchRow = {
   id: string;
   product_line_id: string;
@@ -183,6 +190,17 @@ function jsonArray(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.map(jsonRecord) : [];
 }
 
+function platformSuggestions(value: unknown): PlatformSuggestions {
+  const suggestion = jsonRecord(value);
+
+  return {
+    doktorabcName: stringValue(suggestion.doktorabc_name),
+    wawicanName: stringValue(suggestion.wawican_name),
+    wawicanKultivar: stringValue(suggestion.wawican_kultivar),
+    status: stringValue(suggestion.status),
+  };
+}
+
 function uniqueValues(values: Array<string | null | undefined>) {
   return Array.from(new Set(values.map((value) => value?.trim()).filter(Boolean) as string[]));
 }
@@ -284,6 +302,7 @@ function buildAbrechnung(
         currency: stringValue(line.currency) || stringValue(row.currency) || "EUR",
         matchStatus: stringValue(line.match_status),
         aiConfidence: numberValue(line.ai_confidence),
+        platformSuggestions: platformSuggestions(rawLine.platform_suggestions),
         batches: lineBatches,
       };
     });
@@ -337,6 +356,7 @@ function buildAbrechnung(
       currency: stringValue(product.currency) || stringValue(row.currency) || "EUR",
       matchStatus: "",
       aiConfidence: null,
+      platformSuggestions: platformSuggestions(product.platform_suggestions),
       batches: jsonArray(product.batches).map((batch, batchIndex) => ({
         id: `${row.id}-raw-${index}-${batchIndex}`,
         chargennummer: stringValue(batch.chargennummer),

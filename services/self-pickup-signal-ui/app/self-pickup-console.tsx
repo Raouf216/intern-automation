@@ -15,6 +15,7 @@ import {
   Sun,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { TemporaryPickupRepair } from "./temporary-pickup-repair";
 
 type PickupMarkResult = {
   order_reference: string;
@@ -602,6 +603,7 @@ export function SelfPickupConsole() {
             </p>
           </section>
         </div>
+        <TemporaryPickupRepair />
       </section>
     </main>
   );

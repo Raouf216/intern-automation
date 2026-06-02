@@ -783,6 +783,191 @@ body[data-theme="night"] .pending-pickup-row .pickup-patient-name {
   background: var(--surface);
 }
 
+.repair-surface {
+  display: grid;
+  gap: 18px;
+  border-top: 1px solid var(--line);
+  padding: 28px;
+  background: color-mix(in srgb, var(--surface-strong) 94%, var(--gold) 6%);
+}
+
+.repair-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.repair-heading svg {
+  color: var(--gold);
+  flex: 0 0 auto;
+}
+
+.repair-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.55fr) minmax(360px, 1fr);
+  gap: 18px;
+}
+
+.repair-input-card,
+.repair-orders-card {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--surface);
+}
+
+.repair-id-field {
+  margin: 0;
+}
+
+.repair-id-field textarea {
+  min-height: 132px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+}
+
+.repair-load-button {
+  width: 100%;
+  border-color: color-mix(in srgb, var(--gold) 40%, var(--line));
+}
+
+.repair-load-button:not(:disabled):hover {
+  border-color: var(--gold);
+}
+
+.repair-message {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: var(--muted);
+  background: var(--surface-strong);
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.4;
+}
+
+.repair-message p {
+  margin: 0;
+}
+
+.repair-message-success {
+  color: var(--green);
+  border-color: rgba(4, 120, 87, 0.24);
+  background: var(--green-soft);
+}
+
+.repair-message-error {
+  color: var(--red);
+  border-color: rgba(180, 35, 49, 0.24);
+  background: #fff1f2;
+}
+
+.repair-message-running {
+  color: var(--cyan);
+  border-color: rgba(14, 116, 144, 0.24);
+  background: rgba(14, 116, 144, 0.1);
+}
+
+body[data-theme="night"] .repair-message-error {
+  background: rgba(239, 68, 88, 0.14);
+}
+
+.repair-meta {
+  display: grid;
+  gap: 8px;
+}
+
+.repair-meta span {
+  display: block;
+  border: 1px solid color-mix(in srgb, var(--gold) 34%, var(--line));
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--gold);
+  background: color-mix(in srgb, var(--surface) 92%, var(--gold) 8%);
+  font-size: 12px;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.repair-order-list {
+  display: grid;
+  gap: 12px;
+  max-height: 480px;
+  overflow: auto;
+  padding-right: 5px;
+}
+
+.repair-order-row {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--surface) 96%, var(--gold) 4%);
+}
+
+.repair-order-main {
+  display: grid;
+  grid-template-columns: minmax(110px, auto) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.repair-order-main strong {
+  color: var(--gold);
+  font-size: 16px;
+  font-weight: 950;
+  overflow-wrap: anywhere;
+}
+
+.repair-order-main span {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.repair-order-main small,
+.repair-order-row p {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.repair-order-row p {
+  margin: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.repair-mark-button {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid rgba(4, 120, 87, 0.28);
+  border-radius: 8px;
+  color: #ffffff;
+  background: linear-gradient(135deg, var(--green), #0f766e);
+  font-size: 13px;
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.repair-mark-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
 .security-note {
   display: inline-flex;
   align-items: center;
@@ -1184,6 +1369,10 @@ body[data-theme="night"] code {
     grid-template-columns: 1fr;
   }
 
+  .repair-grid {
+    grid-template-columns: 1fr;
+  }
+
   .command-surface {
     border-right: 0;
   }
@@ -1206,6 +1395,7 @@ body[data-theme="night"] code {
   .masthead,
   .command-surface,
   .status-surface,
+  .repair-surface,
   .details-area {
     padding: 18px;
   }
@@ -1241,6 +1431,7 @@ body[data-theme="night"] code {
   .product-change-head,
   .change-diff,
   .product-line,
+  .repair-order-main,
   .timeline div {
     align-items: flex-start;
     grid-template-columns: 1fr;

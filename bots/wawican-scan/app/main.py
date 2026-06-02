@@ -11,7 +11,7 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -3475,6 +3475,27 @@ def start_background_job(request, name, work):
     )
 
 
+def schedule_unavailable_products_after_response(background_tasks, base_url):
+    if not bool_env("WAWICAN_SYNC_UNAVAILABLE_AFTER_AVAILABLE", True):
+        return {"enabled": False}
+
+    job = create_job("scrape-unavailable-products-after-available")
+    append_job_step(job["job_id"], "scheduled_after_available_response")
+    background_tasks.add_task(
+        run_background_job,
+        job["job_id"],
+        base_url,
+        scrape_all_unavailable_products,
+    )
+
+    return {
+        "enabled": True,
+        "job_id": job["job_id"],
+        "status": "queued",
+        "status_url": f"{base_url}/jobs/{job['job_id']}",
+    }
+
+
 @app.get("/health")
 def health():
     with JOB_LOCK:
@@ -3605,9 +3626,15 @@ def open_availability_filter_job_sync(request: Request):
 
 
 @app.post("/jobs/scrape-products")
-def scrape_products_job(request: Request):
+def scrape_products_job(request: Request, background_tasks: BackgroundTasks):
     try:
-        return scrape_all_available_products(base_url_from_request(request))
+        base_url = base_url_from_request(request)
+        result = scrape_all_available_products(base_url)
+        result["unavailable_followup"] = schedule_unavailable_products_after_response(
+            background_tasks,
+            base_url,
+        )
+        return result
     except Exception as exc:
         return JSONResponse(
             status_code=500,
@@ -3621,9 +3648,15 @@ def scrape_products_job_start(request: Request):
 
 
 @app.post("/jobs/scrape-products/run")
-def scrape_products_job_sync(request: Request):
+def scrape_products_job_sync(request: Request, background_tasks: BackgroundTasks):
     try:
-        return scrape_all_available_products(base_url_from_request(request))
+        base_url = base_url_from_request(request)
+        result = scrape_all_available_products(base_url)
+        result["unavailable_followup"] = schedule_unavailable_products_after_response(
+            background_tasks,
+            base_url,
+        )
+        return result
     except Exception as exc:
         return JSONResponse(
             status_code=500,

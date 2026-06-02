@@ -259,8 +259,9 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
 
   const returnsWithShipping = useMemo(() => allReturns.filter((item) => item.returnItem.found_in_bot), [allReturns]);
   const returnsWithoutShipping = useMemo(() => allReturns.filter((item) => !item.returnItem.found_in_bot), [allReturns]);
+  const displayProblems = useMemo(() => allProblems.filter((item) => item.problem.problem_type !== "return_order_not_found"), [allProblems]);
 
-  const allItems = useMemo<ProblemListItem[]>(() => [...allProblems, ...allSuccesses, ...allReturns], [allProblems, allSuccesses, allReturns]);
+  const allItems = useMemo<ProblemListItem[]>(() => [...displayProblems, ...allSuccesses, ...allReturns], [displayProblems, allSuccesses, allReturns]);
 
   const summary = useMemo(() => {
     const successCount = selectedRun.success_count;
@@ -284,14 +285,14 @@ export function AbrechnungVerificationDashboard({ initialError, initialRuns }: P
 
   const problemTypeCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    allProblems.forEach(({ problem }) => {
+    displayProblems.forEach(({ problem }) => {
       counts.set(problem.problem_type, (counts.get(problem.problem_type) || 0) + 1);
     });
 
     return Array.from(counts.entries())
       .map(([type, count]) => ({ type, count }))
       .sort((left, right) => right.count - left.count || typeLabel(left.type).localeCompare(typeLabel(right.type)));
-  }, [allProblems]);
+  }, [displayProblems]);
 
   const filteredItems = useMemo(() => {
     const normalizedQuery = normalizeSearchText(query);

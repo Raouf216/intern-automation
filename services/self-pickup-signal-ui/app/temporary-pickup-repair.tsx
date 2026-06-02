@@ -33,7 +33,8 @@ type RepairMarkResponse = {
   order?: RepairOrder;
 };
 
-const initialRepairIds = process.env.NEXT_PUBLIC_SELF_PICKUP_REPAIR_ORDER_IDS || "";
+const temporaryRepairIds = "JE22NRPQA\nJE27KGRNG\nJF01PCYRQ\nJF01VSJJZ\nJF02FNYZZ";
+const initialRepairIds = process.env.NEXT_PUBLIC_SELF_PICKUP_REPAIR_ORDER_IDS || temporaryRepairIds;
 
 function normalizeRepairInput(value: string) {
   const seen = new Set<string>();

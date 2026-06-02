@@ -225,6 +225,17 @@ function tokenMatchesRow(token: string, row: SupabaseOrderRow) {
   return row.order_reference.toUpperCase() === key || row.id.toUpperCase() === key;
 }
 
+function logRepairEvent(event: string, fields: Record<string, unknown>) {
+  console.log(
+    JSON.stringify({
+      event,
+      service: "self-pickup-signal-ui",
+      route: "/api/pickup-orders/manual-repair",
+      ...fields,
+    })
+  );
+}
+
 export async function POST(request: Request) {
   const auth = validateRequestAuth(request);
 
@@ -295,7 +306,19 @@ export async function POST(request: Request) {
       }
 
       const pickedAt = new Date().toISOString();
+      logRepairEvent("manual_repair_pickup_mark_about_to_update", {
+        order_reference: pendingRow.order_reference,
+        patient_name: pendingRow.patient_name,
+        row_id: pendingRow.id,
+        picked_at: pickedAt,
+      });
       const updatedRow = await patchRepairRow(pendingRow, pickedAt);
+      logRepairEvent("manual_repair_pickup_mark_updated", {
+        order_reference: updatedRow.order_reference,
+        patient_name: updatedRow.patient_name,
+        row_id: updatedRow.id,
+        picked_at: updatedRow.scraped_at || pickedAt,
+      });
 
       return NextResponse.json({
         ok: true,

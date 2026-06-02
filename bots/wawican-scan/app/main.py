@@ -698,31 +698,36 @@ def wait_for_availability_filter_menu(page, trace=None):
     return {"ok": True, "menu_item": "verfügbar"}
 
 
-def ensure_available_checkbox_checked(page):
-    page.locator('[role="checkbox"][aria-label="verfügbar"]').first.wait_for(
+def set_availability_checkbox_state(page, label, should_be_checked):
+    page.locator(f'[role="checkbox"][aria-label="{label}"]').first.wait_for(
         state="visible",
         timeout=FILTER_TIMEOUT_MS,
     )
 
     result = page.evaluate(
         """
-        () => {
-          const checkbox = document.querySelector('[role="checkbox"][aria-label="verfügbar"]');
+        ({ label, shouldBeChecked }) => {
+          const checkbox = document.querySelector(`[role="checkbox"][aria-label="${label}"]`);
 
           if (!checkbox) {
-            return { ok: false, error: 'available_checkbox_not_found' };
+            return { ok: false, error: 'availability_checkbox_not_found', label };
           }
 
-          const nativeInput = checkbox.querySelector('input[type="checkbox"]');
-          const ariaChecked = checkbox.getAttribute('aria-checked');
-          const className = String(checkbox.className || '');
-          const checked =
-            (nativeInput && nativeInput.checked) ||
-            ariaChecked === 'true' ||
-            className.includes('--truthy') ||
-            Boolean(checkbox.querySelector('.q-checkbox__inner--truthy'));
+          const isChecked = (element) => {
+            const nativeInput = element.querySelector('input[type="checkbox"]');
+            const ariaChecked = element.getAttribute('aria-checked');
+            const className = String(element.className || '');
+            return Boolean(
+              (nativeInput && nativeInput.checked) ||
+              ariaChecked === 'true' ||
+              className.includes('--truthy') ||
+              element.querySelector('.q-checkbox__inner--truthy')
+            );
+          };
 
-          if (!checked) {
+          const before = isChecked(checkbox);
+
+          if (before !== shouldBeChecked) {
             const box =
               checkbox.querySelector('.q-checkbox__inner') ||
               checkbox.querySelector('.q-checkbox__bg') ||
@@ -730,15 +735,64 @@ def ensure_available_checkbox_checked(page):
             box.click();
           }
 
-          return { ok: true, was_checked: Boolean(checked) };
+          return {
+            ok: true,
+            label,
+            was_checked: before,
+            target_checked: shouldBeChecked,
+          };
         }
-        """
+        """,
+        arg={"label": label, "shouldBeChecked": should_be_checked},
     )
 
     if not result.get("ok"):
-        raise RuntimeError(result.get("error") or "available_checkbox_failed")
+        raise RuntimeError(result.get("error") or "availability_checkbox_failed")
 
-    return result
+    wait_for_next_render_frame(page)
+
+    verify_result = page.evaluate(
+        """
+        ({ label, shouldBeChecked }) => {
+          const checkbox = document.querySelector(`[role="checkbox"][aria-label="${label}"]`);
+
+          if (!checkbox) {
+            return { ok: false, error: 'availability_checkbox_not_found_after_click', label };
+          }
+
+          const nativeInput = checkbox.querySelector('input[type="checkbox"]');
+          const ariaChecked = checkbox.getAttribute('aria-checked');
+          const className = String(checkbox.className || '');
+          const checked = Boolean(
+            (nativeInput && nativeInput.checked) ||
+            ariaChecked === 'true' ||
+            className.includes('--truthy') ||
+            checkbox.querySelector('.q-checkbox__inner--truthy')
+          );
+
+          return {
+            ok: checked === shouldBeChecked,
+            label,
+            checked,
+            target_checked: shouldBeChecked,
+            error: checked === shouldBeChecked ? null : 'availability_checkbox_wrong_state',
+          };
+        }
+        """,
+        arg={"label": label, "shouldBeChecked": should_be_checked},
+    )
+
+    if not verify_result.get("ok"):
+        raise RuntimeError(
+            f"{verify_result.get('error') or 'availability_checkbox_verify_failed'}: "
+            f"{label} checked={verify_result.get('checked')} expected={should_be_checked}"
+        )
+
+    return {**result, "checked": verify_result.get("checked")}
+
+
+def ensure_available_checkbox_checked(page):
+    return set_availability_checkbox_state(page, "verfügbar", True)
 
 
 def get_visible_availability_summary(page):
@@ -858,6 +912,64 @@ def wait_for_only_available_visible_rows(page, trace=None):
     return summary
 
 
+def wait_for_only_unavailable_visible_rows(page, trace=None):
+    trace_step(trace, "wait_for_only_unavailable_visible_rows", timeout_ms=SCRAPE_PAGE_READY_TIMEOUT_MS)
+    page.wait_for_function(
+        """
+        () => {
+          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const fold = (value) => normalize(value)
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .toLowerCase();
+          const isVisible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
+          const table = document.querySelector('table.q-table');
+
+          if (!table) {
+            return false;
+          }
+
+          const headers = Array.from(table.querySelectorAll('thead th'));
+          const availabilityIndex = headers.findIndex((header) => fold(header.innerText).includes('verfugbarkeit'));
+
+          if (availabilityIndex < 0) {
+            return false;
+          }
+
+          const rows = Array.from(table.querySelectorAll('tbody tr')).filter(isVisible);
+
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return rows.every((row) => {
+            const cell = row.querySelectorAll('td')[availabilityIndex];
+            return Boolean(
+              cell &&
+              cell.querySelector('.text-negative, .text-red, .text-red-7, .text-red-8')
+            );
+          });
+        }
+        """,
+        timeout=SCRAPE_PAGE_READY_TIMEOUT_MS,
+    )
+    wait_for_next_render_frame(page)
+    summary = get_visible_availability_summary(page)
+    trace_step(trace, "only_unavailable_visible_rows_ready", **summary)
+
+    return summary
+
+
 def apply_available_filter(page, trace=None):
     wait_for_inventory_page(page, trace=trace)
     trace_step(trace, "click_availability_filter")
@@ -872,6 +984,34 @@ def apply_available_filter(page, trace=None):
     return {
         "filter_button": click_result,
         "available_checkbox": checkbox_result,
+        "availability_summary": availability_summary,
+        "visible_rows": availability_summary.get("row_count"),
+    }
+
+
+def apply_unavailable_filter(page, trace=None):
+    wait_for_inventory_page(page, trace=trace)
+    trace_step(trace, "click_availability_filter")
+    click_result = click_availability_filter_button(page)
+    wait_for_availability_filter_menu(page, trace=trace)
+    trace_step(trace, "ensure_unavailable_checkbox_checked")
+    unavailable_checkbox_result = set_availability_checkbox_state(page, "nicht verfügbar", True)
+    trace_step(trace, "ensure_available_checkbox_unchecked")
+    available_checkbox_result = set_availability_checkbox_state(page, "verfügbar", False)
+    page.keyboard.press("Escape")
+    wait_for_inventory_page(page, trace=trace)
+    availability_summary = wait_for_only_unavailable_visible_rows(page, trace=trace)
+
+    if availability_summary.get("available_count"):
+        raise RuntimeError(
+            "Unavailable filter is not fully applied. "
+            f"Still visible available rows: {availability_summary.get('available_count')}."
+        )
+
+    return {
+        "filter_button": click_result,
+        "available_checkbox": available_checkbox_result,
+        "unavailable_checkbox": unavailable_checkbox_result,
         "availability_summary": availability_summary,
         "visible_rows": availability_summary.get("row_count"),
     }
@@ -962,6 +1102,13 @@ def products_table():
     return (os.environ.get("WAWICAN_PRODUCTS_TABLE") or "wawican_products").strip() or "wawican_products"
 
 
+def unavailable_products_table():
+    return (
+        os.environ.get("WAWICAN_UNAVAILABLE_PRODUCTS_TABLE")
+        or "wawican_unavailable_products"
+    ).strip() or "wawican_unavailable_products"
+
+
 def products_flat_view():
     return (
         os.environ.get("WAWICAN_PRODUCTS_FLAT_VIEW")
@@ -1041,8 +1188,9 @@ def supabase_rest_configured():
     return bool(supabase_url() and supabase_service_role_key())
 
 
-def supabase_table_url():
-    return f"{supabase_url()}/rest/v1/{quote(products_table(), safe='')}"
+def supabase_table_url(table_name=None):
+    table_name = table_name or products_table()
+    return f"{supabase_url()}/rest/v1/{quote(table_name, safe='')}"
 
 
 def supabase_headers():
@@ -1499,11 +1647,33 @@ def raw_product_is_available(raw_product):
     return raw_product.get("available") is True or folded_status == "verfugbar"
 
 
-def normalize_products_for_db(raw_products, source_url, scraped_at):
+def raw_product_is_unavailable(raw_product):
+    status = normalize_space(raw_product.get("availability_status")).lower()
+    folded_status = (
+        status
+        .replace("ü", "u")
+        .replace("ä", "a")
+        .replace("ö", "o")
+        .replace("ß", "ss")
+    )
+
+    return raw_product.get("available") is False or folded_status == "nicht verfugbar"
+
+
+def normalize_products_for_db(raw_products, source_url, scraped_at, availability_filter="available"):
+    if availability_filter == "available":
+        include_product = raw_product_is_available
+    elif availability_filter == "unavailable":
+        include_product = raw_product_is_unavailable
+    elif availability_filter == "all":
+        include_product = lambda raw_product: True
+    else:
+        raise ValueError(f"Unsupported availability_filter: {availability_filter}")
+
     return [
         normalize_scraped_product(raw_product, raw_product.get("page_number"), source_url, scraped_at)
         for raw_product in raw_products
-        if normalize_space(raw_product.get("product_name")) and raw_product_is_available(raw_product)
+        if normalize_space(raw_product.get("product_name")) and include_product(raw_product)
     ]
 
 
@@ -1538,6 +1708,44 @@ def dedupe_products_by_name(products):
             continue
 
         index_by_name[key] = len(deduped)
+        deduped.append(product)
+
+    return deduped, {
+        "input_rows": len(products),
+        "unique_rows": len(deduped),
+        "duplicate_rows": duplicate_count,
+        "duplicate_samples": duplicate_samples,
+    }
+
+
+def dedupe_products_by_catalog_identity(products):
+    deduped = []
+    index_by_identity = {}
+    duplicate_samples = []
+    duplicate_count = 0
+
+    for product in products:
+        key = product_catalog_identity(product)
+
+        if not key.strip(":"):
+            continue
+
+        if key in index_by_identity:
+            duplicate_count += 1
+
+            if len(duplicate_samples) < 10:
+                original = deduped[index_by_identity[key]]
+                duplicate_samples.append(
+                    {
+                        "product_name": product.get("product_name"),
+                        "cultivar": product.get("cultivar"),
+                        "first_page": original.get("page_number"),
+                        "duplicate_page": product.get("page_number"),
+                    }
+                )
+            continue
+
+        index_by_identity[key] = len(deduped)
         deduped.append(product)
 
     return deduped, {
@@ -1648,7 +1856,7 @@ def chunks(items, size):
         yield items[index : index + size]
 
 
-def validate_rest_payload_columns(column_names, trace=None):
+def validate_rest_payload_columns(column_names, trace=None, table_name=None):
     import httpx
 
     accepted_columns = list(column_names)
@@ -1656,7 +1864,7 @@ def validate_rest_payload_columns(column_names, trace=None):
 
     while accepted_columns:
         response = httpx.get(
-            supabase_table_url(),
+            supabase_table_url(table_name),
             headers=supabase_headers(),
             params={
                 "select": ",".join(accepted_columns),
@@ -1680,12 +1888,14 @@ def validate_rest_payload_columns(column_names, trace=None):
     return accepted_columns, skipped_columns
 
 
-def write_products_to_supabase_rest(products, trace=None):
-    replace_all = bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True)
+def write_products_to_supabase_rest(products, trace=None, table_name=None, replace_all=None, upsert_on=None):
+    if replace_all is None:
+        replace_all = bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True)
     dry_run = bool_env("WAWICAN_PRODUCTS_DRY_RUN", False)
     schema_name = validate_identifier(products_schema(), "WAWICAN_PRODUCTS_SCHEMA")
-    table_name = validate_identifier(products_table(), "WAWICAN_PRODUCTS_TABLE")
-    upsert_on = products_upsert_on()
+    table_name = validate_identifier(table_name or products_table(), "WAWICAN_PRODUCTS_TABLE")
+    if upsert_on is None:
+        upsert_on = products_upsert_on()
 
     if upsert_on:
         validate_identifier(upsert_on, "WAWICAN_PRODUCTS_UPSERT_ON")
@@ -1727,6 +1937,7 @@ def write_products_to_supabase_rest(products, trace=None):
         insert_columns, skipped_columns = validate_rest_payload_columns(
             list(payloads[0].keys()),
             trace=trace,
+            table_name=table_name,
         )
         payloads = [
             {column: payload.get(column) for column in insert_columns}
@@ -1737,7 +1948,7 @@ def write_products_to_supabase_rest(products, trace=None):
 
     if replace_all:
         response = httpx.delete(
-            supabase_table_url(),
+            supabase_table_url(table_name),
             headers={
                 **supabase_headers(),
                 "Prefer": "return=representation,count=exact",
@@ -1759,7 +1970,7 @@ def write_products_to_supabase_rest(products, trace=None):
             deleted_rows = None
 
     inserted_rows = 0
-    insert_url = supabase_table_url()
+    insert_url = supabase_table_url(table_name)
     prefer_header = "return=minimal"
 
     if upsert_on:
@@ -1800,11 +2011,12 @@ def write_products_to_supabase_rest(products, trace=None):
     }
 
 
-def write_products_to_postgres(products, trace=None):
-    replace_all = bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True)
+def write_products_to_postgres(products, trace=None, table_name=None, replace_all=None):
+    if replace_all is None:
+        replace_all = bool_env("WAWICAN_PRODUCTS_REPLACE_ALL", True)
     dry_run = bool_env("WAWICAN_PRODUCTS_DRY_RUN", False)
     schema_name = validate_identifier(products_schema(), "WAWICAN_PRODUCTS_SCHEMA")
-    table_name = validate_identifier(products_table(), "WAWICAN_PRODUCTS_TABLE")
+    table_name = validate_identifier(table_name or products_table(), "WAWICAN_PRODUCTS_TABLE")
 
     if dry_run:
         return {
@@ -1896,11 +2108,22 @@ def write_products_to_postgres(products, trace=None):
     }
 
 
-def write_products_to_database(products, trace=None):
+def write_products_to_database(products, trace=None, table_name=None, replace_all=None, upsert_on=None):
     if supabase_rest_configured():
-        return write_products_to_supabase_rest(products, trace=trace)
+        return write_products_to_supabase_rest(
+            products,
+            trace=trace,
+            table_name=table_name,
+            replace_all=replace_all,
+            upsert_on=upsert_on,
+        )
 
-    return write_products_to_postgres(products, trace=trace)
+    return write_products_to_postgres(
+        products,
+        trace=trace,
+        table_name=table_name,
+        replace_all=replace_all,
+    )
 
 
 def stock_report_enabled():
@@ -2009,6 +2232,79 @@ def fetch_previous_products_snapshot(trace=None):
         return fetch_previous_products_from_postgres(trace=trace)
 
     return []
+
+
+def fetch_products_snapshot_from_table(table_name, trace=None):
+    wanted_columns = [
+        "product_name",
+        "availability_status",
+        "available",
+        "cultivar",
+        "thc",
+        "cbd",
+        "scraped_at",
+    ]
+
+    if supabase_rest_configured():
+        import httpx
+
+        trace_step(trace, "fetch_products_snapshot_supabase_rest", table=table_name)
+        response = httpx.get(
+            supabase_table_url(table_name),
+            headers=supabase_headers(),
+            params={
+                "select": ",".join(wanted_columns),
+                "product_name": "not.is.null",
+                "limit": "5000",
+            },
+            timeout=SUPABASE_TIMEOUT_SECONDS,
+        )
+
+        if response.status_code >= 400:
+            raise RuntimeError(f"Supabase snapshot fetch failed: {response_preview(response)}")
+
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise RuntimeError("Supabase snapshot response was not a list.")
+
+        return payload
+
+    if postgres_url_configured():
+        from psycopg import connect, sql
+
+        schema_name = validate_identifier(products_schema(), "WAWICAN_PRODUCTS_SCHEMA")
+        table_name = validate_identifier(table_name, "WAWICAN_UNAVAILABLE_PRODUCTS_TABLE")
+        trace_step(trace, "fetch_products_snapshot_postgres", schema=schema_name, table=table_name)
+
+        with connect(postgres_url()) as connection:
+            with connection.cursor() as cursor:
+                columns = get_db_columns(cursor, schema_name, table_name)
+                selected_columns = [column for column in wanted_columns if column in columns]
+
+                if "product_name" not in selected_columns:
+                    return []
+
+                cursor.execute(
+                    sql.SQL("select {} from {}.{} where product_name is not null").format(
+                        sql.SQL(", ").join(sql.Identifier(column) for column in selected_columns),
+                        sql.Identifier(schema_name),
+                        sql.Identifier(table_name),
+                    )
+                )
+                rows = cursor.fetchall()
+
+        return [dict(zip(selected_columns, row)) for row in rows]
+
+    return []
+
+
+def product_catalog_identity(product):
+    return "::".join(
+        [
+            normalize_space(product.get("product_name")).casefold(),
+            normalize_space(product.get("cultivar")).casefold(),
+        ]
+    )
 
 
 def decimal_for_compare(value):
@@ -2776,6 +3072,141 @@ def scrape_all_available_products(base_url, trace=None):
             browser.close()
 
 
+def scrape_all_unavailable_products(base_url, trace=None):
+    os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    before_login_path = os.path.join(ARTIFACTS_DIR, f"wawican-unavailable-before-login-{timestamp}.png")
+    scraped_at = datetime.now(timezone.utc)
+    table_name = unavailable_products_table()
+
+    trace_step(trace, "start_browser", headless=bool_env("WAWICAN_HEADLESS", True))
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=bool_env("WAWICAN_HEADLESS", True))
+        context = None
+
+        try:
+            context, page, reused_session, inventory_ready = open_authenticated_inventory_page(
+                browser,
+                before_login_path=before_login_path,
+                trace=trace,
+            )
+            filter_result = apply_unavailable_filter(page, trace=trace)
+
+            raw_products = []
+            pages = []
+
+            for page_loop_index in range(1, SCRAPE_MAX_PAGES + 1):
+                pagination = get_pagination_state(page)
+                page_number = pagination.get("current_page") or page_loop_index
+                page_result = scrape_current_inventory_page(
+                    page,
+                    page_number=page_number,
+                    trace=trace,
+                )
+                page_rows = page_result.get("rows", [])
+                availability_summary = get_visible_availability_summary(page)
+
+                if availability_summary.get("available_count"):
+                    raise RuntimeError(
+                        "Unavailable filter is not fully applied. "
+                        f"Page {page_number} still has {availability_summary.get('available_count')} visible available rows."
+                    )
+
+                for row in page_rows:
+                    row["page_number"] = page_number
+                    raw_products.append(row)
+
+                pages.append(
+                    {
+                        "page": page_number,
+                        "label": pagination.get("label"),
+                        "rows": len(page_rows),
+                        "available_rows": availability_summary.get("available_count"),
+                        "unavailable_rows": availability_summary.get("unavailable_count"),
+                        "first_product": normalize_space(page_rows[0].get("product_name")) if page_rows else None,
+                        "last_product": normalize_space(page_rows[-1].get("product_name")) if page_rows else None,
+                    }
+                )
+
+                pagination = get_pagination_state(page)
+                current_page = pagination.get("current_page")
+                total_pages = pagination.get("total_pages")
+                has_next = pagination.get("has_next")
+
+                if not has_next or (current_page and total_pages and current_page >= total_pages):
+                    break
+
+                click_next_inventory_page(page, pagination, trace=trace)
+                wait_for_only_unavailable_visible_rows(page, trace=trace)
+            else:
+                raise RuntimeError(f"Stopped after WAWICAN_SCRAPE_MAX_PAGES={SCRAPE_MAX_PAGES}")
+
+            normalized_products = normalize_products_for_db(
+                raw_products,
+                page.url,
+                scraped_at,
+                availability_filter="unavailable",
+            )
+            products, dedupe_result = dedupe_products_by_catalog_identity(normalized_products)
+            previous_products = fetch_products_snapshot_from_table(table_name, trace=trace)
+            previous_keys = {
+                product_catalog_identity(product)
+                for product in previous_products
+                if normalize_space(product.get("product_name"))
+            }
+            current_keys = {
+                product_catalog_identity(product)
+                for product in products
+                if normalize_space(product.get("product_name"))
+            }
+            new_product_count = len(current_keys - previous_keys)
+
+            trace_step(
+                trace,
+                "normalized_unavailable_products",
+                raw_rows=len(raw_products),
+                unavailable_products=len(normalized_products),
+                unique_products=len(products),
+                previous_products=len(previous_products),
+                new_product_count=new_product_count,
+                duplicate_rows=dedupe_result.get("duplicate_rows"),
+            )
+
+            db_result = write_products_to_database(
+                products,
+                trace=trace,
+                table_name=table_name,
+                replace_all=True,
+                upsert_on="",
+            )
+
+            return {
+                "ok": True,
+                "table": table_name,
+                "new_products_added": new_product_count,
+                "products_scraped": len(products),
+                "previous_products": len(previous_products),
+                "raw_rows_seen": len(raw_products),
+                "pages_scraped": len(pages),
+                "filter": {
+                    "available_checked": False,
+                    "unavailable_checked": True,
+                    "visible_rows": filter_result.get("visible_rows"),
+                },
+                "database": {
+                    "inserted_rows": db_result.get("inserted_rows"),
+                    "deleted_rows": db_result.get("deleted_rows"),
+                    "method": db_result.get("method"),
+                    "schema": db_result.get("schema"),
+                    "table": db_result.get("table"),
+                },
+            }
+        finally:
+            if context:
+                context.close()
+            browser.close()
+
+
 def open_availability_filter_menu(page, trace=None):
     wait_for_inventory_page(page, trace=trace)
     trace_step(trace, "click_availability_filter")
@@ -3075,6 +3506,7 @@ def health():
         "postgres_url_configured": postgres_url_configured(),
         "products_schema": products_schema(),
         "products_table": products_table(),
+        "unavailable_products_table": unavailable_products_table(),
         "products_flat_view": products_flat_view(),
         "products_flat_view_enabled": bool_env("WAWICAN_PRODUCTS_FLAT_VIEW_ENABLED", False),
         "products_rest_columns": rest_insert_columns() or "*",
@@ -3192,6 +3624,33 @@ def scrape_products_job_start(request: Request):
 def scrape_products_job_sync(request: Request):
     try:
         return scrape_all_available_products(base_url_from_request(request))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.post("/jobs/scrape-unavailable-products")
+def scrape_unavailable_products_job(request: Request):
+    try:
+        return scrape_all_unavailable_products(base_url_from_request(request))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.post("/jobs/scrape-unavailable-products/start")
+def scrape_unavailable_products_job_start(request: Request):
+    return start_background_job(request, "scrape-unavailable-products", scrape_all_unavailable_products)
+
+
+@app.post("/jobs/scrape-unavailable-products/run")
+def scrape_unavailable_products_job_sync(request: Request):
+    try:
+        return scrape_all_unavailable_products(base_url_from_request(request))
     except Exception as exc:
         return JSONResponse(
             status_code=500,

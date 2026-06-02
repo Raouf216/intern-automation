@@ -2,18 +2,26 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-type MappingViewRow = {
-  canonical_id: string;
-  kultivar: string | null;
-  status: "verified" | "needs_review" | "archived" | string;
-  product_kind: "standard" | "deal" | string;
-  review_reason: string | null;
-  wawican_name: string | null;
-  doktorabc_name: string | null;
-  wawican_search_key: string | null;
-  doktorabc_search_key: string | null;
-  wawican_mapping_status: string | null;
-  doktorabc_mapping_status: string | null;
+type WawicanCatalogRow = {
+  product_name?: string | null;
+  cultivar?: string | null;
+  kultivar?: string | null;
+  availability_status?: string | null;
+  available?: boolean | null;
+  scraped_at?: string | null;
+  raw_data?: {
+    cultivar?: string | null;
+    kultivar?: string | null;
+    availability_status?: string | null;
+    available?: boolean | null;
+  } | null;
+};
+
+type DoktorabcCatalogRow = {
+  product_name?: string | null;
+  pzn?: string | null;
+  strain?: string | null;
+  availability?: boolean | null;
 };
 
 type ProductRow = {
@@ -29,6 +37,18 @@ type ProductRow = {
   doktorabcSearchKey: string;
   wawicanStatus: string;
   doktorabcStatus: string;
+};
+
+type ProductStats = {
+  totalProducts: number;
+  wawicanProducts: number;
+  wawicanAvailableProducts: number;
+  wawicanUnavailableProducts: number;
+  doktorabcProducts: number;
+  intersectionProducts: number;
+  deals: number;
+  needsReview: number;
+  wawicanUniqueNames: number;
 };
 
 function requiredEnv(name: string) {
@@ -51,9 +71,17 @@ function supabaseUrl() {
   }
 }
 
+function productCatalogSchema() {
+  return (
+    process.env.SUPABASE_PRODUCT_CATALOG_SCHEMA ||
+    process.env.SUPABASE_ABRECHNUNG_SCHEMA ||
+    "private"
+  ).trim() || "private";
+}
+
 function supabaseHeaders() {
   const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
-  const schema = (process.env.SUPABASE_INVENTORY_MAPPING_SCHEMA || "public").trim() || "public";
+  const schema = productCatalogSchema();
 
   return {
     apikey: serviceRoleKey,
@@ -64,12 +92,23 @@ function supabaseHeaders() {
   };
 }
 
-function mappingViewName() {
-  return (process.env.SUPABASE_INVENTORY_MAPPING_VIEW || "inventory_product_mapping").trim();
+function tableUrl(tableName: string) {
+  return `${supabaseUrl()}/rest/v1/${encodeURIComponent(tableName)}`;
 }
 
-function mappingViewUrl() {
-  return `${supabaseUrl()}/rest/v1/${encodeURIComponent(mappingViewName())}`;
+function doktorabcProductsTable() {
+  return (process.env.DOKTORABC_PRODUCTS_TABLE || "doktorabc_products").trim() || "doktorabc_products";
+}
+
+function wawicanAvailableProductsTable() {
+  return (process.env.WAWICAN_PRODUCTS_TABLE || "wawican_products").trim() || "wawican_products";
+}
+
+function wawicanUnavailableProductsTable() {
+  return (
+    process.env.WAWICAN_UNAVAILABLE_PRODUCTS_TABLE ||
+    "wawican_unavailable_products"
+  ).trim() || "wawican_unavailable_products";
 }
 
 function normalize(value: string) {
@@ -92,42 +131,153 @@ function textValue(value: string | null | undefined) {
   return value?.trim() || "";
 }
 
-function productFromViewRow(row: MappingViewRow): ProductRow {
-  const canonicalId = textValue(row.canonical_id);
-  const idParts = [canonicalId, row.wawican_name, row.doktorabc_name].map((part) => textValue(part));
+function availabilityKey(value: string) {
+  const folded = normalize(value).replace(/\s+/g, " ");
+
+  if (folded === "verfugbar") return "available";
+  if (folded === "nicht verfugbar") return "unavailable";
+  return folded || "unknown";
+}
+
+function rowIdentity(parts: Array<string | null | undefined>) {
+  return parts.map((part) => textValue(part).toLowerCase()).join("::");
+}
+
+async function fetchCatalogRows<T>(tableName: string, select: string, fallbackSelect?: string): Promise<T[]> {
+  const url = new URL(tableUrl(tableName));
+  url.searchParams.set("select", select);
+  url.searchParams.set("limit", "5000");
+
+  const response = await fetch(url, {
+    headers: supabaseHeaders(),
+    cache: "no-store",
+  });
+
+  if (response.ok) {
+    return (await response.json()) as T[];
+  }
+
+  if (!fallbackSelect) {
+    const detail = await response.text();
+    throw new Error(`Supabase ${tableName} lookup failed (${response.status}): ${detail}`);
+  }
+
+  const fallbackUrl = new URL(tableUrl(tableName));
+  fallbackUrl.searchParams.set("select", fallbackSelect);
+  fallbackUrl.searchParams.set("limit", "5000");
+
+  const fallbackResponse = await fetch(fallbackUrl, {
+    headers: supabaseHeaders(),
+    cache: "no-store",
+  });
+
+  if (!fallbackResponse.ok) {
+    const detail = await fallbackResponse.text();
+    throw new Error(`Supabase ${tableName} lookup failed (${fallbackResponse.status}): ${detail}`);
+  }
+
+  return (await fallbackResponse.json()) as T[];
+}
+
+function wawicanProductFromRow(row: WawicanCatalogRow, source: "available" | "unavailable"): ProductRow | null {
+  const wawicanName = textValue(row.product_name);
+
+  if (!wawicanName) {
+    return null;
+  }
+
+  const rawData = row.raw_data || {};
+  const kultivar = textValue(row.cultivar || row.kultivar || rawData.cultivar || rawData.kultivar);
+  const status =
+    textValue(row.availability_status || rawData.availability_status) ||
+    (source === "available" ? "verfügbar" : "nicht verfügbar");
+  const available = typeof row.available === "boolean" ? row.available : rawData.available;
+  const normalizedStatus = available === false ? "nicht verfügbar" : available === true ? "verfügbar" : status;
+  const sourceLabel = source === "available" ? "wawican_available" : "wawican_unavailable";
+  const identity = rowIdentity([sourceLabel, wawicanName, kultivar]);
 
   return {
-    id: idParts.join("::"),
-    canonicalId,
-    kultivar: textValue(row.kultivar),
-    status: textValue(row.status),
-    productKind: textValue(row.product_kind) || "standard",
-    reviewReason: textValue(row.review_reason),
-    wawicanName: textValue(row.wawican_name),
-    doktorabcName: textValue(row.doktorabc_name),
-    wawicanSearchKey: textValue(row.wawican_search_key),
-    doktorabcSearchKey: textValue(row.doktorabc_search_key),
-    wawicanStatus: textValue(row.wawican_mapping_status),
-    doktorabcStatus: textValue(row.doktorabc_mapping_status),
+    id: identity,
+    canonicalId: identity,
+    kultivar,
+    status: availabilityKey(normalizedStatus),
+    productKind: "wawican",
+    reviewReason: "",
+    wawicanName,
+    doktorabcName: "",
+    wawicanSearchKey: [wawicanName, kultivar].filter(Boolean).join(" "),
+    doktorabcSearchKey: "",
+    wawicanStatus: normalizedStatus,
+    doktorabcStatus: "",
   };
 }
 
-function matchesQuery(row: MappingViewRow, terms: string[]) {
+function doktorabcProductFromRow(row: DoktorabcCatalogRow): ProductRow | null {
+  const doktorabcName = textValue(row.product_name);
+
+  if (!doktorabcName) {
+    return null;
+  }
+
+  const pzn = textValue(row.pzn);
+  const strain = textValue(row.strain);
+  const identity = rowIdentity(["doktorabc", pzn || doktorabcName, doktorabcName]);
+  const status = row.availability === false ? "unavailable" : row.availability === true ? "available" : "unknown";
+
+  return {
+    id: identity,
+    canonicalId: identity,
+    kultivar: "",
+    status,
+    productKind: "doktorabc",
+    reviewReason: strain,
+    wawicanName: "",
+    doktorabcName,
+    wawicanSearchKey: "",
+    doktorabcSearchKey: [doktorabcName, strain, pzn].filter(Boolean).join(" "),
+    wawicanStatus: "",
+    doktorabcStatus: status,
+  };
+}
+
+function uniqueProducts(products: ProductRow[]) {
+  const seen = new Set<string>();
+  const rows: ProductRow[] = [];
+
+  for (const product of products) {
+    const key = product.productKind === "wawican"
+      ? rowIdentity([product.productKind, product.wawicanName, product.kultivar, product.status])
+      : rowIdentity([product.productKind, product.doktorabcName]);
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    rows.push(product);
+  }
+
+  return rows;
+}
+
+function matchesQuery(row: ProductRow, terms: string[]) {
   if (!terms.length) {
     return true;
   }
 
   const haystack = normalize(
     [
-      row.canonical_id,
+      row.canonicalId,
       row.kultivar,
       row.status,
-      row.product_kind,
-      row.review_reason,
-      row.wawican_name,
-      row.doktorabc_name,
-      row.wawican_search_key,
-      row.doktorabc_search_key,
+      row.productKind,
+      row.reviewReason,
+      row.wawicanName,
+      row.doktorabcName,
+      row.wawicanSearchKey,
+      row.doktorabcSearchKey,
+      row.wawicanStatus,
+      row.doktorabcStatus,
     ]
       .filter(Boolean)
       .join(" ")
@@ -136,82 +286,115 @@ function matchesQuery(row: MappingViewRow, terms: string[]) {
   return terms.every((term) => haystack.includes(term));
 }
 
-function matchesKind(row: MappingViewRow, kind: string) {
-  if (kind === "matched") {
-    return Boolean(row.wawican_name && row.doktorabc_name && row.product_kind !== "deal");
-  }
-
-  if (kind === "missing-doktorabc") {
-    return Boolean(row.wawican_name && !row.doktorabc_name);
-  }
-
-  if (kind === "deal") {
-    return row.product_kind === "deal";
-  }
-
-  if (kind === "needs-review") {
-    return row.status === "needs_review" || row.wawican_mapping_status?.includes("needs_review") || row.doktorabc_mapping_status?.includes("needs_review");
-  }
-
+function matchesPlatform(row: ProductRow, platform: string) {
+  if (platform === "wawican") return row.productKind === "wawican";
+  if (platform === "doktorabc") return row.productKind === "doktorabc";
   return true;
 }
 
-function buildStats(rows: MappingViewRow[]) {
-  const wawicanNames = new Set(rows.map((row) => row.wawican_name).filter(Boolean));
-  const doktorabcNames = new Set(rows.map((row) => row.doktorabc_name).filter(Boolean));
+function matchesWawicanAvailability(row: ProductRow, selected: Set<string>) {
+  if (row.productKind !== "wawican") {
+    return true;
+  }
+
+  return selected.has(row.status);
+}
+
+function buildStats(products: ProductRow[]): ProductStats {
+  const wawicanRows = products.filter((row) => row.productKind === "wawican");
+  const doktorabcRows = products.filter((row) => row.productKind === "doktorabc");
+  const wawicanNames = new Set(wawicanRows.map((row) => rowIdentity([row.wawicanName, row.kultivar])).filter(Boolean));
 
   return {
-    totalProducts: rows.length,
-    wawicanProducts: rows.filter((row) => row.wawican_name).length,
-    doktorabcProducts: doktorabcNames.size,
-    intersectionProducts: rows.filter((row) => row.wawican_name && row.doktorabc_name).length,
-    deals: rows.filter((row) => row.product_kind === "deal").length,
-    needsReview: rows.filter((row) => row.status === "needs_review").length,
+    totalProducts: products.length,
+    wawicanProducts: wawicanRows.length,
+    wawicanAvailableProducts: wawicanRows.filter((row) => row.status === "available").length,
+    wawicanUnavailableProducts: wawicanRows.filter((row) => row.status === "unavailable").length,
+    doktorabcProducts: doktorabcRows.length,
+    intersectionProducts: 0,
+    deals: 0,
+    needsReview: 0,
     wawicanUniqueNames: wawicanNames.size,
   };
+}
+
+function sortProducts(products: ProductRow[]) {
+  return [...products].sort((left, right) => {
+    const leftName = left.productKind === "wawican" ? `${left.wawicanName} ${left.kultivar}` : left.doktorabcName;
+    const rightName = right.productKind === "wawican" ? `${right.wawicanName} ${right.kultivar}` : right.doktorabcName;
+
+    return leftName.localeCompare(rightName, "de", { sensitivity: "base" });
+  });
 }
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const query = searchParams.get("q") || "";
-    const kind = searchParams.get("kind") || "all";
+    const platform = searchParams.get("platform") || searchParams.get("kind") || "all";
+    const availability = searchParams.get("availability") || "available,unavailable";
     const terms = splitTerms(query);
-    const url = new URL(mappingViewUrl());
-
-    url.searchParams.set(
-      "select",
-      "canonical_id,kultivar,status,product_kind,review_reason,wawican_name,doktorabc_name,wawican_search_key,doktorabc_search_key,wawican_mapping_status,doktorabc_mapping_status"
+    const selectedAvailability = new Set(
+      availability
+        .split(",")
+        .map((item) => availabilityKey(item))
+        .filter((item) => item === "available" || item === "unavailable")
     );
-    url.searchParams.set("order", "product_kind.asc,canonical_id.asc");
-    url.searchParams.set("limit", "1000");
 
-    const response = await fetch(url, {
-      headers: supabaseHeaders(),
-      cache: "no-store",
-    });
-
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`Supabase product mapping lookup failed (${response.status}): ${detail}`);
+    if (selectedAvailability.size === 0) {
+      selectedAvailability.add("available");
+      selectedAvailability.add("unavailable");
     }
 
-    const rawRows = (await response.json()) as MappingViewRow[];
-    const filteredRows = rawRows
-      .filter((row) => matchesKind(row, kind))
-      .filter((row) => matchesQuery(row, terms))
-      .map(productFromViewRow);
+    const [wawicanAvailableRows, wawicanUnavailableRows, doktorabcRows] = await Promise.all([
+      fetchCatalogRows<WawicanCatalogRow>(
+        wawicanAvailableProductsTable(),
+        "product_name,cultivar,availability_status,available,raw_data,scraped_at",
+        "product_name,availability_status,available,raw_data,scraped_at"
+      ),
+      fetchCatalogRows<WawicanCatalogRow>(
+        wawicanUnavailableProductsTable(),
+        "product_name,cultivar,availability_status,available,raw_data,scraped_at",
+        "product_name,availability_status,available,raw_data,scraped_at"
+      ),
+      fetchCatalogRows<DoktorabcCatalogRow>(
+        doktorabcProductsTable(),
+        "product_name,pzn,strain,availability",
+        "product_name,pzn"
+      ),
+    ]);
+
+    const allProducts = uniqueProducts([
+      ...wawicanAvailableRows
+        .map((row) => wawicanProductFromRow(row, "available"))
+        .filter((row): row is ProductRow => Boolean(row)),
+      ...wawicanUnavailableRows
+        .map((row) => wawicanProductFromRow(row, "unavailable"))
+        .filter((row): row is ProductRow => Boolean(row)),
+      ...doktorabcRows
+        .map(doktorabcProductFromRow)
+        .filter((row): row is ProductRow => Boolean(row)),
+    ]);
+
+    const filteredRows = sortProducts(
+      allProducts
+        .filter((row) => matchesPlatform(row, platform))
+        .filter((row) => matchesWawicanAvailability(row, selectedAvailability))
+        .filter((row) => matchesQuery(row, terms))
+    );
 
     return NextResponse.json({
       ok: true,
       query,
-      kind,
-      stats: buildStats(rawRows),
+      kind: platform,
+      platform,
+      availability: Array.from(selectedAvailability),
+      stats: buildStats(allProducts),
       filteredCount: filteredRows.length,
       products: filteredRows,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown product mapping lookup error.";
+    const message = error instanceof Error ? error.message : "Unknown product catalog lookup error.";
 
     return NextResponse.json(
       {

@@ -141,6 +141,8 @@ h2 {
 }
 
 .subnav {
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -167,6 +169,10 @@ h2 {
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
   margin: 18px 0;
+}
+
+.summary-grid-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .option-grid {
@@ -482,6 +488,10 @@ h2 {
   padding: 14px;
 }
 
+.catalog-search-panel {
+  align-items: start;
+}
+
 .abrechnung-toolbar {
   justify-content: space-between;
   gap: 12px;
@@ -537,6 +547,13 @@ h2 {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.availability-filter-row {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
 }
 
 .filter-row button {
@@ -1085,6 +1102,14 @@ table {
   border-collapse: collapse;
 }
 
+.catalog-table {
+  min-width: 620px;
+}
+
+.catalog-table-wawican {
+  min-width: 820px;
+}
+
 th,
 td {
   border-bottom: 1px solid var(--line);
@@ -1424,6 +1449,10 @@ tbody tr:hover {
   .subnav a,
   .table-state {
     justify-content: center;
+  }
+
+  .subnav {
+    justify-content: flex-start;
   }
 
   .abrechnung-meta-grid,

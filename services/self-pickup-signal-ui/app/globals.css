@@ -838,6 +838,17 @@ body[data-theme="night"] .pending-pickup-row .pickup-patient-name {
   border-color: var(--gold);
 }
 
+.repair-input-card > .repair-actions,
+.repair-input-card > .repair-meta,
+.repair-orders-card > .repair-pickup-shell {
+  display: grid;
+  align-items: stretch;
+}
+
+.repair-actions {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
 .repair-message {
   min-height: 54px;
   display: flex;

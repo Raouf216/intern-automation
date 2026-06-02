@@ -19,6 +19,14 @@ type SupabaseOrderRow = {
   products: string | null;
 };
 
+type RepairResult = {
+  order_reference: string;
+  status: "picked" | "already_picked" | "not_found" | "error";
+  message: string;
+  picked_at?: string;
+  order?: SupabaseOrderRow;
+};
+
 function requiredEnv(name: string) {
   const value = process.env[name];
 
@@ -288,43 +296,63 @@ export async function POST(request: Request) {
     }
 
     if (action === "mark") {
-      if (tokens.length !== 1) {
-        return NextResponse.json({ ok: false, error: "mark_requires_one_order_reference" }, { status: 400 });
-      }
-
-      const pendingRow = pendingRows.find((row) => tokenMatchesRow(tokens[0], row));
-
-      if (!pendingRow) {
-        return NextResponse.json({
-          ok: true,
-          status: rows.length ? "already_picked" : "not_found",
-          order_reference: tokens[0],
-          message: rows.length
-            ? "Diese Bestellung ist schon markiert oder nicht mehr offen."
-            : "Diese Bestellung wurde nicht gefunden.",
-        });
-      }
-
       const pickedAt = new Date().toISOString();
-      logRepairEvent("manual_repair_pickup_mark_about_to_update", {
-        order_reference: pendingRow.order_reference,
-        patient_name: pendingRow.patient_name,
-        row_id: pendingRow.id,
-        picked_at: pickedAt,
-      });
-      const updatedRow = await patchRepairRow(pendingRow, pickedAt);
-      logRepairEvent("manual_repair_pickup_mark_updated", {
-        order_reference: updatedRow.order_reference,
-        patient_name: updatedRow.patient_name,
-        row_id: updatedRow.id,
-        picked_at: updatedRow.scraped_at || pickedAt,
-      });
+      const results: RepairResult[] = [];
+
+      for (const token of tokens) {
+        const matchingRows = rows.filter((row) => tokenMatchesRow(token, row));
+        const pendingRow = pendingRows.find((row) => tokenMatchesRow(token, row));
+
+        if (!pendingRow) {
+          results.push({
+            order_reference: token,
+            status: matchingRows.length ? "already_picked" : "not_found",
+            message: matchingRows.length
+              ? "Diese Bestellung ist schon markiert oder nicht mehr offen."
+              : "Diese Bestellung wurde nicht gefunden.",
+          });
+          continue;
+        }
+
+        try {
+          logRepairEvent("manual_repair_pickup_mark_about_to_update", {
+            order_reference: pendingRow.order_reference,
+            patient_name: pendingRow.patient_name,
+            row_id: pendingRow.id,
+            picked_at: pickedAt,
+          });
+          const updatedRow = await patchRepairRow(pendingRow, pickedAt);
+          logRepairEvent("manual_repair_pickup_mark_updated", {
+            order_reference: updatedRow.order_reference,
+            patient_name: updatedRow.patient_name,
+            row_id: updatedRow.id,
+            picked_at: updatedRow.scraped_at || pickedAt,
+          });
+
+          results.push({
+            order_reference: updatedRow.order_reference,
+            status: "picked",
+            message: "Manuell als abgeholt gespeichert.",
+            picked_at: updatedRow.scraped_at || pickedAt,
+            order: updatedRow,
+          });
+        } catch (error) {
+          results.push({
+            order_reference: pendingRow.order_reference,
+            status: "error",
+            message: error instanceof Error ? error.message : "Bestellung konnte nicht markiert werden.",
+          });
+        }
+      }
 
       return NextResponse.json({
         ok: true,
-        status: "picked",
+        status: "completed",
         picked_at: pickedAt,
-        order: updatedRow,
+        picked: results.filter((result) => result.status === "picked").length,
+        skipped: results.filter((result) => ["already_picked", "not_found"].includes(result.status)).length,
+        errors: results.filter((result) => result.status === "error").length,
+        results,
         table: supabaseTableName(),
         schema: supabaseSchema(),
       });

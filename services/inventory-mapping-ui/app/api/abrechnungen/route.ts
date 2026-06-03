@@ -70,6 +70,26 @@ type BatchRow = {
   created_at: string | null;
 };
 
+type StockDispatchRow = {
+  id: string;
+  abrechnung_id: string;
+  product_line_id: string;
+  batch_id: string;
+  platform: string | null;
+  platform_product_name: string | null;
+  wawican_kultivar: string | null;
+  rechnungsnummer: string | null;
+  source_product_name: string | null;
+  chargennummer: string | null;
+  expiry_date: string | null;
+  quantity_g: number | string | null;
+  netto_per_g: number | string | null;
+  brutto_per_g: number | string | null;
+  total_netto: number | string | null;
+  total_brutto: number | string | null;
+  created_at: string | null;
+};
+
 function requiredEnv(name: string) {
   const value = process.env[name];
 
@@ -223,6 +243,34 @@ function inFilter(values: string[]) {
   return `in.(${values.join(",")})`;
 }
 
+function stockDispatchesTable() {
+  return tableName("SUPABASE_ABRECHNUNG_STOCK_DISPATCHES_TABLE", "abrechnung_stock_dispatches");
+}
+
+async function fetchStockDispatches(batchIds: string[]) {
+  if (!batchIds.length) return [];
+
+  const url = new URL(restUrl(stockDispatchesTable()));
+  url.searchParams.set(
+    "select",
+    "id,abrechnung_id,product_line_id,batch_id,platform,platform_product_name,wawican_kultivar,rechnungsnummer,source_product_name,chargennummer,expiry_date,quantity_g,netto_per_g,brutto_per_g,total_netto,total_brutto,created_at"
+  );
+  url.searchParams.set("batch_id", inFilter(batchIds));
+  url.searchParams.set("order", "created_at.asc");
+  url.searchParams.set("limit", "5000");
+
+  try {
+    return await fetchJson<StockDispatchRow[]>(url);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("42P01") || message.toLowerCase().includes("does not exist")) {
+      return [];
+    }
+
+    throw error;
+  }
+}
+
 function matchesQuery(abrechnung: ReturnType<typeof buildAbrechnung>, terms: string[]) {
   if (!terms.length) return true;
 
@@ -253,7 +301,8 @@ function buildAbrechnung(
   row: AbrechnungRow,
   documents: DocumentRow[],
   lines: ProductLineRow[],
-  batchesByLineId: Map<string, BatchRow[]>
+  batchesByLineId: Map<string, BatchRow[]>,
+  stockDispatchesByBatchId: Map<string, StockDispatchRow[]>
 ) {
   const rawAi = jsonRecord(row.raw_ai_output);
   const rawInvoice = jsonRecord(rawAi.invoice);
@@ -281,6 +330,25 @@ function buildAbrechnung(
           unitWeightG: numberValue(rawBatch.unit_weight_g),
           totalQuantityG: numberValue(rawBatch.total_quantity_g) ?? numberValue(batch.quantity),
           aiConfidence: numberValue(batch.ai_confidence),
+          stockDispatches: (stockDispatchesByBatchId.get(batch.id) || []).map((dispatch) => ({
+            id: dispatch.id,
+            abrechnungId: dispatch.abrechnung_id,
+            productLineId: dispatch.product_line_id,
+            batchId: dispatch.batch_id,
+            platform: stringValue(dispatch.platform),
+            platformProductName: stringValue(dispatch.platform_product_name),
+            wawicanKultivar: stringValue(dispatch.wawican_kultivar),
+            rechnungsnummer: stringValue(dispatch.rechnungsnummer),
+            sourceProductName: stringValue(dispatch.source_product_name),
+            chargennummer: stringValue(dispatch.chargennummer),
+            expiryDate: stringValue(dispatch.expiry_date),
+            quantityG: numberValue(dispatch.quantity_g),
+            nettoPerGram: numberValue(dispatch.netto_per_g),
+            bruttoPerGram: numberValue(dispatch.brutto_per_g),
+            totalNetto: numberValue(dispatch.total_netto),
+            totalBrutto: numberValue(dispatch.total_brutto),
+            createdAt: stringValue(dispatch.created_at),
+          })),
         };
       });
 
@@ -367,6 +435,7 @@ function buildAbrechnung(
         unitWeightG: numberValue(batch.unit_weight_g),
         totalQuantityG: numberValue(batch.total_quantity_g),
         aiConfidence: null,
+        stockDispatches: [],
       })),
     })),
   };
@@ -424,9 +493,12 @@ export async function GET(request: Request) {
       batches = await fetchJson<BatchRow[]>(batchesUrl);
     }
 
+    const stockDispatches = await fetchStockDispatches(uniqueValues(batches.map((batch) => batch.id)));
+
     const documentsByAbrechnungId = new Map<string, DocumentRow[]>();
     const linesByAbrechnungId = new Map<string, ProductLineRow[]>();
     const batchesByLineId = new Map<string, BatchRow[]>();
+    const stockDispatchesByBatchId = new Map<string, StockDispatchRow[]>();
 
     for (const document of documents) {
       const current = documentsByAbrechnungId.get(document.abrechnung_id) || [];
@@ -446,8 +518,14 @@ export async function GET(request: Request) {
       batchesByLineId.set(batch.product_line_id, current);
     }
 
+    for (const dispatch of stockDispatches) {
+      const current = stockDispatchesByBatchId.get(dispatch.batch_id) || [];
+      current.push(dispatch);
+      stockDispatchesByBatchId.set(dispatch.batch_id, current);
+    }
+
     const abrechnungen = rows
-      .map((row) => buildAbrechnung(row, documentsByAbrechnungId.get(row.id) || [], linesByAbrechnungId.get(row.id) || [], batchesByLineId))
+      .map((row) => buildAbrechnung(row, documentsByAbrechnungId.get(row.id) || [], linesByAbrechnungId.get(row.id) || [], batchesByLineId, stockDispatchesByBatchId))
       .filter((abrechnung) => matchesQuery(abrechnung, terms));
 
     return NextResponse.json({

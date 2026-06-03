@@ -29,6 +29,27 @@ type Batch = {
   unitWeightG: number | null;
   totalQuantityG: number | null;
   aiConfidence: number | null;
+  stockDispatches: StockDispatch[];
+};
+
+type StockDispatch = {
+  id: string;
+  abrechnungId: string;
+  productLineId: string;
+  batchId: string;
+  platform: string;
+  platformProductName: string;
+  wawicanKultivar: string;
+  rechnungsnummer: string;
+  sourceProductName: string;
+  chargennummer: string;
+  expiryDate: string;
+  quantityG: number | null;
+  nettoPerGram: number | null;
+  bruttoPerGram: number | null;
+  totalNetto: number | null;
+  totalBrutto: number | null;
+  createdAt: string;
 };
 
 type ProductLine = {
@@ -123,6 +144,15 @@ type ProductsResponse = {
   ok?: boolean;
   error?: string;
   products?: ProductMapping[];
+};
+
+type StockDispatchResponse = {
+  ok?: boolean;
+  error?: string;
+  dispatch?: StockDispatch;
+  available?: number;
+  alreadySent?: number;
+  remaining?: number;
 };
 
 type StockUploadTarget = {
@@ -426,6 +456,21 @@ function calculatedBatchTotal(batchGrams: number | null, pricePerGram: number | 
   return batchGrams * pricePerGram;
 }
 
+function dispatchedGrams(dispatches: StockDispatch[]) {
+  return dispatches.reduce((sum, dispatch) => sum + (dispatch.quantityG || 0), 0);
+}
+
+function batchRemainingGrams(batch: Batch | null | undefined, availableGrams: number) {
+  if (!batch) return Math.max(0, availableGrams);
+  return Math.max(0, availableGrams - dispatchedGrams(batch.stockDispatches || []));
+}
+
+function platformLabel(platform: string) {
+  if (platform === "doktorabc") return "DoktorABC";
+  if (platform === "wawican") return "Wawican";
+  return platform || "Plattform";
+}
+
 function initialStockUploadForm(target: StockUploadTarget, products: ProductMapping[]): StockUploadForm {
   const batchGrams = batchTotalGrams(target.batch);
   const nettoPerGram = calculatePricePerGram(target.product, "netto");
@@ -472,6 +517,8 @@ export function AbrechnungenApp() {
   const [stockUploadTarget, setStockUploadTarget] = useState<StockUploadTarget | null>(null);
   const [stockUploadForm, setStockUploadForm] = useState<StockUploadForm>(emptyStockUploadForm);
   const [stockUploadNotice, setStockUploadNotice] = useState("");
+  const [stockUploadError, setStockUploadError] = useState("");
+  const [stockSendingPlatform, setStockSendingPlatform] = useState<"doktorabc" | "wawican" | "">("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const doktorabcOptions = uniqueProductOptions(productMappings, "doktorabc");
@@ -487,20 +534,33 @@ export function AbrechnungenApp() {
   const selectedDoktorabcOption = findDoktorabcOption(doktorabcOptions, stockUploadForm.doktorabcName);
   const selectedWawicanOption = findWawicanOption(wawicanOptions, stockUploadForm.wawicanName, stockUploadForm.wawicanKultivar);
   const stockAvailableGrams = stockAmount(stockUploadForm.availableGrams);
+  const stockHistory = stockUploadTarget?.batch.stockDispatches || [];
+  const stockAlreadySentGrams = dispatchedGrams(stockHistory);
+  const stockRemainingGrams = batchRemainingGrams(stockUploadTarget?.batch, stockAvailableGrams);
   const stockDoktorabcGrams = stockAmount(stockUploadForm.doktorabcGrams);
   const stockWawicanGrams = stockAmount(stockUploadForm.wawicanGrams);
   const stockAllocatedGrams = stockDoktorabcGrams + stockWawicanGrams;
-  const stockAllocationDiff = stockAvailableGrams - stockAllocatedGrams;
+  const stockAllocationDiff = stockRemainingGrams - stockAllocatedGrams;
   const stockDoktorabcNeedsProduct = stockDoktorabcGrams > 0;
   const stockWawicanNeedsProduct = stockWawicanGrams > 0;
+  const stockDoktorabcOverRemaining = stockDoktorabcGrams > stockRemainingGrams + 0.01;
+  const stockWawicanOverRemaining = stockWawicanGrams > stockRemainingGrams + 0.01;
   const stockOptionId = stockUploadTarget?.batch.id.replace(/[^a-zA-Z0-9_-]/g, "") || "stock-upload";
-  const stockCanPrepare = Boolean(
+  const stockCanSendDoktorabc = Boolean(
     stockUploadTarget &&
       stockAvailableGrams > 0 &&
-      stockAllocatedGrams > 0 &&
-      Math.abs(stockAllocationDiff) <= 0.01 &&
-      (!stockDoktorabcNeedsProduct || selectedDoktorabcOption) &&
-      (!stockWawicanNeedsProduct || selectedWawicanOption)
+      stockRemainingGrams > 0 &&
+      stockDoktorabcGrams > 0 &&
+      !stockDoktorabcOverRemaining &&
+      selectedDoktorabcOption
+  );
+  const stockCanSendWawican = Boolean(
+    stockUploadTarget &&
+      stockAvailableGrams > 0 &&
+      stockRemainingGrams > 0 &&
+      stockWawicanGrams > 0 &&
+      !stockWawicanOverRemaining &&
+      selectedWawicanOption
   );
 
   const resetReviewForm = () => {
@@ -527,16 +587,22 @@ export function AbrechnungenApp() {
     setStockUploadTarget(target);
     setStockUploadForm(initialStockUploadForm(target, productMappings));
     setStockUploadNotice("");
+    setStockUploadError("");
+    setStockSendingPlatform("");
   };
 
   const closeStockUploadDialog = () => {
+    if (stockSendingPlatform) return;
     setStockUploadTarget(null);
     setStockUploadForm(emptyStockUploadForm);
     setStockUploadNotice("");
+    setStockUploadError("");
+    setStockSendingPlatform("");
   };
 
   const updateStockUploadField = (field: keyof StockUploadForm, value: string) => {
     setStockUploadNotice("");
+    setStockUploadError("");
     setStockUploadForm((current) => {
       const next = {
         ...current,
@@ -562,8 +628,9 @@ export function AbrechnungenApp() {
 
   const updateStockAllocation = (platform: "doktorabc" | "wawican", unit: "grams" | "percent", value: string) => {
     setStockUploadNotice("");
+    setStockUploadError("");
     setStockUploadForm((current) => {
-      const available = stockAmount(current.availableGrams);
+      const available = batchRemainingGrams(stockUploadTarget?.batch, stockAmount(current.availableGrams));
       const parsed = parseDecimalInput(value);
       const ownGrams = parsed === null ? null : unit === "percent" ? (available * clamp(parsed, 0, 100)) / 100 : clamp(parsed, 0, available);
 
@@ -598,12 +665,116 @@ export function AbrechnungenApp() {
     });
   };
 
-  const prepareStockUpload = () => {
-    if (!stockUploadTarget || !stockCanPrepare) return;
-
-    setStockUploadNotice(
-      `Bereit: ${formatNumber(stockDoktorabcGrams, " g")} DoktorABC, ${formatNumber(stockWawicanGrams, " g")} Wawican. Der Bot ist noch nicht verbunden.`
+  const appendStockDispatch = (dispatch: StockDispatch) => {
+    setAbrechnungen((current) =>
+      current.map((abrechnung) =>
+        abrechnung.id !== dispatch.abrechnungId
+          ? abrechnung
+          : {
+              ...abrechnung,
+              products: abrechnung.products.map((product) =>
+                product.id !== dispatch.productLineId
+                  ? product
+                  : {
+                      ...product,
+                      batches: product.batches.map((batch) =>
+                        batch.id === dispatch.batchId
+                          ? {
+                              ...batch,
+                              stockDispatches: [...(batch.stockDispatches || []), dispatch],
+                            }
+                          : batch
+                      ),
+                    }
+              ),
+            }
+      )
     );
+
+    setStockUploadTarget((current) =>
+      current && current.batch.id === dispatch.batchId
+        ? {
+            ...current,
+            batch: {
+              ...current.batch,
+              stockDispatches: [...(current.batch.stockDispatches || []), dispatch],
+            },
+          }
+        : current
+    );
+  };
+
+  const sendStockDispatch = async (platform: "doktorabc" | "wawican") => {
+    if (!stockUploadTarget || stockSendingPlatform) return;
+
+    const quantityG = platform === "doktorabc" ? stockDoktorabcGrams : stockWawicanGrams;
+    const selectedOption = platform === "doktorabc" ? selectedDoktorabcOption : selectedWawicanOption;
+
+    setStockUploadNotice("");
+    setStockUploadError("");
+
+    if (quantityG <= 0) {
+      setStockUploadError(`Bitte Gramm fuer ${platformLabel(platform)} eintragen.`);
+      return;
+    }
+
+    if (quantityG > stockRemainingGrams + 0.01) {
+      setStockUploadError(`Zu viel: Es sind nur noch ${formatNumber(stockRemainingGrams, " g")} offen.`);
+      return;
+    }
+
+    if (!selectedOption) {
+      setStockUploadError(platform === "doktorabc" ? "Bitte ein echtes DoktorABC Produkt auswaehlen." : "Bitte echten Wawican Name und Kultivar auswaehlen.");
+      return;
+    }
+
+    setStockSendingPlatform(platform);
+
+    try {
+      const platformProductName = platform === "doktorabc" ? selectedOption.doktorabcName : selectedOption.wawicanName;
+      const nettoPerGramValue = parseDecimalInput(stockUploadForm.nettoPerGram);
+      const bruttoPerGramValue = parseDecimalInput(stockUploadForm.bruttoPerGram);
+      const response = await fetch("/api/abrechnungen/stock-dispatches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          abrechnungId: stockUploadTarget.abrechnung.id,
+          productLineId: stockUploadTarget.product.id,
+          batchId: stockUploadTarget.batch.id,
+          platform,
+          platformProductName,
+          wawicanKultivar: platform === "wawican" ? selectedOption.kultivar : "",
+          rechnungsnummer: stockUploadForm.rechnungsnummer,
+          sourceProductName: stockUploadForm.productName,
+          chargennummer: stockUploadForm.chargeNumber,
+          expiryDate: stockUploadForm.expiryDate,
+          quantityG,
+          nettoPerGram: stockUploadForm.nettoPerGram,
+          bruttoPerGram: stockUploadForm.bruttoPerGram,
+          totalNetto: nettoPerGramValue === null ? "" : formatStockInput(quantityG * nettoPerGramValue, 2),
+          totalBrutto: bruttoPerGramValue === null ? "" : formatStockInput(quantityG * bruttoPerGramValue, 2),
+        }),
+      });
+      const payload = (await response.json()) as StockDispatchResponse;
+
+      if (!response.ok || !payload.ok || !payload.dispatch) {
+        throw new Error(payload.error || `Bestand konnte nicht gespeichert werden (${response.status}).`);
+      }
+
+      appendStockDispatch(payload.dispatch);
+      setStockUploadForm((current) => ({
+        ...current,
+        doktorabcGrams: "",
+        doktorabcPercent: "",
+        wawicanGrams: "",
+        wawicanPercent: "",
+      }));
+      setStockUploadNotice(`${formatNumber(quantityG, " g")} fuer ${platformLabel(platform)} gespeichert. Bot-Anbindung ist noch nicht aktiv.`);
+    } catch (requestError) {
+      setStockUploadError(requestError instanceof Error ? requestError.message : "Bestand konnte nicht gespeichert werden.");
+    } finally {
+      setStockSendingPlatform("");
+    }
   };
 
   const toggleReviewIssue = (issueType: ReviewIssue) => {
@@ -1049,6 +1220,7 @@ export function AbrechnungenApp() {
                   </label>
                 </div>
                 {stockDoktorabcNeedsProduct && !selectedDoktorabcOption ? <p className="stock-field-warning">Bitte ein echtes DoktorABC Produkt auswählen.</p> : null}
+                {stockDoktorabcOverRemaining ? <p className="stock-field-warning">Maximal noch {formatNumber(stockRemainingGrams, " g")} offen.</p> : null}
               </section>
 
               <section className="stock-platform-panel">
@@ -1082,6 +1254,7 @@ export function AbrechnungenApp() {
                   </label>
                 </div>
                 {stockWawicanNeedsProduct && !selectedWawicanOption ? <p className="stock-field-warning">Bitte echten Wawican Name und Kultivar auswählen.</p> : null}
+                {stockWawicanOverRemaining ? <p className="stock-field-warning">Maximal noch {formatNumber(stockRemainingGrams, " g")} offen.</p> : null}
               </section>
             </div>
 
@@ -1103,8 +1276,16 @@ export function AbrechnungenApp() {
 
             <div className="stock-payload-preview">
               <div>
-                <span>Verfügbar</span>
+                <span>Gesamt</span>
                 <strong>{formatNumber(stockAvailableGrams, " g")}</strong>
+              </div>
+              <div>
+                <span>Bereits gesendet</span>
+                <strong>{formatNumber(stockAlreadySentGrams, " g")}</strong>
+              </div>
+              <div>
+                <span>Noch offen</span>
+                <strong>{formatNumber(stockRemainingGrams, " g")}</strong>
               </div>
               <div>
                 <span>DoktorABC</span>
@@ -1120,19 +1301,49 @@ export function AbrechnungenApp() {
               </div>
             </div>
 
+            {stockHistory.length ? (
+              <section className="stock-history-panel">
+                <h3>Bisher gesendet</h3>
+                <div className="stock-history-list">
+                  {stockHistory.map((dispatch) => (
+                    <div className="stock-history-row" key={dispatch.id}>
+                      <strong>{platformLabel(dispatch.platform)}</strong>
+                      <span>{displayValue(dispatch.platformProductName)}</span>
+                      {dispatch.wawicanKultivar ? <span>Kultivar {dispatch.wawicanKultivar}</span> : null}
+                      <span>Charge {displayValue(dispatch.chargennummer)}</span>
+                      <b>{formatNumber(dispatch.quantityG, " g")}</b>
+                      <small>{formatDateTime(dispatch.createdAt)}</small>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : (
+              <section className="stock-history-panel muted">
+                <h3>Bisher gesendet</h3>
+                <p>Noch kein Bestand fuer diese Charge gespeichert.</p>
+              </section>
+            )}
+
             {stockAllocatedGrams > 0 && Math.abs(stockAllocationDiff) > 0.01 ? (
-              <div className="modal-error">Die Gramm-Aufteilung muss genau zur verfügbaren Menge passen.</div>
+              <div className="modal-error">Die Gramm-Aufteilung muss genau zur noch offenen Menge passen.</div>
             ) : null}
+            {stockUploadError ? <div className="modal-error">{stockUploadError}</div> : null}
             {stockUploadNotice ? <div className="create-note success">{stockUploadNotice}</div> : null}
 
             <div className="modal-actions">
-              <button className="secondary-action" type="button" onClick={closeStockUploadDialog}>
+              <button className="secondary-action" type="button" onClick={closeStockUploadDialog} disabled={Boolean(stockSendingPlatform)}>
                 Abbrechen
               </button>
-              <button className="save-action" type="button" onClick={prepareStockUpload} disabled={!stockCanPrepare}>
-                <Send size={18} />
-                Payload vorbereiten
-              </button>
+              <div className="stock-send-actions">
+                <button className="save-action" type="button" onClick={() => sendStockDispatch("doktorabc")} disabled={!stockCanSendDoktorabc || Boolean(stockSendingPlatform)}>
+                  {stockSendingPlatform === "doktorabc" ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+                  An DoktorABC speichern
+                </button>
+                <button className="save-action" type="button" onClick={() => sendStockDispatch("wawican")} disabled={!stockCanSendWawican || Boolean(stockSendingPlatform)}>
+                  {stockSendingPlatform === "wawican" ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+                  An Wawican speichern
+                </button>
+              </div>
             </div>
           </section>
         </div>

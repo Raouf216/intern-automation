@@ -794,13 +794,13 @@ def fill_custom_amount(page, quantity_text):
     log_event("custom_amount_about_to_fill", quantity_grams=quantity_text)
     spinbutton_locator.fill(quantity_text, timeout=10_000)
     page.wait_for_timeout(500)
-    filled_value = spinbutton_locator.get_attribute("value", timeout=5_000)
+    filled_value = spinbutton_locator.input_value(timeout=5_000)
     if filled_value != quantity_text:
         spinbutton_locator.click(timeout=5_000)
         spinbutton_locator.press("Control+A", timeout=5_000)
         spinbutton_locator.type(quantity_text, timeout=10_000)
         page.wait_for_timeout(500)
-        filled_value = spinbutton_locator.get_attribute("value", timeout=5_000)
+        filled_value = spinbutton_locator.input_value(timeout=5_000)
 
     if filled_value != quantity_text:
         screenshot_path = capture_failure_screenshot(page, "custom-amount-fill-failed")

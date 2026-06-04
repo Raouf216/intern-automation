@@ -153,6 +153,7 @@ type StockDispatchResponse = {
   ok?: boolean;
   error?: string;
   dispatch?: StockDispatch;
+  botColumnsPersisted?: boolean;
   available?: number;
   alreadySent?: number;
   remaining?: number;
@@ -765,6 +766,10 @@ export function AbrechnungenApp() {
 
       if (!response.ok || !payload.ok || !payload.dispatch) {
         throw new Error(payload.error || `Bestand konnte nicht gespeichert werden (${response.status}).`);
+      }
+
+      if (platform === "doktorabc" && payload.botColumnsPersisted === false) {
+        throw new Error("Screenshot wurde nicht in Supabase gespeichert. Bitte SQL fuer bot_screenshot_url ausfuehren.");
       }
 
       appendStockDispatch(payload.dispatch);

@@ -260,9 +260,15 @@ async function callSendDoktorabcBot(productName: string, quantityG: number) {
       throw new Error(payload.error || `DoktorABC bot failed (${response.status}).`);
     }
 
+    const screenshotUrl = bestScreenshotUrl(payload);
+
+    if (!screenshotUrl) {
+      throw new Error("DoktorABC bot prepared the modal but did not return a screenshot URL.");
+    }
+
     return {
       status: "prepared",
-      screenshotUrl: bestScreenshotUrl(payload),
+      screenshotUrl,
       response: payload,
     };
   } catch (error) {
@@ -276,15 +282,10 @@ async function callSendDoktorabcBot(productName: string, quantityG: number) {
   }
 }
 
-function isMissingBotColumnError(status: number, detail: string) {
-  const normalized = detail.toLowerCase();
-  return status === 400 && (normalized.includes("bot_status") || normalized.includes("bot_screenshot_url") || normalized.includes("bot_response") || normalized.includes("bot_error"));
-}
-
 async function insertStockDispatch(insertPayload: JsonRecord, botFields: JsonRecord) {
   const withBotFields = Object.keys(botFields).length ? { ...insertPayload, ...botFields } : insertPayload;
 
-  let response = await fetch(restUrl(stockDispatchesTable()), {
+  const response = await fetch(restUrl(stockDispatchesTable()), {
     method: "POST",
     headers: supabaseHeaders("return=representation"),
     body: JSON.stringify(withBotFields),
@@ -293,29 +294,11 @@ async function insertStockDispatch(insertPayload: JsonRecord, botFields: JsonRec
 
   if (!response.ok) {
     const detail = await response.text();
-
-    if (Object.keys(botFields).length && isMissingBotColumnError(response.status, detail)) {
-      response = await fetch(restUrl(stockDispatchesTable()), {
-        method: "POST",
-        headers: supabaseHeaders("return=representation"),
-        body: JSON.stringify(insertPayload),
-        cache: "no-store",
-      });
-
-      if (!response.ok) {
-        const retryDetail = await response.text();
-        throw new Error(`Supabase stock dispatch insert failed (${response.status}): ${retryDetail}`);
-      }
-
-      const rows = (await response.json()) as StockDispatchRow[];
-      return { row: rows[0], botColumnsPersisted: false };
-    }
-
     throw new Error(`Supabase stock dispatch insert failed (${response.status}): ${detail}`);
   }
 
   const rows = (await response.json()) as StockDispatchRow[];
-  return { row: rows[0], botColumnsPersisted: true };
+  return rows[0];
 }
 
 export async function POST(request: Request) {
@@ -397,9 +380,9 @@ export async function POST(request: Request) {
           bot_error: null,
         }
       : {};
-    const insertResult = await insertStockDispatch(insertPayload, botFields);
+    const row = await insertStockDispatch(insertPayload, botFields);
     const dispatch = {
-      ...dispatchResponse(insertResult.row),
+      ...dispatchResponse(row),
       ...(botResult
         ? {
             botStatus: botResult.status,
@@ -412,7 +395,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       dispatch,
-      botColumnsPersisted: insertResult.botColumnsPersisted,
+      botColumnsPersisted: true,
       available,
       alreadySent: alreadySent + quantityG,
       remaining: Math.max(0, available - alreadySent - quantityG),

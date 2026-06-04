@@ -45,6 +45,12 @@ type SendDoktorabcBotResponse = {
   }>;
 };
 
+type PersistScreenshotInput = {
+  screenshotUrl: string;
+  abrechnungId: string;
+  batchId: string;
+};
+
 function requiredEnv(name: string) {
   const value = process.env[name];
 
@@ -83,12 +89,36 @@ function supabaseHeaders(prefer?: string) {
   };
 }
 
+function supabaseStorageHeaders(extra?: Record<string, string>) {
+  const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+  return {
+    apikey: serviceRoleKey,
+    Authorization: `Bearer ${serviceRoleKey}`,
+    ...(extra || {}),
+  };
+}
+
 function tableName(envName: string, fallback: string) {
   return (process.env[envName] || fallback).trim() || fallback;
 }
 
 function restUrl(table: string) {
   return `${supabaseUrl()}/rest/v1/${encodeURIComponent(table)}`;
+}
+
+function storageBucket() {
+  return (process.env.SUPABASE_STOCK_SCREENSHOTS_BUCKET || "abrechnung-stock-screenshots").trim() || "abrechnung-stock-screenshots";
+}
+
+function storageObjectUrl(bucket: string, objectPath: string) {
+  const encodedPath = objectPath.split("/").map(encodeURIComponent).join("/");
+  return `${supabaseUrl()}/storage/v1/object/${encodeURIComponent(bucket)}/${encodedPath}`;
+}
+
+function stockScreenshotRoute(bucket: string, objectPath: string) {
+  const encodedPath = [bucket, ...objectPath.split("/")].map(encodeURIComponent).join("/");
+  return `/api/abrechnungen/stock-screenshots/${encodedPath}`;
 }
 
 function textValue(value: unknown) {
@@ -223,6 +253,88 @@ function bestScreenshotUrl(payload: SendDoktorabcBotResponse) {
   return textValue(payload.screenshot_url) || textValue(payload.screenshots?.at(-1)?.url) || textValue(payload.screenshots?.[0]?.url);
 }
 
+async function ensureStockScreenshotBucket(bucket: string) {
+  const detailsResponse = await fetch(`${supabaseUrl()}/storage/v1/bucket/${encodeURIComponent(bucket)}`, {
+    method: "HEAD",
+    headers: supabaseStorageHeaders(),
+    cache: "no-store",
+  });
+
+  if (detailsResponse.ok) return;
+
+  if (detailsResponse.status !== 404 && detailsResponse.status !== 400) {
+    const detail = await detailsResponse.text();
+    throw new Error(`Supabase screenshot bucket lookup failed (${detailsResponse.status}): ${detail}`);
+  }
+
+  const createResponse = await fetch(`${supabaseUrl()}/storage/v1/bucket`, {
+    method: "POST",
+    headers: supabaseStorageHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      id: bucket,
+      name: bucket,
+      public: false,
+      file_size_limit: 10_000_000,
+      allowed_mime_types: ["image/png", "image/jpeg", "image/webp"],
+    }),
+    cache: "no-store",
+  });
+
+  if (createResponse.ok) return;
+
+  const detail = await createResponse.text();
+  const normalized = detail.toLowerCase();
+  if (createResponse.status === 400 && (normalized.includes("already") || normalized.includes("duplicate"))) return;
+
+  throw new Error(`Supabase screenshot bucket create failed (${createResponse.status}): ${detail}`);
+}
+
+async function persistScreenshotProof({ screenshotUrl, abrechnungId, batchId }: PersistScreenshotInput) {
+  const sourceResponse = await fetch(screenshotUrl, { cache: "no-store" });
+
+  if (!sourceResponse.ok) {
+    const detail = await sourceResponse.text().catch(() => "");
+    throw new Error(`DoktorABC screenshot download failed (${sourceResponse.status}): ${detail}`);
+  }
+
+  const contentType = sourceResponse.headers.get("content-type") || "image/png";
+  if (!contentType.toLowerCase().startsWith("image/")) {
+    throw new Error(`DoktorABC screenshot has invalid content type: ${contentType}`);
+  }
+
+  const imageBytes = await sourceResponse.arrayBuffer();
+  if (!imageBytes.byteLength) {
+    throw new Error("DoktorABC screenshot download was empty.");
+  }
+
+  if (imageBytes.byteLength > 10_000_000) {
+    throw new Error("DoktorABC screenshot is larger than 10 MB.");
+  }
+
+  const bucket = storageBucket();
+  await ensureStockScreenshotBucket(bucket);
+
+  const extension = contentType.includes("jpeg") || contentType.includes("jpg") ? "jpg" : contentType.includes("webp") ? "webp" : "png";
+  const day = new Date().toISOString().slice(0, 10);
+  const objectPath = `doktorabc/${day}/${abrechnungId}/${batchId}/${crypto.randomUUID()}.${extension}`;
+  const uploadResponse = await fetch(storageObjectUrl(bucket, objectPath), {
+    method: "POST",
+    headers: supabaseStorageHeaders({
+      "Content-Type": contentType,
+      "x-upsert": "false",
+    }),
+    body: imageBytes,
+    cache: "no-store",
+  });
+
+  if (!uploadResponse.ok) {
+    const detail = await uploadResponse.text();
+    throw new Error(`Supabase screenshot upload failed (${uploadResponse.status}): ${detail}`);
+  }
+
+  return stockScreenshotRoute(bucket, objectPath);
+}
+
 async function callSendDoktorabcBot(productName: string, quantityG: number) {
   const endpoint = sendDoktorabcEndpoint();
 
@@ -355,6 +467,13 @@ export async function POST(request: Request) {
     }
 
     const botResult = platform === "doktorabc" ? await callSendDoktorabcBot(platformProductName, quantityG) : null;
+    const persistedScreenshotUrl = botResult
+      ? await persistScreenshotProof({
+          screenshotUrl: botResult.screenshotUrl,
+          abrechnungId,
+          batchId,
+        })
+      : "";
     const insertPayload: JsonRecord = {
       abrechnung_id: abrechnungId,
       product_line_id: productLineId,
@@ -375,7 +494,7 @@ export async function POST(request: Request) {
     const botFields: JsonRecord = botResult
       ? {
           bot_status: botResult.status,
-          bot_screenshot_url: botResult.screenshotUrl || null,
+          bot_screenshot_url: persistedScreenshotUrl,
           bot_response: botResult.response,
           bot_error: null,
         }
@@ -386,7 +505,7 @@ export async function POST(request: Request) {
       ...(botResult
         ? {
             botStatus: botResult.status,
-            botScreenshotUrl: botResult.screenshotUrl,
+            botScreenshotUrl: persistedScreenshotUrl,
             botError: "",
           }
         : {}),

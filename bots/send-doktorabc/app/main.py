@@ -4,6 +4,7 @@ import re
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,6 +86,7 @@ app.add_middleware(
 
 class AddDecreasePreviewPayload(BaseModel):
     product_name: str
+    quantity_grams: str | int | float
 
 
 def log_event(event, **fields):
@@ -193,6 +195,23 @@ def capture_failure_screenshot(page, label):
     path = os.path.join(ARTIFACTS_DIR, f"send-doktorabc-{label}-{timestamp}.png")
     screenshot_path, _ = capture_optional_screenshot(page, path, label)
     return screenshot_path
+
+
+def normalize_quantity_grams(value):
+    text = str(value).strip().replace(",", ".")
+    if not text:
+        raise RuntimeError("Missing quantity_grams.")
+
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise RuntimeError(f"Invalid quantity_grams: {value!r}") from exc
+
+    if number <= 0:
+        raise RuntimeError("quantity_grams must be greater than 0.")
+
+    normalized = format(number.normalize(), "f")
+    return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
 
 
 def goto_page(page, url):
@@ -653,6 +672,127 @@ def click_add_decrease_for_exact_product(page, product_name):
     log_event("add_decrease_click_done", product_name=product_name)
 
 
+def custom_amount_state(page):
+    return page.evaluate(
+        """
+        () => {
+          const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+          const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity) !== 0 &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          };
+          const enabledInput = (element) => {
+            if (!element || !visible(element)) return false;
+            if (!["INPUT", "TEXTAREA"].includes(element.tagName)) return false;
+            if (element.disabled || element.readOnly) return false;
+            const type = (element.getAttribute("type") || "text").toLowerCase();
+            return !["hidden", "button", "submit", "reset", "checkbox", "radio"].includes(type);
+          };
+          const allInputs = Array.from(document.querySelectorAll("input, textarea"));
+          for (const input of allInputs) {
+            input.removeAttribute("data-send-doktorabc-custom-amount-input");
+          }
+
+          const textNodes = Array.from(document.querySelectorAll("label, div, span, p, h1, h2, h3, h4, h5, h6"))
+            .filter(visible)
+            .filter((element) => /custom\\s+amount\\s*:?/i.test(normalize(element.innerText || element.textContent)));
+
+          const candidates = [];
+          for (const label of textNodes) {
+            const labelFor = label.getAttribute("for");
+            if (labelFor) {
+              const byFor = document.getElementById(labelFor);
+              if (enabledInput(byFor)) candidates.push({ label, input: byFor, source: "label_for" });
+            }
+
+            let current = label;
+            for (let depth = 0; current && depth < 6; depth += 1) {
+              const inputs = Array.from(current.querySelectorAll("input, textarea")).filter(enabledInput);
+              for (const input of inputs) candidates.push({ label, input, source: `ancestor_${depth}` });
+              current = current.parentElement;
+            }
+
+            const labelRect = label.getBoundingClientRect();
+            const nearbyInputs = allInputs
+              .filter(enabledInput)
+              .map((input) => ({ input, rect: input.getBoundingClientRect() }))
+              .filter(({ rect }) => rect.top >= labelRect.top - 12 && rect.top <= labelRect.bottom + 160)
+              .sort((a, b) => Math.abs(a.rect.top - labelRect.bottom) - Math.abs(b.rect.top - labelRect.bottom));
+            for (const nearby of nearbyInputs) candidates.push({ label, input: nearby.input, source: "nearby" });
+          }
+
+          const seen = new Set();
+          const unique = candidates.filter(({ input }) => {
+            if (seen.has(input)) return false;
+            seen.add(input);
+            return true;
+          });
+          const chosen = unique[0]?.input || null;
+
+          if (chosen) {
+            chosen.setAttribute("data-send-doktorabc-custom-amount-input", "true");
+          }
+
+          const buttons = Array.from(document.querySelectorAll("button"))
+            .filter(visible)
+            .map((button) => normalize(button.innerText || button.textContent))
+            .filter(Boolean);
+
+          return {
+            ready: Boolean(chosen),
+            customAmountLabelCount: textNodes.length,
+            candidateInputCount: unique.length,
+            chosenValue: chosen ? chosen.value : null,
+            chosenPlaceholder: chosen ? chosen.getAttribute("placeholder") : null,
+            visibleButtons: buttons.slice(0, 20),
+          };
+        }
+        """
+    )
+
+
+def wait_for_custom_amount_input(page):
+    log_event("custom_amount_wait_start")
+    deadline = time.monotonic() + 20
+    last_state = None
+
+    while time.monotonic() < deadline:
+        last_state = custom_amount_state(page)
+        if last_state.get("ready"):
+            log_event("custom_amount_wait_ready", state=last_state)
+            return last_state
+        page.wait_for_timeout(300)
+
+    screenshot_path = capture_failure_screenshot(page, "custom-amount-input-timeout")
+    log_event("custom_amount_wait_timeout", screenshot_path=screenshot_path, state=last_state)
+    raise RuntimeError(
+        "Could not find the Custom Amount input after opening Add/Decrease. "
+        f"Screenshot: {screenshot_path}. Last state: {last_state}"
+    )
+
+
+def fill_custom_amount(page, quantity_text):
+    wait_for_custom_amount_input(page)
+    input_locator = page.locator('[data-send-doktorabc-custom-amount-input="true"]')
+    input_count = input_locator.count()
+    if input_count != 1:
+        raise RuntimeError(f"Expected one Custom Amount input, found {input_count}.")
+
+    log_event("custom_amount_about_to_fill", quantity_grams=quantity_text)
+    input_locator.fill(quantity_text, timeout=10_000)
+    log_event("custom_amount_fill_done", quantity_grams=quantity_text)
+    page.wait_for_timeout(500)
+    return custom_amount_state(page)
+
+
 def wait_for_products_page_usable(page, timeout_ms=PRODUCTS_READY_TIMEOUT_MS, stable_ms=PRODUCTS_STABLE_MS):
     wait_for_load_states(page)
 
@@ -855,7 +995,8 @@ def login_check(base_url):
             browser.close()
 
 
-def open_add_decrease_preview(product_name, base_url):
+def open_add_decrease_preview(product_name, quantity_grams, base_url):
+    quantity_text = normalize_quantity_grams(quantity_grams)
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     before_login_path = os.path.join(ARTIFACTS_DIR, f"send-doktorabc-before-login-{timestamp}.png")
@@ -872,9 +1013,7 @@ def open_add_decrease_preview(product_name, base_url):
             )
             clean_product_name, search_result = search_exact_product(page, product_name)
             click_add_decrease_for_exact_product(page, clean_product_name)
-
-            # Let DoktorABC render the Add/Decrease surface, but do not touch its fields.
-            page.wait_for_timeout(1_500)
+            custom_amount_result = fill_custom_amount(page, quantity_text)
             screenshot_path, screenshot_error = capture_optional_screenshot(
                 page,
                 screenshot_path,
@@ -885,6 +1024,7 @@ def open_add_decrease_preview(product_name, base_url):
                 "ok": True,
                 "current_url": page.url,
                 "product_name": clean_product_name,
+                "quantity_grams": quantity_text,
                 "reused_session": reused_session,
                 "session_state_path": SESSION_STATE_PATH,
                 "before_login_path": None if reused_session else before_login_path,
@@ -895,6 +1035,7 @@ def open_add_decrease_preview(product_name, base_url):
                 "screenshots": screenshot_entries(base_url),
                 "products_page_wait_result": wait_result,
                 "search_result": search_result,
+                "custom_amount_result": custom_amount_result,
             }
         finally:
             if context:
@@ -943,7 +1084,7 @@ def job_add_decrease_preview(payload: AddDecreasePreviewPayload, request: Reques
     base_url = public_base_url(request)
 
     try:
-        return open_add_decrease_preview(payload.product_name, base_url)
+        return open_add_decrease_preview(payload.product_name, payload.quantity_grams, base_url)
     except Exception as exc:
         return JSONResponse(
             status_code=500,

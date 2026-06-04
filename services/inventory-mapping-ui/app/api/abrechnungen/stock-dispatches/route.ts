@@ -21,6 +21,10 @@ type StockDispatchRow = {
   brutto_per_g: number | string | null;
   total_netto: number | string | null;
   total_brutto: number | string | null;
+  bot_status?: string | null;
+  bot_screenshot_url?: string | null;
+  bot_response?: unknown;
+  bot_error?: string | null;
   created_at: string | null;
 };
 
@@ -28,6 +32,17 @@ type BatchRow = {
   id: string;
   quantity: number | string | null;
   raw_batch: unknown;
+};
+
+type SendDoktorabcBotResponse = {
+  ok?: boolean;
+  error?: string;
+  screenshot_url?: string | null;
+  screenshots?: Array<{
+    filename?: string;
+    path?: string;
+    url?: string;
+  }>;
 };
 
 function requiredEnv(name: string) {
@@ -148,6 +163,9 @@ function dispatchResponse(row: StockDispatchRow) {
     bruttoPerGram: numberValue(row.brutto_per_g),
     totalNetto: numberValue(row.total_netto),
     totalBrutto: numberValue(row.total_brutto),
+    botStatus: textValue(row.bot_status),
+    botScreenshotUrl: textValue(row.bot_screenshot_url),
+    botError: textValue(row.bot_error),
     createdAt: textValue(row.created_at),
   };
 }
@@ -188,6 +206,116 @@ async function fetchAlreadySent(batchId: string) {
 
   const rows = await fetchJson<Array<{ quantity_g: number | string | null }>>(url);
   return rows.reduce((sum, row) => sum + (numberValue(row.quantity_g) || 0), 0);
+}
+
+function sendDoktorabcEndpoint() {
+  return (
+    process.env.SEND_DOKTORABC_ADD_DECREASE_ENDPOINT ||
+    process.env.SEND_DOKTORABC_ENDPOINT ||
+    process.env.DOKTORABC_SEND_BOT_ENDPOINT ||
+    ""
+  )
+    .trim()
+    .replace(/^["']|["']$/g, "");
+}
+
+function bestScreenshotUrl(payload: SendDoktorabcBotResponse) {
+  return textValue(payload.screenshot_url) || textValue(payload.screenshots?.at(-1)?.url) || textValue(payload.screenshots?.[0]?.url);
+}
+
+async function callSendDoktorabcBot(productName: string, quantityG: number) {
+  const endpoint = sendDoktorabcEndpoint();
+
+  if (!endpoint) {
+    throw new Error("Missing SEND_DOKTORABC_ADD_DECREASE_ENDPOINT for DoktorABC stock preview.");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        product_name: productName,
+        quantity_grams: String(quantityG),
+      }),
+      signal: controller.signal,
+      cache: "no-store",
+    });
+
+    const text = await response.text();
+    let payload: SendDoktorabcBotResponse = {};
+
+    if (text) {
+      try {
+        payload = JSON.parse(text) as SendDoktorabcBotResponse;
+      } catch {
+        payload = { ok: false, error: text };
+      }
+    }
+
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || `DoktorABC bot failed (${response.status}).`);
+    }
+
+    return {
+      status: "prepared",
+      screenshotUrl: bestScreenshotUrl(payload),
+      response: payload,
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("DoktorABC bot timed out before preparing the screenshot.");
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isMissingBotColumnError(status: number, detail: string) {
+  const normalized = detail.toLowerCase();
+  return status === 400 && (normalized.includes("bot_status") || normalized.includes("bot_screenshot_url") || normalized.includes("bot_response") || normalized.includes("bot_error"));
+}
+
+async function insertStockDispatch(insertPayload: JsonRecord, botFields: JsonRecord) {
+  const withBotFields = Object.keys(botFields).length ? { ...insertPayload, ...botFields } : insertPayload;
+
+  let response = await fetch(restUrl(stockDispatchesTable()), {
+    method: "POST",
+    headers: supabaseHeaders("return=representation"),
+    body: JSON.stringify(withBotFields),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+
+    if (Object.keys(botFields).length && isMissingBotColumnError(response.status, detail)) {
+      response = await fetch(restUrl(stockDispatchesTable()), {
+        method: "POST",
+        headers: supabaseHeaders("return=representation"),
+        body: JSON.stringify(insertPayload),
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        const retryDetail = await response.text();
+        throw new Error(`Supabase stock dispatch insert failed (${response.status}): ${retryDetail}`);
+      }
+
+      const rows = (await response.json()) as StockDispatchRow[];
+      return { row: rows[0], botColumnsPersisted: false };
+    }
+
+    throw new Error(`Supabase stock dispatch insert failed (${response.status}): ${detail}`);
+  }
+
+  const rows = (await response.json()) as StockDispatchRow[];
+  return { row: rows[0], botColumnsPersisted: true };
 }
 
 export async function POST(request: Request) {
@@ -243,7 +371,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const insertPayload = {
+    const botResult = platform === "doktorabc" ? await callSendDoktorabcBot(platformProductName, quantityG) : null;
+    const insertPayload: JsonRecord = {
       abrechnung_id: abrechnungId,
       product_line_id: productLineId,
       batch_id: batchId,
@@ -260,25 +389,30 @@ export async function POST(request: Request) {
       total_netto: numberValue(payload.totalNetto),
       total_brutto: numberValue(payload.totalBrutto),
     };
-
-    const response = await fetch(restUrl(stockDispatchesTable()), {
-      method: "POST",
-      headers: supabaseHeaders("return=representation"),
-      body: JSON.stringify(insertPayload),
-      cache: "no-store",
-    });
-
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`Supabase stock dispatch insert failed (${response.status}): ${detail}`);
-    }
-
-    const rows = (await response.json()) as StockDispatchRow[];
-    const dispatch = dispatchResponse(rows[0]);
+    const botFields: JsonRecord = botResult
+      ? {
+          bot_status: botResult.status,
+          bot_screenshot_url: botResult.screenshotUrl || null,
+          bot_response: botResult.response,
+          bot_error: null,
+        }
+      : {};
+    const insertResult = await insertStockDispatch(insertPayload, botFields);
+    const dispatch = {
+      ...dispatchResponse(insertResult.row),
+      ...(botResult
+        ? {
+            botStatus: botResult.status,
+            botScreenshotUrl: botResult.screenshotUrl,
+            botError: "",
+          }
+        : {}),
+    };
 
     return NextResponse.json({
       ok: true,
       dispatch,
+      botColumnsPersisted: insertResult.botColumnsPersisted,
       available,
       alreadySent: alreadySent + quantityG,
       remaining: Math.max(0, available - alreadySent - quantityG),

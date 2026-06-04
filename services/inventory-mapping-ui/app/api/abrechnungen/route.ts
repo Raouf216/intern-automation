@@ -87,6 +87,9 @@ type StockDispatchRow = {
   brutto_per_g: number | string | null;
   total_netto: number | string | null;
   total_brutto: number | string | null;
+  bot_status?: string | null;
+  bot_screenshot_url?: string | null;
+  bot_error?: string | null;
   created_at: string | null;
 };
 
@@ -251,10 +254,7 @@ async function fetchStockDispatches(batchIds: string[]) {
   if (!batchIds.length) return [];
 
   const url = new URL(restUrl(stockDispatchesTable()));
-  url.searchParams.set(
-    "select",
-    "id,abrechnung_id,product_line_id,batch_id,platform,platform_product_name,wawican_kultivar,rechnungsnummer,source_product_name,chargennummer,expiry_date,quantity_g,netto_per_g,brutto_per_g,total_netto,total_brutto,created_at"
-  );
+  url.searchParams.set("select", "*");
   url.searchParams.set("batch_id", inFilter(batchIds));
   url.searchParams.set("order", "created_at.asc");
   url.searchParams.set("limit", "5000");
@@ -347,6 +347,9 @@ function buildAbrechnung(
             bruttoPerGram: numberValue(dispatch.brutto_per_g),
             totalNetto: numberValue(dispatch.total_netto),
             totalBrutto: numberValue(dispatch.total_brutto),
+            botStatus: stringValue(dispatch.bot_status),
+            botScreenshotUrl: stringValue(dispatch.bot_screenshot_url),
+            botError: stringValue(dispatch.bot_error),
             createdAt: stringValue(dispatch.created_at),
           })),
         };

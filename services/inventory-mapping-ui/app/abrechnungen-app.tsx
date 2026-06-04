@@ -49,6 +49,9 @@ type StockDispatch = {
   bruttoPerGram: number | null;
   totalNetto: number | null;
   totalBrutto: number | null;
+  botStatus: string;
+  botScreenshotUrl: string;
+  botError: string;
   createdAt: string;
 };
 
@@ -731,7 +734,7 @@ export function AbrechnungenApp() {
     setStockSendingPlatform(platform);
 
     try {
-      const platformProductName = platform === "doktorabc" ? selectedOption.doktorabcName : selectedOption.wawicanName;
+      const platformProductName = platform === "doktorabc" ? stockUploadForm.doktorabcName.trim() : stockUploadForm.wawicanName.trim();
       const nettoPerGramValue = parseDecimalInput(stockUploadForm.nettoPerGram);
       const bruttoPerGramValue = parseDecimalInput(stockUploadForm.bruttoPerGram);
       const response = await fetch("/api/abrechnungen/stock-dispatches", {
@@ -743,7 +746,7 @@ export function AbrechnungenApp() {
           batchId: stockUploadTarget.batch.id,
           platform,
           platformProductName,
-          wawicanKultivar: platform === "wawican" ? selectedOption.kultivar : "",
+          wawicanKultivar: platform === "wawican" ? stockUploadForm.wawicanKultivar.trim() : "",
           rechnungsnummer: stockUploadForm.rechnungsnummer,
           sourceProductName: stockUploadForm.productName,
           chargennummer: stockUploadForm.chargeNumber,
@@ -769,7 +772,7 @@ export function AbrechnungenApp() {
         wawicanGrams: "",
         wawicanPercent: "",
       }));
-      setStockUploadNotice(`${formatNumber(quantityG, " g")} fuer ${platformLabel(platform)} gespeichert. Bot-Anbindung ist noch nicht aktiv.`);
+      setStockUploadNotice(`${formatNumber(quantityG, " g")} fuer ${platformLabel(platform)} gespeichert.`);
     } catch (requestError) {
       setStockUploadError(requestError instanceof Error ? requestError.message : "Bestand konnte nicht gespeichert werden.");
     } finally {
@@ -1221,6 +1224,10 @@ export function AbrechnungenApp() {
                 </div>
                 {stockDoktorabcNeedsProduct && !selectedDoktorabcOption ? <p className="stock-field-warning">Bitte ein echtes DoktorABC Produkt auswählen.</p> : null}
                 {stockDoktorabcOverRemaining ? <p className="stock-field-warning">Maximal noch {formatNumber(stockRemainingGrams, " g")} offen.</p> : null}
+                <button className="save-action stock-panel-send-action" type="button" onClick={() => sendStockDispatch("doktorabc")} disabled={!stockCanSendDoktorabc || Boolean(stockSendingPlatform)}>
+                  {stockSendingPlatform === "doktorabc" ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+                  An DoktorABC speichern
+                </button>
               </section>
 
               <section className="stock-platform-panel">
@@ -1255,6 +1262,10 @@ export function AbrechnungenApp() {
                 </div>
                 {stockWawicanNeedsProduct && !selectedWawicanOption ? <p className="stock-field-warning">Bitte echten Wawican Name und Kultivar auswählen.</p> : null}
                 {stockWawicanOverRemaining ? <p className="stock-field-warning">Maximal noch {formatNumber(stockRemainingGrams, " g")} offen.</p> : null}
+                <button className="save-action stock-panel-send-action" type="button" onClick={() => sendStockDispatch("wawican")} disabled={!stockCanSendWawican || Boolean(stockSendingPlatform)}>
+                  {stockSendingPlatform === "wawican" ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+                  An Wawican speichern
+                </button>
               </section>
             </div>
 
@@ -1313,6 +1324,14 @@ export function AbrechnungenApp() {
                       <span>Charge {displayValue(dispatch.chargennummer)}</span>
                       <b>{formatNumber(dispatch.quantityG, " g")}</b>
                       <small>{formatDateTime(dispatch.createdAt)}</small>
+                      {dispatch.botScreenshotUrl ? (
+                        <a className="stock-history-screenshot" href={dispatch.botScreenshotUrl} target="_blank" rel="noreferrer">
+                          <img src={dispatch.botScreenshotUrl} alt={`Screenshot ${platformLabel(dispatch.platform)}`} />
+                          <span>Screenshot</span>
+                        </a>
+                      ) : dispatch.botError ? (
+                        <span className="stock-history-error">{dispatch.botError}</span>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -1334,16 +1353,6 @@ export function AbrechnungenApp() {
               <button className="secondary-action" type="button" onClick={closeStockUploadDialog} disabled={Boolean(stockSendingPlatform)}>
                 Abbrechen
               </button>
-              <div className="stock-send-actions">
-                <button className="save-action" type="button" onClick={() => sendStockDispatch("doktorabc")} disabled={!stockCanSendDoktorabc || Boolean(stockSendingPlatform)}>
-                  {stockSendingPlatform === "doktorabc" ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-                  An DoktorABC speichern
-                </button>
-                <button className="save-action" type="button" onClick={() => sendStockDispatch("wawican")} disabled={!stockCanSendWawican || Boolean(stockSendingPlatform)}>
-                  {stockSendingPlatform === "wawican" ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-                  An Wawican speichern
-                </button>
-              </div>
             </div>
           </section>
         </div>

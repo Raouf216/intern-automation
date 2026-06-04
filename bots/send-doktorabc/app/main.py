@@ -781,16 +781,37 @@ def wait_for_custom_amount_input(page):
 
 def fill_custom_amount(page, quantity_text):
     wait_for_custom_amount_input(page)
-    input_locator = page.locator('[data-send-doktorabc-custom-amount-input="true"]')
-    input_count = input_locator.count()
-    if input_count != 1:
-        raise RuntimeError(f"Expected one Custom Amount input, found {input_count}.")
+    dialog_locator = page.get_by_role("dialog", name="Adjust Quantity")
+    dialog_count = dialog_locator.count()
+    if dialog_count != 1:
+        raise RuntimeError(f"Expected one Adjust Quantity dialog, found {dialog_count}.")
+
+    spinbutton_locator = dialog_locator.get_by_role("spinbutton")
+    spinbutton_count = spinbutton_locator.count()
+    if spinbutton_count != 1:
+        raise RuntimeError(f"Expected one Custom Amount spinbutton, found {spinbutton_count}.")
 
     log_event("custom_amount_about_to_fill", quantity_grams=quantity_text)
-    input_locator.fill(quantity_text, timeout=10_000)
-    log_event("custom_amount_fill_done", quantity_grams=quantity_text)
+    spinbutton_locator.fill(quantity_text, timeout=10_000)
     page.wait_for_timeout(500)
-    return custom_amount_state(page)
+    filled_value = spinbutton_locator.get_attribute("value", timeout=5_000)
+    if filled_value != quantity_text:
+        spinbutton_locator.click(timeout=5_000)
+        spinbutton_locator.press("Control+A", timeout=5_000)
+        spinbutton_locator.type(quantity_text, timeout=10_000)
+        page.wait_for_timeout(500)
+        filled_value = spinbutton_locator.get_attribute("value", timeout=5_000)
+
+    if filled_value != quantity_text:
+        screenshot_path = capture_failure_screenshot(page, "custom-amount-fill-failed")
+        raise RuntimeError(
+            "Custom Amount input did not keep the requested quantity. "
+            f"Expected {quantity_text}, got {filled_value!r}. Screenshot: {screenshot_path}"
+        )
+
+    state = custom_amount_state(page)
+    log_event("custom_amount_fill_done", quantity_grams=quantity_text, value=filled_value, state=state)
+    return state
 
 
 def wait_for_products_page_usable(page, timeout_ms=PRODUCTS_READY_TIMEOUT_MS, stable_ms=PRODUCTS_STABLE_MS):

@@ -2,11 +2,13 @@ import json
 import os
 import re
 import time
+from contextvars import ContextVar
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -55,7 +57,11 @@ WAIT_FOR_NETWORKIDLE = bool_env("SEND_DOKTORABC_WAIT_FOR_NETWORKIDLE", False)
 
 MIN_PRODUCT_CELL_COUNT = 11
 
+CURRENT_RUN_SCREENSHOTS = ContextVar("CURRENT_RUN_SCREENSHOTS", default=None)
+
+os.makedirs(ARTIFACTS_DIR, exist_ok=True)
 app = FastAPI(title="send-doktorabc")
+app.mount("/artifacts", StaticFiles(directory=ARTIFACTS_DIR), name="artifacts")
 
 CORS_ORIGINS = [
     origin.strip()
@@ -81,6 +87,47 @@ def log_event(event, **fields):
         **fields,
     }
     print(json.dumps(payload, ensure_ascii=False, default=str), flush=True)
+
+
+def public_base_url(request):
+    configured_url = os.environ.get("SEND_DOKTORABC_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if configured_url:
+        return configured_url
+
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    if not host:
+        return str(request.base_url).rstrip("/")
+
+    return f"{proto}://{host}".rstrip("/")
+
+
+def artifact_url(path, base_url):
+    if not path:
+        return None
+
+    filename = os.path.basename(path)
+    return f"{base_url}/artifacts/{filename}"
+
+
+def screenshot_entries(base_url):
+    paths = CURRENT_RUN_SCREENSHOTS.get() or []
+    entries = []
+    seen = set()
+
+    for path in paths:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        entries.append(
+            {
+                "filename": os.path.basename(path),
+                "path": path,
+                "url": artifact_url(path, base_url),
+            }
+        )
+
+    return entries
 
 
 def required_env(name):
@@ -123,6 +170,9 @@ def capture_optional_screenshot(page, path, label):
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         page.screenshot(path=path, full_page=True)
+        screenshots = CURRENT_RUN_SCREENSHOTS.get()
+        if screenshots is not None:
+            screenshots.append(path)
         log_event("screenshot_saved", label=label, path=path, url=page.url)
         return path, None
     except Exception as exc:
@@ -571,7 +621,7 @@ def open_authenticated_products_page(browser, before_login_path=None):
     return open_fresh_session(browser, target_url, before_login_path=before_login_path)
 
 
-def login_check():
+def login_check(base_url):
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     before_login_path = os.path.join(ARTIFACTS_DIR, f"send-doktorabc-before-login-{timestamp}.png")
@@ -597,8 +647,11 @@ def login_check():
                 "reused_session": reused_session,
                 "session_state_path": SESSION_STATE_PATH,
                 "before_login_path": None if reused_session else before_login_path,
+                "before_login_url": None if reused_session else artifact_url(before_login_path, base_url),
                 "ready_screenshot_path": ready_screenshot_path,
+                "ready_screenshot_url": artifact_url(ready_screenshot_path, base_url),
                 "ready_screenshot_error": ready_screenshot_error,
+                "screenshots": screenshot_entries(base_url),
                 "wait_result": wait_result,
             }
         finally:
@@ -619,16 +672,24 @@ def health():
 
 
 @app.post("/jobs/login-check")
-def job_login_check():
+def job_login_check(request: Request):
+    token = CURRENT_RUN_SCREENSHOTS.set([])
+    base_url = public_base_url(request)
     try:
-        return login_check()
+        return login_check(base_url)
     except Exception as exc:
         return JSONResponse(
             status_code=500,
-            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+            content={
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "screenshots": screenshot_entries(base_url),
+            },
         )
+    finally:
+        CURRENT_RUN_SCREENSHOTS.reset(token)
 
 
 @app.post("/jobs/open-products-page")
-def job_open_products_page():
-    return job_login_check()
+def job_open_products_page(request: Request):
+    return job_login_check(request)

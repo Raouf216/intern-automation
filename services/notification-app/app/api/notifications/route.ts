@@ -1,9 +1,17 @@
 import { NextResponse } from "next/server";
 import { listNotifications, notificationConfigStatus } from "@/lib/notifications";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const notifications = await listNotifications(120);
+    const { searchParams } = new URL(request.url);
+    const realtimeStart = searchParams.get("realtime_start");
+    const realtimeEnd = searchParams.get("realtime_end");
+    const notifications = await listNotifications({
+      limit: 120,
+      realtimeStart,
+      realtimeEnd,
+      realtimeLimit: 5000,
+    });
 
     return NextResponse.json({
       ok: true,

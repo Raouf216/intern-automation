@@ -250,17 +250,23 @@ export async function insertNotification(notification: Omit<StoredNotification, 
   return rows[0];
 }
 
-export async function listNotifications(limit = 100) {
-  if (!notificationConfigStatus().configured) {
-    return [];
+type ListNotificationsOptions = {
+  limit?: number;
+  realtimeStart?: string | null;
+  realtimeEnd?: string | null;
+  realtimeLimit?: number;
+};
+
+function isIsoDateTime(value: string | null | undefined) {
+  if (!value) {
+    return false;
   }
 
-  const url = new URL(tableUrl());
-  url.searchParams.set("select", "*");
-  url.searchParams.set("section", "neq.abrechnung_verification");
-  url.searchParams.set("order", "created_at.desc");
-  url.searchParams.set("limit", String(limit));
+  const date = new Date(value);
+  return !Number.isNaN(date.getTime());
+}
 
+async function fetchNotificationRows(url: URL) {
   const response = await fetch(url, {
     headers: supabaseHeaders(),
     cache: "no-store",
@@ -270,8 +276,55 @@ export async function listNotifications(limit = 100) {
     throw new Error(`Supabase read failed (${response.status}): ${await response.text()}`);
   }
 
-  const notifications = (await response.json()) as StoredNotification[];
-  return notifications.filter((notification) => notification.section !== "abrechnung_verification");
+  return (await response.json()) as StoredNotification[];
+}
+
+function uniqueNotifications(rows: StoredNotification[]) {
+  const seen = new Set<string>();
+  const uniqueRows: StoredNotification[] = [];
+
+  for (const row of rows) {
+    if (seen.has(row.id)) {
+      continue;
+    }
+
+    seen.add(row.id);
+    uniqueRows.push(row);
+  }
+
+  return uniqueRows.sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+}
+
+export async function listNotifications(options: number | ListNotificationsOptions = 100) {
+  if (!notificationConfigStatus().configured) {
+    return [];
+  }
+
+  const config = typeof options === "number" ? { limit: options } : options;
+  const limit = config.limit ?? 100;
+  const url = new URL(tableUrl());
+  url.searchParams.set("select", "*");
+  url.searchParams.set("section", "neq.abrechnung_verification");
+  url.searchParams.set("order", "created_at.desc");
+  url.searchParams.set("limit", String(limit));
+
+  const rows = await fetchNotificationRows(url);
+
+  if (isIsoDateTime(config.realtimeStart) && isIsoDateTime(config.realtimeEnd)) {
+    const realtimeUrl = new URL(tableUrl());
+    realtimeUrl.searchParams.set("select", "*");
+    realtimeUrl.searchParams.set("section", "eq.realtime_bot");
+    realtimeUrl.searchParams.set("created_at", `gte.${config.realtimeStart}`);
+    realtimeUrl.searchParams.append("created_at", `lt.${config.realtimeEnd}`);
+    realtimeUrl.searchParams.set("order", "created_at.desc");
+    realtimeUrl.searchParams.set("limit", String(config.realtimeLimit ?? 5000));
+
+    rows.push(...await fetchNotificationRows(realtimeUrl));
+  }
+
+  return uniqueNotifications(rows).filter((notification) => notification.section !== "abrechnung_verification");
 }
 
 function normalizeStatus(status: string | undefined, event = ""): NotificationStatus {

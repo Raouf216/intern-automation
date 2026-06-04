@@ -477,6 +477,44 @@ h3 {
   border-bottom: 1px solid var(--line);
 }
 
+.feed-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.date-picker-control {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.date-picker-control input {
+  min-width: 136px;
+  height: 26px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.date-picker-control input::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+}
+
 .section-copy {
   margin: 5px 0 0;
   color: var(--muted);
@@ -1113,6 +1151,20 @@ dd {
   .feed-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .feed-header-actions {
+    justify-content: stretch;
+  }
+
+  .date-picker-control,
+  .section-status {
+    width: 100%;
+  }
+
+  .date-picker-control input {
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .brand {

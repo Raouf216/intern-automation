@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   ArrowRight,
+  CalendarDays,
   ChevronDown,
   CheckCircle2,
   Clock3,
@@ -173,12 +174,61 @@ const sections: Array<{ label: string; value: SectionKey; description: string; c
   },
 ];
 
+function formatInputDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function todayInputDate() {
+  return formatInputDate(new Date());
+}
+
+function dateRangeForInputDate(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const start = new Date(year, month, day, 0, 0, 0, 0);
+  const end = new Date(year, month, day + 1, 0, 0, 0, 0);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return null;
+  }
+
+  return {
+    start,
+    end,
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+  };
+}
+
+function isInInputDate(value: string, selectedDate: string) {
+  const range = dateRangeForInputDate(selectedDate);
+  const date = new Date(value);
+
+  if (!range || Number.isNaN(date.getTime())) {
+    return false;
+  }
+
+  return date >= range.start && date < range.end;
+}
+
 export function NotificationDashboard({ initialNotifications, initialError }: Props) {
   const [notifications, setNotifications] = useState(initialNotifications);
   const [activeSection, setActiveSection] = useState<SectionKey>("upload");
   const [loadError, setLoadError] = useState<string | null>(initialError);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [theme, setTheme] = useState<"light" | "night">("light");
+  const [realtimeDate, setRealtimeDate] = useState(todayInputDate);
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem("notification-app-theme");
@@ -206,7 +256,15 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
       refreshInFlight = true;
 
       try {
-        const response = await fetch("/api/notifications", { cache: "no-store" });
+        const range = dateRangeForInputDate(realtimeDate);
+        const url = new URL("/api/notifications", window.location.origin);
+
+        if (range) {
+          url.searchParams.set("realtime_start", range.startIso);
+          url.searchParams.set("realtime_end", range.endIso);
+        }
+
+        const response = await fetch(url.toString(), { cache: "no-store" });
         const payload = (await response.json()) as {
           ok?: boolean;
           error?: string;
@@ -252,7 +310,7 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
       window.removeEventListener("focus", refreshWhenVisible);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, []);
+  }, [realtimeDate]);
 
   function toggleTheme() {
     const nextTheme = theme === "night" ? "light" : "night";
@@ -272,17 +330,37 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
 
       return sections.reduce(
         (counts, section) => {
-          counts[section.value] = displayNotifications.filter((notification) => notification.section === section.value).length;
+          counts[section.value] = displayNotifications.filter((notification) => {
+            if (notification.section !== section.value) {
+              return false;
+            }
+
+            if (section.value !== "realtime_bot") {
+              return true;
+            }
+
+            return isInInputDate(notification.created_at, realtimeDate);
+          }).length;
           return counts;
         },
         { upload: 0, doktorabc_sync: 0, check_bot: 0, realtime_bot: 0 } as Record<SectionKey, number>
       );
     },
-    [notifications]
+    [notifications, realtimeDate]
   );
 
   const displayNotifications = notifications.filter((notification) => !isNoisyUploadPlaceholder(notification));
-  const visibleNotifications = displayNotifications.filter((notification) => notification.section === activeSection);
+  const visibleNotifications = displayNotifications.filter((notification) => {
+    if (notification.section !== activeSection) {
+      return false;
+    }
+
+    if (activeSection !== "realtime_bot") {
+      return true;
+    }
+
+    return isInInputDate(notification.created_at, realtimeDate);
+  });
   const uploadNotifications = displayNotifications.filter((notification) => notification.section === "upload");
   const successCount = uploadNotifications.filter((notification) => notification.status === "success").length;
   const failureCount = uploadNotifications.filter((notification) => notification.status === "failure").length;
@@ -358,9 +436,23 @@ export function NotificationDashboard({ initialNotifications, initialError }: Pr
               <h2>{activeSectionMeta.description}</h2>
               <p className="section-copy">{activeSectionMeta.caption}</p>
             </div>
-            <div className={activeSectionMeta.active ? "section-status active" : "section-status planned"}>
-              {activeSectionMeta.active ? <ShieldCheck size={15} /> : <Workflow size={15} />}
-              <span>{activeSectionMeta.active ? "Aktiv" : "Vorbereitet"}</span>
+            <div className="feed-header-actions">
+              {activeSection === "realtime_bot" ? (
+                <label className="date-picker-control">
+                  <CalendarDays size={15} />
+                  <span>Tag</span>
+                  <input
+                    type="date"
+                    value={realtimeDate}
+                    onChange={(event) => setRealtimeDate(event.target.value || todayInputDate())}
+                    aria-label="RealTime-bot Tag auswählen"
+                  />
+                </label>
+              ) : null}
+              <div className={activeSectionMeta.active ? "section-status active" : "section-status planned"}>
+                {activeSectionMeta.active ? <ShieldCheck size={15} /> : <Workflow size={15} />}
+                <span>{activeSectionMeta.active ? "Aktiv" : "Vorbereitet"}</span>
+              </div>
             </div>
           </div>
 

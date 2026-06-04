@@ -648,17 +648,13 @@ export function AbrechnungenApp() {
         };
       }
 
-      const otherGrams = Math.max(0, available - ownGrams);
       const ownPercent = available > 0 ? (ownGrams / available) * 100 : 0;
-      const otherPercent = available > 0 ? (otherGrams / available) * 100 : 0;
 
       if (platform === "doktorabc") {
         return {
           ...current,
           doktorabcGrams: formatStockInput(ownGrams, 2),
           doktorabcPercent: formatStockInput(ownPercent, 2),
-          wawicanGrams: formatStockInput(otherGrams, 2),
-          wawicanPercent: formatStockInput(otherPercent, 2),
         };
       }
 
@@ -666,8 +662,6 @@ export function AbrechnungenApp() {
         ...current,
         wawicanGrams: formatStockInput(ownGrams, 2),
         wawicanPercent: formatStockInput(ownPercent, 2),
-        doktorabcGrams: formatStockInput(otherGrams, 2),
-        doktorabcPercent: formatStockInput(otherPercent, 2),
       };
     });
   };

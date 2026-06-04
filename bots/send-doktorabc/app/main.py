@@ -53,6 +53,8 @@ LOGIN_SUCCESS_TIMEOUT_MS = int_env("SEND_DOKTORABC_LOGIN_SUCCESS_TIMEOUT_MS", 45
 PRODUCTS_READY_TIMEOUT_MS = int_env("SEND_DOKTORABC_PRODUCTS_READY_TIMEOUT_MS", 70_000)
 PRODUCTS_STABLE_MS = int_env("SEND_DOKTORABC_PRODUCTS_STABLE_MS", 3_500)
 PRODUCTS_POLL_MS = int_env("SEND_DOKTORABC_PRODUCTS_POLL_MS", 400)
+PRODUCT_SEARCH_READY_TIMEOUT_MS = int_env("SEND_DOKTORABC_PRODUCT_SEARCH_READY_TIMEOUT_MS", 45_000)
+PRODUCT_SEARCH_STABLE_MS = int_env("SEND_DOKTORABC_PRODUCT_SEARCH_STABLE_MS", 2_500)
 WAIT_FOR_NETWORKIDLE = bool_env("SEND_DOKTORABC_WAIT_FOR_NETWORKIDLE", False)
 
 MIN_PRODUCT_CELL_COUNT = 11
@@ -458,6 +460,194 @@ def product_stability_key(snapshot):
     )
 
 
+def product_search_snapshot(page, product_name):
+    return page.evaluate(
+        """
+        (productName) => {
+          const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+          const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity) !== 0 &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          };
+          const searchInput = Array.from(
+            document.querySelectorAll('input[placeholder="Search by medication name or PZN"], input[placeholder*="medication" i], input[placeholder*="PZN" i]')
+          ).find(visible);
+          const rows = Array.from(document.querySelectorAll("tr"));
+          const productRows = rows
+            .map((row, index) => {
+              const cells = Array.from(row.querySelectorAll("td")).map((cell) => normalize(cell.innerText || cell.textContent));
+              if (cells.length < 11) return null;
+              const buttons = Array.from(row.querySelectorAll("button")).filter((button) => visible(button));
+              const hasAddDecreaseButton = buttons.some((button) => normalize(button.innerText || button.textContent) === "Add/Decrease");
+              return {
+                index,
+                product_name: cells[1],
+                pzn: cells[3],
+                strain: cells[4],
+                quantity: cells[6],
+                price_per_g_incl_vat: cells[7],
+                availability: cells[10],
+                hasAddDecreaseButton,
+              };
+            })
+            .filter(Boolean);
+          const exactRows = productRows.filter((row) => row.product_name === productName);
+          const allAddDecreaseButtons = Array.from(document.querySelectorAll("button"))
+            .filter((button) => visible(button) && normalize(button.innerText || button.textContent) === "Add/Decrease");
+          const loaderSelectors = [
+            '[aria-busy="true"]',
+            '[role="progressbar"]',
+            '[data-loading="true"]',
+            '.ant-spin',
+            '.MuiCircularProgress-root',
+            '[class*="spinner" i]',
+            '[class*="loader" i]',
+            '[class*="loading" i]'
+          ];
+          const visibleLoaderCount = loaderSelectors
+            .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+            .filter(visible)
+            .length;
+
+          return {
+            url: window.location.href,
+            readyState: document.readyState,
+            searchValue: searchInput ? searchInput.value : null,
+            productRowCount: productRows.length,
+            exactRowCount: exactRows.length,
+            allAddDecreaseButtonCount: allAddDecreaseButtons.length,
+            visibleLoaderCount,
+            exactRows,
+            emptyStateVisible: /No\\s+stock\\s+supplies\\s+found/i.test(normalize(document.body?.innerText || "")),
+          };
+        }
+        """,
+        product_name,
+    )
+
+
+def product_search_ready(snapshot, product_name):
+    return (
+        snapshot.get("readyState") in {"interactive", "complete"}
+        and snapshot.get("searchValue") == product_name
+        and snapshot.get("visibleLoaderCount") == 0
+        and snapshot.get("exactRowCount") == 1
+        and len(snapshot.get("exactRows") or []) == 1
+        and bool((snapshot.get("exactRows") or [{}])[0].get("hasAddDecreaseButton"))
+    )
+
+
+def product_search_stability_key(snapshot):
+    exact_rows = snapshot.get("exactRows") or []
+    exact_row = exact_rows[0] if exact_rows else {}
+    return (
+        snapshot.get("readyState"),
+        snapshot.get("searchValue"),
+        snapshot.get("productRowCount"),
+        snapshot.get("exactRowCount"),
+        snapshot.get("allAddDecreaseButtonCount"),
+        snapshot.get("visibleLoaderCount"),
+        exact_row.get("product_name"),
+        exact_row.get("pzn"),
+        exact_row.get("quantity"),
+        exact_row.get("price_per_g_incl_vat"),
+        exact_row.get("availability"),
+    )
+
+
+def find_search_input(page):
+    candidates = (
+        page.get_by_placeholder("Search by medication name or PZN", exact=True),
+        page.locator('input[placeholder*="medication" i]').first,
+        page.locator('input[placeholder*="PZN" i]').first,
+    )
+
+    for locator in candidates:
+        try:
+            locator.wait_for(state="visible", timeout=5_000)
+            return locator
+        except PlaywrightTimeoutError:
+            continue
+
+    raise RuntimeError("Could not find DoktorABC product search input.")
+
+
+def search_exact_product(page, product_name):
+    clean_product_name = " ".join(product_name.split())
+    if not clean_product_name:
+        raise RuntimeError("Missing product_name.")
+
+    search_input = find_search_input(page)
+    log_event("product_search_fill", product_name=clean_product_name)
+    search_input.fill(clean_product_name, timeout=10_000)
+
+    deadline = time.monotonic() + PRODUCT_SEARCH_READY_TIMEOUT_MS / 1000
+    stable_since = None
+    previous_key = None
+    last_snapshot = None
+
+    log_event(
+        "product_search_wait_start",
+        product_name=clean_product_name,
+        timeout_ms=PRODUCT_SEARCH_READY_TIMEOUT_MS,
+        stable_ms=PRODUCT_SEARCH_STABLE_MS,
+    )
+
+    while time.monotonic() < deadline:
+        snapshot = product_search_snapshot(page, clean_product_name)
+        last_snapshot = snapshot
+        ready = product_search_ready(snapshot, clean_product_name)
+        key = product_search_stability_key(snapshot)
+        now = time.monotonic()
+
+        if ready and key == previous_key:
+            if stable_since is not None and (now - stable_since) * 1000 >= PRODUCT_SEARCH_STABLE_MS:
+                log_event("product_search_wait_ready", snapshot=snapshot)
+                return clean_product_name, snapshot
+        else:
+            stable_since = now if ready else None
+            previous_key = key
+
+        page.wait_for_timeout(PRODUCTS_POLL_MS)
+
+    screenshot_path = capture_failure_screenshot(page, "product-search-timeout")
+    log_event(
+        "product_search_wait_timeout",
+        product_name=clean_product_name,
+        screenshot_path=screenshot_path,
+        last_snapshot=last_snapshot,
+    )
+    raise RuntimeError(
+        "DoktorABC product search did not become safe to click. "
+        "Expected exactly one stable exact product row with one Add/Decrease button. "
+        f"Screenshot: {screenshot_path}. Last snapshot: {last_snapshot}"
+    )
+
+
+def click_add_decrease_for_exact_product(page, product_name):
+    row_locator = page.locator("tr").filter(has=page.get_by_text(product_name, exact=True))
+    row_count = row_locator.count()
+    if row_count != 1:
+        raise RuntimeError(f"Expected one exact product row before click, found {row_count}.")
+
+    button_locator = row_locator.get_by_role("button", name="Add/Decrease", exact=True)
+    button_count = button_locator.count()
+    if button_count != 1:
+        raise RuntimeError(f"Expected one Add/Decrease button in exact product row, found {button_count}.")
+
+    log_event("add_decrease_about_to_click", product_name=product_name)
+    button_locator.click(timeout=10_000)
+    log_event("add_decrease_click_done", product_name=product_name)
+
+
 def wait_for_products_page_usable(page, timeout_ms=PRODUCTS_READY_TIMEOUT_MS, stable_ms=PRODUCTS_STABLE_MS):
     wait_for_load_states(page)
 
@@ -660,6 +850,53 @@ def login_check(base_url):
             browser.close()
 
 
+def open_add_decrease_preview(product_name, base_url):
+    os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    before_login_path = os.path.join(ARTIFACTS_DIR, f"send-doktorabc-before-login-{timestamp}.png")
+    screenshot_path = os.path.join(ARTIFACTS_DIR, f"send-doktorabc-add-decrease-{timestamp}.png")
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=bool_env("DOKTORABC_HEADLESS", True))
+        context = None
+
+        try:
+            context, page, reused_session, wait_result = open_authenticated_products_page(
+                browser,
+                before_login_path=before_login_path,
+            )
+            clean_product_name, search_result = search_exact_product(page, product_name)
+            click_add_decrease_for_exact_product(page, clean_product_name)
+
+            # Let DoktorABC render the Add/Decrease surface, but do not touch its fields.
+            page.wait_for_timeout(1_500)
+            screenshot_path, screenshot_error = capture_optional_screenshot(
+                page,
+                screenshot_path,
+                "add-decrease-preview",
+            )
+
+            return {
+                "ok": True,
+                "current_url": page.url,
+                "product_name": clean_product_name,
+                "reused_session": reused_session,
+                "session_state_path": SESSION_STATE_PATH,
+                "before_login_path": None if reused_session else before_login_path,
+                "before_login_url": None if reused_session else artifact_url(before_login_path, base_url),
+                "screenshot_path": screenshot_path,
+                "screenshot_url": artifact_url(screenshot_path, base_url),
+                "screenshot_error": screenshot_error,
+                "screenshots": screenshot_entries(base_url),
+                "products_page_wait_result": wait_result,
+                "search_result": search_result,
+            }
+        finally:
+            if context:
+                context.close()
+            browser.close()
+
+
 @app.get("/health")
 def health():
     return {
@@ -693,3 +930,25 @@ def job_login_check(request: Request):
 @app.post("/jobs/open-products-page")
 def job_open_products_page(request: Request):
     return job_login_check(request)
+
+
+@app.post("/jobs/add-decrease-preview")
+async def job_add_decrease_preview(request: Request):
+    token = CURRENT_RUN_SCREENSHOTS.set([])
+    base_url = public_base_url(request)
+
+    try:
+        payload = await request.json()
+        product_name = payload.get("product_name") if isinstance(payload, dict) else None
+        return open_add_decrease_preview(product_name or "", base_url)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "screenshots": screenshot_entries(base_url),
+            },
+        )
+    finally:
+        CURRENT_RUN_SCREENSHOTS.reset(token)

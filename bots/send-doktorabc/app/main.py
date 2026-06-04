@@ -58,6 +58,7 @@ PRODUCTS_POLL_MS = int_env("SEND_DOKTORABC_PRODUCTS_POLL_MS", 400)
 PRODUCT_SEARCH_READY_TIMEOUT_MS = int_env("SEND_DOKTORABC_PRODUCT_SEARCH_READY_TIMEOUT_MS", 45_000)
 PRODUCT_SEARCH_STABLE_MS = int_env("SEND_DOKTORABC_PRODUCT_SEARCH_STABLE_MS", 2_500)
 WAIT_FOR_NETWORKIDLE = bool_env("SEND_DOKTORABC_WAIT_FOR_NETWORKIDLE", False)
+SEND_DOKTORABC_DRY_RUN = bool_env("SEND_DOKTORABC_DRY_RUN", True)
 
 MIN_PRODUCT_CELL_COUNT = 11
 
@@ -814,6 +815,107 @@ def fill_custom_amount(page, quantity_text):
     return state
 
 
+def add_button_text(quantity_text):
+    return f"Add {quantity_text} grams"
+
+
+def final_add_button_state(page, quantity_text):
+    expected_text = add_button_text(quantity_text)
+    return page.evaluate(
+        """
+        (expectedText) => {
+          const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+          const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity) !== 0 &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          };
+          const buttons = Array.from(document.querySelectorAll("button")).filter(visible);
+          const exactButtons = buttons.filter((button) => normalize(button.innerText || button.textContent) === expectedText);
+          return {
+            expectedText,
+            exactButtonCount: exactButtons.length,
+            clickable: exactButtons.length === 1 && !exactButtons[0].disabled,
+            disabled: exactButtons.length === 1 ? Boolean(exactButtons[0].disabled) : null,
+            visibleButtons: buttons.map((button) => normalize(button.innerText || button.textContent)).filter(Boolean).slice(0, 20),
+          };
+        }
+        """,
+        expected_text,
+    )
+
+
+def click_final_add_grams(page, quantity_text):
+    expected_text = add_button_text(quantity_text)
+    state = final_add_button_state(page, quantity_text)
+    dry_run = SEND_DOKTORABC_DRY_RUN
+
+    if state.get("exactButtonCount") != 1:
+        screenshot_path = capture_failure_screenshot(page, "final-add-button-not-unique")
+        raise RuntimeError(
+            f"Expected exactly one '{expected_text}' button, found {state.get('exactButtonCount')}. "
+            f"Screenshot: {screenshot_path}. State: {state}"
+        )
+
+    if not state.get("clickable"):
+        screenshot_path = capture_failure_screenshot(page, "final-add-button-not-clickable")
+        raise RuntimeError(
+            f"Button '{expected_text}' is not clickable. "
+            f"Screenshot: {screenshot_path}. State: {state}"
+        )
+
+    log_event(
+        "final_add_grams_about_to_click",
+        dry_run=dry_run,
+        button_text=expected_text,
+        quantity_grams=quantity_text,
+        state=state,
+    )
+
+    if dry_run:
+        log_event(
+            "final_add_grams_click_done",
+            dry_run=True,
+            clicked=False,
+            button_text=expected_text,
+            quantity_grams=quantity_text,
+            message="dry run: final add button was clickable; no DoktorABC change was made",
+        )
+        return {
+            "dry_run": True,
+            "clicked": False,
+            "button_text": expected_text,
+            "state": state,
+        }
+
+    button_locator = page.get_by_role("button", name=expected_text, exact=True)
+    button_locator.click(timeout=10_000)
+    page.wait_for_timeout(1_000)
+    after_state = final_add_button_state(page, quantity_text)
+    log_event(
+        "final_add_grams_click_done",
+        dry_run=False,
+        button_text=expected_text,
+        quantity_grams=quantity_text,
+        state=after_state,
+    )
+
+    return {
+        "dry_run": False,
+        "clicked": True,
+        "button_text": expected_text,
+        "state": state,
+        "after_state": after_state,
+    }
+
+
 def wait_for_products_page_usable(page, timeout_ms=PRODUCTS_READY_TIMEOUT_MS, stable_ms=PRODUCTS_STABLE_MS):
     wait_for_load_states(page)
 
@@ -1040,12 +1142,16 @@ def open_add_decrease_preview(product_name, quantity_grams, base_url):
                 screenshot_path,
                 "add-decrease-preview",
             )
+            final_add_result = click_final_add_grams(page, quantity_text)
 
             return {
                 "ok": True,
+                "dry_run": final_add_result.get("dry_run"),
+                "clicked": final_add_result.get("clicked"),
                 "current_url": page.url,
                 "product_name": clean_product_name,
                 "quantity_grams": quantity_text,
+                "add_button_text": final_add_result.get("button_text"),
                 "reused_session": reused_session,
                 "session_state_path": SESSION_STATE_PATH,
                 "before_login_path": None if reused_session else before_login_path,
@@ -1057,6 +1163,7 @@ def open_add_decrease_preview(product_name, quantity_grams, base_url):
                 "products_page_wait_result": wait_result,
                 "search_result": search_result,
                 "custom_amount_result": custom_amount_result,
+                "final_add_result": final_add_result,
             }
         finally:
             if context:

@@ -37,6 +37,9 @@ type BatchRow = {
 type SendDoktorabcBotResponse = {
   ok?: boolean;
   error?: string;
+  dry_run?: boolean;
+  clicked?: boolean;
+  add_button_text?: string;
   screenshot_url?: string | null;
   screenshots?: Array<{
     filename?: string;
@@ -376,6 +379,16 @@ async function callSendDoktorabcBot(productName: string, quantityG: number) {
 
     if (!screenshotUrl) {
       throw new Error("DoktorABC bot prepared the modal but did not return a screenshot URL.");
+    }
+
+    if (payload.dry_run) {
+      throw new Error(
+        `DoktorABC dry run only: '${textValue(payload.add_button_text) || "Add grams"}' was clickable, but no stock was added. Set SEND_DOKTORABC_DRY_RUN=false for real sends.`
+      );
+    }
+
+    if (payload.clicked !== true) {
+      throw new Error("DoktorABC bot did not confirm the final Add grams click.");
     }
 
     return {

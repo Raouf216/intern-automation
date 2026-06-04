@@ -994,8 +994,12 @@ h2 {
 .stock-history-screenshot {
   display: grid;
   gap: 5px;
+  border: 0;
+  padding: 0;
   color: var(--blue);
-  text-decoration: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
 }
 
 .stock-history-screenshot img {
@@ -1017,6 +1021,41 @@ h2 {
 
 .stock-history-error {
   color: var(--red);
+}
+
+.stock-screenshot-preview-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(23, 32, 38, 0.54);
+}
+
+.stock-screenshot-preview-card {
+  width: min(1100px, 100%);
+  max-height: min(860px, calc(100vh - 36px));
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--surface);
+  box-shadow: 0 24px 70px rgba(23, 32, 38, 0.28);
+  overflow: auto;
+}
+
+.stock-screenshot-preview-card h2 {
+  font-size: 19px;
+}
+
+.stock-screenshot-preview-card img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-strong);
 }
 
 .stock-history-row strong,

@@ -522,6 +522,7 @@ export function AbrechnungenApp() {
   const [stockUploadNotice, setStockUploadNotice] = useState("");
   const [stockUploadError, setStockUploadError] = useState("");
   const [stockSendingPlatform, setStockSendingPlatform] = useState<"doktorabc" | "wawican" | "">("");
+  const [stockScreenshotPreview, setStockScreenshotPreview] = useState<{ url: string; label: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const doktorabcOptions = uniqueProductOptions(productMappings, "doktorabc");
@@ -592,6 +593,7 @@ export function AbrechnungenApp() {
     setStockUploadNotice("");
     setStockUploadError("");
     setStockSendingPlatform("");
+    setStockScreenshotPreview(null);
   };
 
   const closeStockUploadDialog = () => {
@@ -601,6 +603,7 @@ export function AbrechnungenApp() {
     setStockUploadNotice("");
     setStockUploadError("");
     setStockSendingPlatform("");
+    setStockScreenshotPreview(null);
   };
 
   const updateStockUploadField = (field: keyof StockUploadForm, value: string) => {
@@ -1325,10 +1328,19 @@ export function AbrechnungenApp() {
                       <b>{formatNumber(dispatch.quantityG, " g")}</b>
                       <small>{formatDateTime(dispatch.createdAt)}</small>
                       {dispatch.botScreenshotUrl ? (
-                        <a className="stock-history-screenshot" href={dispatch.botScreenshotUrl} target="_blank" rel="noreferrer">
+                        <button
+                          className="stock-history-screenshot"
+                          type="button"
+                          onClick={() =>
+                            setStockScreenshotPreview({
+                              url: dispatch.botScreenshotUrl,
+                              label: `${platformLabel(dispatch.platform)} ${formatNumber(dispatch.quantityG, " g")}`,
+                            })
+                          }
+                        >
                           <img src={dispatch.botScreenshotUrl} alt={`Screenshot ${platformLabel(dispatch.platform)}`} />
                           <span>Screenshot</span>
-                        </a>
+                        </button>
                       ) : dispatch.botError ? (
                         <span className="stock-history-error">{dispatch.botError}</span>
                       ) : null}
@@ -1354,6 +1366,23 @@ export function AbrechnungenApp() {
                 Abbrechen
               </button>
             </div>
+
+            {stockScreenshotPreview ? (
+              <div className="stock-screenshot-preview-backdrop" role="dialog" aria-modal="true" aria-label="Screenshot Vorschau">
+                <section className="stock-screenshot-preview-card">
+                  <div className="modal-head">
+                    <div>
+                      <p>Screenshot</p>
+                      <h2>{stockScreenshotPreview.label}</h2>
+                    </div>
+                    <button className="modal-close" type="button" onClick={() => setStockScreenshotPreview(null)} aria-label="Screenshot schließen">
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <img src={stockScreenshotPreview.url} alt={stockScreenshotPreview.label} />
+                </section>
+              </div>
+            ) : null}
           </section>
         </div>
       ) : null}

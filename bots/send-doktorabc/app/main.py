@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
+from pydantic import BaseModel
 
 
 STARTED_AT = time.time()
@@ -80,6 +81,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+class AddDecreasePreviewPayload(BaseModel):
+    product_name: str
 
 
 def log_event(event, **fields):
@@ -933,14 +938,12 @@ def job_open_products_page(request: Request):
 
 
 @app.post("/jobs/add-decrease-preview")
-async def job_add_decrease_preview(request: Request):
+def job_add_decrease_preview(payload: AddDecreasePreviewPayload, request: Request):
     token = CURRENT_RUN_SCREENSHOTS.set([])
     base_url = public_base_url(request)
 
     try:
-        payload = await request.json()
-        product_name = payload.get("product_name") if isinstance(payload, dict) else None
-        return open_add_decrease_preview(product_name or "", base_url)
+        return open_add_decrease_preview(payload.product_name, base_url)
     except Exception as exc:
         return JSONResponse(
             status_code=500,

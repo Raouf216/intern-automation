@@ -1,0 +1,44 @@
+services:
+  send-doktorabc:
+    container_name: send-doktorabc
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${SEND_DOKTORABC_PORT:-8075}:8000"
+    environment:
+      - PORT=8000
+      - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Europe/Berlin}
+      - DOKTORABC_LOGIN_URL=${DOKTORABC_LOGIN_URL:-https://pharmacies.doktorabc.com/login}
+      - DOKTORABC_PRODUCTS_URL=${DOKTORABC_PRODUCTS_URL:-https://pharmacies.doktorabc.com/manage-supplies?tab=active&subTab=cannabis&sortField=price&sortOrder=asc&page=1}
+      - DOKTORABC_USERNAME=${DOKTORABC_USERNAME:-}
+      - DOKTORABC_PASSWORD=${DOKTORABC_PASSWORD:-}
+      - DOKTORABC_HEADLESS=${DOKTORABC_HEADLESS:-true}
+      - DOKTORABC_USER_AGENT=${DOKTORABC_USER_AGENT:-Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36}
+      - SEND_DOKTORABC_CORS_ORIGINS=${SEND_DOKTORABC_CORS_ORIGINS:-http://localhost:8075,http://127.0.0.1:8075}
+      - SEND_DOKTORABC_NAVIGATION_TIMEOUT_MS=${SEND_DOKTORABC_NAVIGATION_TIMEOUT_MS:-30000}
+      - SEND_DOKTORABC_LOGIN_READY_TIMEOUT_MS=${SEND_DOKTORABC_LOGIN_READY_TIMEOUT_MS:-45000}
+      - SEND_DOKTORABC_LOGIN_SUCCESS_TIMEOUT_MS=${SEND_DOKTORABC_LOGIN_SUCCESS_TIMEOUT_MS:-45000}
+      - SEND_DOKTORABC_PRODUCTS_READY_TIMEOUT_MS=${SEND_DOKTORABC_PRODUCTS_READY_TIMEOUT_MS:-70000}
+      - SEND_DOKTORABC_PRODUCTS_STABLE_MS=${SEND_DOKTORABC_PRODUCTS_STABLE_MS:-3500}
+      - SEND_DOKTORABC_WAIT_FOR_NETWORKIDLE=${SEND_DOKTORABC_WAIT_FOR_NETWORKIDLE:-false}
+      - ARTIFACTS_DIR=/app/artifacts
+    volumes:
+      - "${SEND_DOKTORABC_ARTIFACTS_DIR:-../../send-doktorabc-artifacts}:/app/artifacts"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

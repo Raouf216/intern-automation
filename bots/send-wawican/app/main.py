@@ -81,6 +81,7 @@ app.add_middleware(
 
 class AvailabilityFilterPayload(BaseModel):
     availability: str
+    product_name: str | None = None
 
 
 def log_event(event, **fields):
@@ -544,6 +545,253 @@ def apply_availability_filter(page, availability):
     }
 
 
+def wait_for_product_row(page, product_name):
+    log_event("product_row_wait_start", product_name=product_name, timeout_ms=FILTER_TIMEOUT_MS)
+    page.wait_for_function(
+        """
+        (productName) => {
+          const fold = (value) => (value || '')
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+          const target = fold(productName);
+          const isVisible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
+          const rows = Array.from(document.querySelectorAll('table.q-table tbody tr, tbody tr'))
+            .filter(isVisible);
+
+          return rows.some((row) => fold(row.innerText).includes(target));
+        }
+        """,
+        arg=product_name,
+        timeout=FILTER_TIMEOUT_MS,
+    )
+    wait_for_next_render_frame(page)
+    log_event("product_row_visible", product_name=product_name)
+
+
+def click_product_open_button(page, product_name):
+    wait_for_product_row(page, product_name)
+    log_event("product_open_button_click_start", product_name=product_name, url=page.url)
+    result = page.evaluate(
+        """
+        ({ productName }) => {
+          const fold = (value) => (value || '')
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+          const compact = (value) => fold(value).replace(/[^a-z0-9]+/g, '');
+          const target = fold(productName);
+          const compactTarget = compact(productName);
+          const isVisible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
+          const visibleText = (element) => (element.innerText || element.textContent || '')
+            .replace(/\\s+/g, ' ')
+            .trim();
+          const rows = Array.from(document.querySelectorAll('table.q-table tbody tr, tbody tr'))
+            .filter(isVisible);
+
+          const matches = rows
+            .map((row, index) => {
+              const cells = Array.from(row.querySelectorAll('td'));
+              const rowText = visibleText(row);
+              const foldedRowText = fold(rowText);
+              const cellTexts = cells.map(visibleText).filter(Boolean);
+              const exactCell = cellTexts.some((text) => fold(text) === target);
+              const compactCell = cellTexts.some((text) => compact(text) === compactTarget);
+              const contains = foldedRowText.includes(target);
+
+              let score = 0;
+              if (exactCell) score = 3;
+              else if (compactCell) score = 2;
+              else if (contains) score = 1;
+
+              return { row, index, rowText, cellTexts, score };
+            })
+            .filter((match) => match.score > 0)
+            .sort((a, b) => b.score - a.score || a.index - b.index);
+
+          if (!matches.length) {
+            return {
+              ok: false,
+              error: 'product_row_not_found',
+              product_name: productName,
+              visible_row_count: rows.length,
+              row_samples: rows.slice(0, 8).map((row) => visibleText(row).slice(0, 220)),
+            };
+          }
+
+          const bestScore = matches[0].score;
+          const bestMatches = matches.filter((match) => match.score === bestScore);
+          if (bestMatches.length > 1) {
+            return {
+              ok: false,
+              error: 'ambiguous_product_rows',
+              product_name: productName,
+              match_count: bestMatches.length,
+              matches: bestMatches.slice(0, 8).map((match) => match.rowText.slice(0, 300)),
+            };
+          }
+
+          const row = matches[0].row;
+          const icon = Array.from(row.querySelectorAll('i, .material-icons'))
+            .find((element) => fold(element.textContent) === 'open_in_new');
+          const button = icon ? icon.closest('button, [role="button"], .q-btn') : null;
+
+          if (!button || !isVisible(button)) {
+            return {
+              ok: false,
+              error: 'product_open_button_not_found',
+              product_name: productName,
+              matched_row: matches[0].rowText.slice(0, 400),
+            };
+          }
+
+          button.click();
+          return {
+            ok: true,
+            product_name: productName,
+            matched_row: matches[0].rowText.slice(0, 400),
+          };
+        }
+        """,
+        arg={"productName": product_name},
+    )
+
+    if not result.get("ok"):
+        raise RuntimeError(json.dumps(result, ensure_ascii=False))
+
+    log_event("product_open_button_click_done", result=result)
+    return result
+
+
+def wait_for_product_detail_modal(page, product_name):
+    log_event("product_detail_modal_wait_start", product_name=product_name, timeout_ms=FILTER_TIMEOUT_MS)
+    page.wait_for_function(
+        """
+        (productName) => {
+          const fold = (value) => (value || '')
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+          const target = fold(productName);
+          const isVisible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
+          const selectors = [
+            '.q-dialog',
+            '[role="dialog"]',
+            '.q-card',
+            '.q-dialog__inner',
+            '.q-dialog__inner > div'
+          ];
+          const candidates = Array.from(document.querySelectorAll(selectors.join(',')))
+            .filter(isVisible);
+
+          return candidates.some((element) => {
+            const text = fold(element.innerText || element.textContent || '');
+            return (
+              text.includes(target) &&
+              (
+                text.includes('wareneingang') ||
+                text.includes('bestandsanderung') ||
+                text.includes('ist-bestand') ||
+                text.includes('chargennummer')
+              )
+            );
+          });
+        }
+        """,
+        arg=product_name,
+        timeout=FILTER_TIMEOUT_MS,
+    )
+    wait_for_next_render_frame(page)
+    result = page.evaluate(
+        """
+        (productName) => {
+          const fold = (value) => (value || '')
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+          const isVisible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
+          const target = fold(productName);
+          const candidates = Array.from(document.querySelectorAll(
+            '.q-dialog, [role="dialog"], .q-card, .q-dialog__inner, .q-dialog__inner > div'
+          )).filter(isVisible);
+          const modal = candidates.find((element) => fold(element.innerText || element.textContent || '').includes(target));
+          const text = modal ? (modal.innerText || modal.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+
+          return {
+            ok: Boolean(modal),
+            product_name: productName,
+            modal_excerpt: text.slice(0, 700),
+          };
+        }
+        """,
+        arg=product_name,
+    )
+    log_event("product_detail_modal_visible", result=result)
+    return result
+
+
+def open_product_detail_preview(page, product_name):
+    product_name = (product_name or "").strip()
+    if not product_name:
+        raise RuntimeError("product_name must not be empty.")
+
+    click_result = click_product_open_button(page, product_name)
+    modal_result = wait_for_product_detail_modal(page, product_name)
+
+    return {
+        "click_result": click_result,
+        "modal_result": modal_result,
+    }
+
+
 def login_form_is_visible(page):
     username_selector = (os.environ.get("WAWICAN_USERNAME_SELECTOR") or "").strip()
     password_selector = (os.environ.get("WAWICAN_PASSWORD_SELECTOR") or "").strip()
@@ -819,12 +1067,18 @@ def login_check(base_url):
             browser.close()
 
 
-def login_and_filter_availability(availability, base_url):
+def login_and_filter_availability(availability, base_url, product_name=None):
     mode = normalize_availability_mode(availability)
+    product_name = (product_name or "").strip()
+
+    if product_name and mode != "ver":
+        raise RuntimeError("Opening a product detail preview currently supports availability='ver' only.")
+
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     before_login_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-before-login-{timestamp}.png")
     after_login_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-after-login-{timestamp}.png")
     after_filter_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-filter-{mode}-{timestamp}.png")
+    product_detail_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-product-detail-{mode}-{timestamp}.png")
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=bool_env("WAWICAN_HEADLESS", True))
@@ -846,10 +1100,23 @@ def login_and_filter_availability(availability, base_url):
                 after_filter_path,
                 f"after-filter-{mode}",
             )
+            product_preview_result = None
+            product_detail_error = None
+
+            if product_name:
+                product_preview_result = open_product_detail_preview(page, product_name)
+                product_detail_path, product_detail_error = capture_optional_screenshot(
+                    page,
+                    product_detail_path,
+                    f"product-detail-{mode}",
+                )
+            else:
+                product_detail_path = None
 
             return {
                 "ok": True,
                 "availability": mode,
+                "product_name": product_name or None,
                 "selected_label": filter_result["selected_label"],
                 "current_url": page.url,
                 "page_title": page.title(),
@@ -865,7 +1132,11 @@ def login_and_filter_availability(availability, base_url):
                 "after_filter_screenshot_path": after_filter_path,
                 "after_filter_screenshot_url": artifact_url(after_filter_path, base_url),
                 "after_filter_screenshot_error": after_filter_error,
+                "product_detail_screenshot_path": product_detail_path,
+                "product_detail_screenshot_url": artifact_url(product_detail_path, base_url),
+                "product_detail_screenshot_error": product_detail_error,
                 "filter_result": filter_result,
+                "product_preview_result": product_preview_result,
                 "screenshots": screenshot_entries(base_url),
             }
         finally:
@@ -927,7 +1198,11 @@ def job_filter_availability(payload: AvailabilityFilterPayload, request: Request
     token = CURRENT_RUN_SCREENSHOTS.set([])
     base_url = public_base_url(request)
     try:
-        return login_and_filter_availability(payload.availability, base_url)
+        return login_and_filter_availability(
+            payload.availability,
+            base_url,
+            product_name=payload.product_name,
+        )
     except Exception as exc:
         return JSONResponse(
             status_code=500,

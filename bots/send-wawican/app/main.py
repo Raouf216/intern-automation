@@ -550,23 +550,32 @@ def normalize_wawican_date(value):
 
     iso_match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", value_text)
     if iso_match:
-        year, month, day = iso_match.groups()
-        return f"{day}/{month}/{year}"
+        return value_text
 
     dot_match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", value_text)
     if dot_match:
         day, month, year = dot_match.groups()
-        return f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+        return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
 
     slash_match = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", value_text)
     if slash_match:
-        day, month, year = slash_match.groups()
-        return f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+        first, second, year = slash_match.groups()
+        first_number = int(first)
+        second_number = int(second)
+
+        if first_number > 12:
+            day, month = first, second
+        elif second_number > 12:
+            month, day = first, second
+        else:
+            day, month = first, second
+
+        return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
 
     compact_match = re.fullmatch(r"(\d{2})(\d{2})(\d{4})", value_text)
     if compact_match:
         day, month, year = compact_match.groups()
-        return f"{day}/{month}/{year}"
+        return f"{year}-{month}-{day}"
 
     return value_text
 
@@ -1019,10 +1028,13 @@ def fill_stock_change_fields(page, fields):
             });
           }
 
+          const wrongValues = filled.filter((field) => field.actual_value !== field.requested_value);
+
           return {
-            ok: missing.length === 0,
+            ok: missing.length === 0 && wrongValues.length === 0,
             filled,
             missing,
+            wrong_values: wrongValues,
           };
         }
         """,

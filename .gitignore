@@ -3,6 +3,8 @@ __pycache__/
 .env
 .env.*
 web-scraper-artifacts/
+docs/
+outputs/
 doktorabc-*.png
 ~$*.xlsx
 *.xlsx

@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
+from pydantic import BaseModel
 
 
 STARTED_AT = time.time()
@@ -55,6 +56,7 @@ NAVIGATION_TIMEOUT_MS = int_env("SEND_WAWICAN_NAVIGATION_TIMEOUT_MS", 30_000)
 INVENTORY_READY_TIMEOUT_MS = int_env("SEND_WAWICAN_INVENTORY_READY_TIMEOUT_MS", 60_000)
 POST_LOGIN_READY_TIMEOUT_MS = int_env("SEND_WAWICAN_POST_LOGIN_READY_TIMEOUT_MS", 15_000)
 WAIT_FOR_NETWORKIDLE = bool_env("SEND_WAWICAN_WAIT_FOR_NETWORKIDLE", False)
+FILTER_TIMEOUT_MS = int_env("SEND_WAWICAN_FILTER_TIMEOUT_MS", 60_000)
 
 os.makedirs(ARTIFACTS_DIR, exist_ok=True)
 app = FastAPI(title=SERVICE_NAME)
@@ -75,6 +77,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+class AvailabilityFilterPayload(BaseModel):
+    availability: str
 
 
 def log_event(event, **fields):
@@ -308,6 +314,234 @@ def wait_for_inventory_page(page, timeout=INVENTORY_READY_TIMEOUT_MS):
     wait_for_next_render_frame(page)
     log_event("inventory_ready_visible", diagnostics=page_diagnostics(page))
     return True
+
+
+def click_availability_filter_button(page):
+    log_event("availability_filter_click_start", url=page.url)
+    result = page.evaluate(
+        """
+        () => {
+          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const isVisible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
+          const headers = Array.from(document.querySelectorAll('th'));
+          const header = headers.find((element) => (
+            normalize(element.innerText).includes('Verfügbarkeit') && isVisible(element)
+          ));
+
+          if (!header) {
+            return { ok: false, error: 'availability_header_not_found' };
+          }
+
+          const icons = Array.from(header.querySelectorAll('i'));
+          const icon = icons.find((element) => normalize(element.textContent) === 'filter_alt');
+          const button = icon ? icon.closest('button') : null;
+
+          if (!button) {
+            return { ok: false, error: 'availability_filter_button_not_found' };
+          }
+
+          button.click();
+          return { ok: true, header_text: normalize(header.innerText) };
+        }
+        """
+    )
+
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or "availability_filter_button_failed")
+
+    log_event("availability_filter_click_done", result=result)
+    return result
+
+
+def wait_for_availability_filter_menu(page):
+    log_event("availability_filter_menu_wait_start", timeout_ms=FILTER_TIMEOUT_MS)
+    page.wait_for_function(
+        """
+        () => {
+          const fold = (value) => (value || '')
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+          const candidates = Array.from(document.querySelectorAll(
+            '.q-menu *, .q-position-engine *, .q-checkbox, [role="checkbox"], label, span, div'
+          ));
+
+          return candidates.some((element) => {
+            if (element.closest('th')) {
+              return false;
+            }
+
+            if (fold(element.textContent) !== 'verfugbar') {
+              return false;
+            }
+
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          });
+        }
+        """,
+        timeout=FILTER_TIMEOUT_MS,
+    )
+    wait_for_next_render_frame(page)
+    log_event("availability_filter_menu_visible", diagnostics=page_diagnostics(page))
+    return {"ok": True, "menu_item": "verfügbar"}
+
+
+def set_availability_checkbox_state(page, label, should_be_checked):
+    page.locator(f'[role="checkbox"][aria-label="{label}"]').first.wait_for(
+        state="visible",
+        timeout=FILTER_TIMEOUT_MS,
+    )
+
+    log_event("availability_checkbox_set_start", label=label, target_checked=should_be_checked)
+    result = page.evaluate(
+        """
+        ({ label, shouldBeChecked }) => {
+          const checkbox = document.querySelector(`[role="checkbox"][aria-label="${label}"]`);
+
+          if (!checkbox) {
+            return { ok: false, error: 'availability_checkbox_not_found', label };
+          }
+
+          const isChecked = (element) => {
+            const nativeInput = element.querySelector('input[type="checkbox"]');
+            const ariaChecked = element.getAttribute('aria-checked');
+            const className = String(element.className || '');
+            return Boolean(
+              (nativeInput && nativeInput.checked) ||
+              ariaChecked === 'true' ||
+              className.includes('--truthy') ||
+              element.querySelector('.q-checkbox__inner--truthy')
+            );
+          };
+
+          const before = isChecked(checkbox);
+
+          if (before !== shouldBeChecked) {
+            const box =
+              checkbox.querySelector('.q-checkbox__inner') ||
+              checkbox.querySelector('.q-checkbox__bg') ||
+              checkbox;
+            box.click();
+          }
+
+          return {
+            ok: true,
+            label,
+            was_checked: before,
+            target_checked: shouldBeChecked,
+          };
+        }
+        """,
+        arg={"label": label, "shouldBeChecked": should_be_checked},
+    )
+
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or "availability_checkbox_failed")
+
+    wait_for_next_render_frame(page)
+
+    verify_result = page.evaluate(
+        """
+        ({ label, shouldBeChecked }) => {
+          const checkbox = document.querySelector(`[role="checkbox"][aria-label="${label}"]`);
+
+          if (!checkbox) {
+            return { ok: false, error: 'availability_checkbox_not_found_after_click', label };
+          }
+
+          const nativeInput = checkbox.querySelector('input[type="checkbox"]');
+          const ariaChecked = checkbox.getAttribute('aria-checked');
+          const className = String(checkbox.className || '');
+          const checked = Boolean(
+            (nativeInput && nativeInput.checked) ||
+            ariaChecked === 'true' ||
+            className.includes('--truthy') ||
+            checkbox.querySelector('.q-checkbox__inner--truthy')
+          );
+
+          return {
+            ok: checked === shouldBeChecked,
+            label,
+            checked,
+            target_checked: shouldBeChecked,
+            error: checked === shouldBeChecked ? null : 'availability_checkbox_wrong_state',
+          };
+        }
+        """,
+        arg={"label": label, "shouldBeChecked": should_be_checked},
+    )
+
+    if not verify_result.get("ok"):
+        raise RuntimeError(
+            f"{verify_result.get('error') or 'availability_checkbox_verify_failed'}: "
+            f"{label} checked={verify_result.get('checked')} expected={should_be_checked}"
+        )
+
+    final_result = {**result, "checked": verify_result.get("checked")}
+    log_event("availability_checkbox_set_done", result=final_result)
+    return final_result
+
+
+def normalize_availability_mode(value):
+    mode = (value or "").strip().lower()
+    mode = mode.replace("ü", "u")
+    mode = re.sub(r"\s+", "", mode)
+
+    if mode in {"ver", "available", "verfugbar", "verfuegbar"}:
+        return "ver"
+    if mode in {"unver", "unavailable", "nichtverfugbar", "nichtverfuegbar", "nicht-verfugbar"}:
+        return "unver"
+
+    raise RuntimeError("availability must be 'ver' or 'unver'.")
+
+
+def apply_availability_filter(page, availability):
+    mode = normalize_availability_mode(availability)
+    wait_for_inventory_page(page)
+    click_result = click_availability_filter_button(page)
+    menu_result = wait_for_availability_filter_menu(page)
+
+    if mode == "ver":
+        available_checkbox_result = set_availability_checkbox_state(page, "verfügbar", True)
+        unavailable_checkbox_result = set_availability_checkbox_state(page, "nicht verfügbar", False)
+        selected_label = "verfügbar"
+    else:
+        unavailable_checkbox_result = set_availability_checkbox_state(page, "nicht verfügbar", True)
+        available_checkbox_result = set_availability_checkbox_state(page, "verfügbar", False)
+        selected_label = "nicht verfügbar"
+
+    page.keyboard.press("Escape")
+    wait_for_inventory_page(page)
+
+    return {
+        "mode": mode,
+        "selected_label": selected_label,
+        "filter_button": click_result,
+        "filter_menu": menu_result,
+        "available_checkbox": available_checkbox_result,
+        "unavailable_checkbox": unavailable_checkbox_result,
+    }
 
 
 def login_form_is_visible(page):
@@ -585,6 +819,61 @@ def login_check(base_url):
             browser.close()
 
 
+def login_and_filter_availability(availability, base_url):
+    mode = normalize_availability_mode(availability)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    before_login_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-before-login-{timestamp}.png")
+    after_login_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-after-login-{timestamp}.png")
+    after_filter_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-filter-{mode}-{timestamp}.png")
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=bool_env("WAWICAN_HEADLESS", True))
+        context = None
+
+        try:
+            context, page, reused_session, inventory_ready = open_authenticated_inventory_page(
+                browser,
+                before_login_path=before_login_path,
+            )
+            after_login_path, after_login_error = capture_optional_screenshot(
+                page,
+                after_login_path,
+                "after-login-inventory-ready",
+            )
+            filter_result = apply_availability_filter(page, mode)
+            after_filter_path, after_filter_error = capture_optional_screenshot(
+                page,
+                after_filter_path,
+                f"after-filter-{mode}",
+            )
+
+            return {
+                "ok": True,
+                "availability": mode,
+                "selected_label": filter_result["selected_label"],
+                "current_url": page.url,
+                "page_title": page.title(),
+                "reused_session": reused_session,
+                "inventory_ready": inventory_ready,
+                "session_state_path": SESSION_STATE_PATH,
+                "session_state_exists": os.path.exists(SESSION_STATE_PATH),
+                "before_login_path": None if reused_session else before_login_path,
+                "before_login_url": None if reused_session else artifact_url(before_login_path, base_url),
+                "after_login_screenshot_path": after_login_path,
+                "after_login_screenshot_url": artifact_url(after_login_path, base_url),
+                "after_login_screenshot_error": after_login_error,
+                "after_filter_screenshot_path": after_filter_path,
+                "after_filter_screenshot_url": artifact_url(after_filter_path, base_url),
+                "after_filter_screenshot_error": after_filter_error,
+                "filter_result": filter_result,
+                "screenshots": screenshot_entries(base_url),
+            }
+        finally:
+            if context:
+                context.close()
+            browser.close()
+
+
 @app.get("/health")
 def health():
     return {
@@ -599,6 +888,7 @@ def health():
         "artifacts_dir_exists": os.path.isdir(ARTIFACTS_DIR),
         "inventory_ready_timeout_ms": INVENTORY_READY_TIMEOUT_MS,
         "post_login_ready_timeout_ms": POST_LOGIN_READY_TIMEOUT_MS,
+        "filter_timeout_ms": FILTER_TIMEOUT_MS,
         "wait_for_networkidle": WAIT_FOR_NETWORKIDLE,
     }
 
@@ -630,3 +920,22 @@ def job_open_inventory_page(request: Request):
 @app.post("/jobs/login")
 def job_login(request: Request):
     return job_login_check(request)
+
+
+@app.post("/jobs/filter-availability")
+def job_filter_availability(payload: AvailabilityFilterPayload, request: Request):
+    token = CURRENT_RUN_SCREENSHOTS.set([])
+    base_url = public_base_url(request)
+    try:
+        return login_and_filter_availability(payload.availability, base_url)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "screenshots": screenshot_entries(base_url),
+            },
+        )
+    finally:
+        CURRENT_RUN_SCREENSHOTS.reset(token)

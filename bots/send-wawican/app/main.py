@@ -82,6 +82,21 @@ app.add_middleware(
 class AvailabilityFilterPayload(BaseModel):
     availability: str
     product_name: str | None = None
+    menge: str | int | float | None = None
+    quantity_grams: str | int | float | None = None
+    verfall_datum: str | None = None
+    verfall: str | None = None
+    expiry_date: str | None = None
+    chargennummer: str | None = None
+    charge_number: str | None = None
+    rechnungsnummer: str | None = None
+    invoice_number: str | None = None
+    rechnungdatum: str | None = None
+    rechnungsdatum: str | None = None
+    invoice_date: str | None = None
+    rechnungbetrag: str | int | float | None = None
+    rechnungsbetrag: str | int | float | None = None
+    invoice_amount: str | int | float | None = None
 
 
 def log_event(event, **fields):
@@ -517,6 +532,67 @@ def normalize_availability_mode(value):
     raise RuntimeError("availability must be 'ver' or 'unver'.")
 
 
+def first_payload_value(*values):
+    for value in values:
+        if value is None:
+            continue
+        value_text = str(value).strip()
+        if value_text:
+            return value_text
+    return None
+
+
+def normalize_wawican_date(value):
+    value_text = str(value or "").strip()
+
+    if not value_text:
+        return value_text
+
+    iso_match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", value_text)
+    if iso_match:
+        year, month, day = iso_match.groups()
+        return f"{day}/{month}/{year}"
+
+    dot_match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", value_text)
+    if dot_match:
+        day, month, year = dot_match.groups()
+        return f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+
+    slash_match = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", value_text)
+    if slash_match:
+        day, month, year = slash_match.groups()
+        return f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+
+    compact_match = re.fullmatch(r"(\d{2})(\d{2})(\d{4})", value_text)
+    if compact_match:
+        day, month, year = compact_match.groups()
+        return f"{day}/{month}/{year}"
+
+    return value_text
+
+
+def stock_change_payload_fields(payload):
+    fields = {
+        "quantity_grams": first_payload_value(payload.menge, payload.quantity_grams),
+        "expiry_date": first_payload_value(payload.verfall_datum, payload.verfall, payload.expiry_date),
+        "charge_number": first_payload_value(payload.chargennummer, payload.charge_number),
+        "invoice_number": first_payload_value(payload.rechnungsnummer, payload.invoice_number),
+        "invoice_amount": first_payload_value(payload.rechnungbetrag, payload.rechnungsbetrag, payload.invoice_amount),
+        "invoice_date": first_payload_value(payload.rechnungdatum, payload.rechnungsdatum, payload.invoice_date),
+    }
+
+    if not any(fields.values()):
+        return None
+
+    missing = [name for name, value in fields.items() if not value]
+    if missing:
+        raise RuntimeError(f"Missing stock change fields: {', '.join(missing)}")
+
+    fields["expiry_date"] = normalize_wawican_date(fields["expiry_date"])
+    fields["invoice_date"] = normalize_wawican_date(fields["invoice_date"])
+    return fields
+
+
 def apply_availability_filter(page, availability):
     mode = normalize_availability_mode(availability)
     wait_for_inventory_page(page)
@@ -790,6 +866,174 @@ def open_product_detail_preview(page, product_name):
         "click_result": click_result,
         "modal_result": modal_result,
     }
+
+
+def fill_stock_change_fields(page, fields):
+    log_event("stock_change_fields_fill_start", fields=fields)
+    result = page.evaluate(
+        """
+        (fields) => {
+          const fold = (value) => (value || '')
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+          const isVisible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== 'hidden' &&
+              style.display !== 'none' &&
+              style.opacity !== '0'
+            );
+          };
+          const textOf = (element) => (element.innerText || element.textContent || '')
+            .replace(/\\s+/g, ' ')
+            .trim();
+          const modalCandidates = Array.from(document.querySelectorAll(
+            '.q-dialog, [role="dialog"], .q-dialog__inner, .q-dialog__inner > div, .q-card'
+          )).filter(isVisible);
+          const modal =
+            modalCandidates.find((element) => {
+              const text = fold(textOf(element));
+              return text.includes('wareneingang') && text.includes('chargennummer');
+            }) ||
+            modalCandidates[0] ||
+            document.body;
+          const visibleInputs = () => Array.from(modal.querySelectorAll('input, textarea'))
+            .filter((input) => isVisible(input) && !input.disabled && !input.readOnly);
+          const labels = () => Array.from(modal.querySelectorAll('label, div, span, p'))
+            .filter((element) => {
+              if (!isVisible(element)) {
+                return false;
+              }
+
+              const text = textOf(element);
+              return text.length > 0 && text.length < 160;
+            });
+          const matchesLabel = (element, needles) => {
+            const text = fold(textOf(element));
+            return needles.some((needle) => text.includes(fold(needle)));
+          };
+          const findByLabel = (needles) => {
+            const matchingLabels = labels().filter((element) => matchesLabel(element, needles));
+            const inputs = visibleInputs();
+            let best = null;
+            let bestScore = Number.POSITIVE_INFINITY;
+
+            for (const label of matchingLabels) {
+              let node = label;
+              for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+                const inside = Array.from(node.querySelectorAll('input, textarea'))
+                  .filter((input) => isVisible(input) && !input.disabled && !input.readOnly);
+                if (inside.length === 1) {
+                  return inside[0];
+                }
+              }
+
+              const labelRect = label.getBoundingClientRect();
+              for (const input of inputs) {
+                const rect = input.getBoundingClientRect();
+                const verticallyClose = rect.top >= labelRect.top - 5 && rect.top <= labelRect.bottom + 90;
+                const horizontallyClose = (
+                  rect.left <= labelRect.right + 80 &&
+                  rect.right >= labelRect.left - 80
+                );
+
+                if (!verticallyClose || !horizontallyClose) {
+                  continue;
+                }
+
+                const score = Math.abs(rect.top - labelRect.bottom) + Math.abs(rect.left - labelRect.left) / 5;
+                if (score < bestScore) {
+                  best = input;
+                  bestScore = score;
+                }
+              }
+            }
+
+            return best;
+          };
+          const setValue = (input, value) => {
+            input.scrollIntoView({ block: 'center', inline: 'nearest' });
+            input.focus();
+            const setter = Object.getOwnPropertyDescriptor(
+              input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
+              'value'
+            ).set;
+            setter.call(input, String(value));
+            input.dispatchEvent(new InputEvent('input', { bubbles: true, data: String(value), inputType: 'insertText' }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.blur();
+          };
+          const fieldSpecs = [
+            {
+              key: 'quantity_grams',
+              value: fields.quantity_grams,
+              labels: ['Menge (g)'],
+            },
+            {
+              key: 'expiry_date',
+              value: fields.expiry_date,
+              labels: ['Verfall'],
+            },
+            {
+              key: 'charge_number',
+              value: fields.charge_number,
+              labels: ['Chargennummer'],
+            },
+            {
+              key: 'invoice_number',
+              value: fields.invoice_number,
+              labels: ['Rechnungsnummer'],
+            },
+            {
+              key: 'invoice_amount',
+              value: fields.invoice_amount,
+              labels: ['Rechnungsbetrag', 'Netto EK'],
+            },
+            {
+              key: 'invoice_date',
+              value: fields.invoice_date,
+              labels: ['Rechnungsdatum'],
+            },
+          ];
+          const filled = [];
+          const missing = [];
+
+          for (const spec of fieldSpecs) {
+            const input = findByLabel(spec.labels);
+            if (!input) {
+              missing.push({ key: spec.key, labels: spec.labels });
+              continue;
+            }
+
+            setValue(input, spec.value);
+            filled.push({
+              key: spec.key,
+              requested_value: String(spec.value),
+              actual_value: input.value,
+            });
+          }
+
+          return {
+            ok: missing.length === 0,
+            filled,
+            missing,
+          };
+        }
+        """,
+        arg=fields,
+    )
+
+    if not result.get("ok"):
+        raise RuntimeError(json.dumps(result, ensure_ascii=False))
+
+    log_event("stock_change_fields_fill_done", result=result)
+    return result
 
 
 def login_form_is_visible(page):
@@ -1067,15 +1311,19 @@ def login_check(base_url):
             browser.close()
 
 
-def login_and_filter_availability(availability, base_url, product_name=None):
+def login_and_filter_availability(availability, base_url, product_name=None, stock_change_fields=None):
     mode = normalize_availability_mode(availability)
     product_name = (product_name or "").strip()
+
+    if stock_change_fields and not product_name:
+        raise RuntimeError("product_name is required when stock change fields are provided.")
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     before_login_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-before-login-{timestamp}.png")
     after_login_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-after-login-{timestamp}.png")
     after_filter_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-filter-{mode}-{timestamp}.png")
     product_detail_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-product-detail-{mode}-{timestamp}.png")
+    stock_change_filled_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-stock-change-filled-{mode}-{timestamp}.png")
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=bool_env("WAWICAN_HEADLESS", True))
@@ -1099,6 +1347,9 @@ def login_and_filter_availability(availability, base_url, product_name=None):
             )
             product_preview_result = None
             product_detail_error = None
+            stock_change_fill_result = None
+            stock_change_filled_error = None
+            stock_change_filled_screenshot_path = None
 
             if product_name:
                 product_preview_result = open_product_detail_preview(page, product_name)
@@ -1107,13 +1358,22 @@ def login_and_filter_availability(availability, base_url, product_name=None):
                     product_detail_path,
                     f"product-detail-{mode}",
                 )
+                if stock_change_fields:
+                    stock_change_fill_result = fill_stock_change_fields(page, stock_change_fields)
+                    stock_change_filled_screenshot_path, stock_change_filled_error = capture_optional_screenshot(
+                        page,
+                        stock_change_filled_path,
+                        f"stock-change-filled-{mode}",
+                    )
             else:
                 product_detail_path = None
+                stock_change_filled_path = None
 
             return {
                 "ok": True,
                 "availability": mode,
                 "product_name": product_name or None,
+                "stock_change_fields": stock_change_fields,
                 "selected_label": filter_result["selected_label"],
                 "current_url": page.url,
                 "page_title": page.title(),
@@ -1132,8 +1392,12 @@ def login_and_filter_availability(availability, base_url, product_name=None):
                 "product_detail_screenshot_path": product_detail_path,
                 "product_detail_screenshot_url": artifact_url(product_detail_path, base_url),
                 "product_detail_screenshot_error": product_detail_error,
+                "stock_change_filled_screenshot_path": stock_change_filled_screenshot_path,
+                "stock_change_filled_screenshot_url": artifact_url(stock_change_filled_screenshot_path, base_url),
+                "stock_change_filled_screenshot_error": stock_change_filled_error,
                 "filter_result": filter_result,
                 "product_preview_result": product_preview_result,
+                "stock_change_fill_result": stock_change_fill_result,
                 "screenshots": screenshot_entries(base_url),
             }
         finally:
@@ -1195,10 +1459,12 @@ def job_filter_availability(payload: AvailabilityFilterPayload, request: Request
     token = CURRENT_RUN_SCREENSHOTS.set([])
     base_url = public_base_url(request)
     try:
+        stock_fields = stock_change_payload_fields(payload)
         return login_and_filter_availability(
             payload.availability,
             base_url,
             product_name=payload.product_name,
+            stock_change_fields=stock_fields,
         )
     except Exception as exc:
         return JSONResponse(

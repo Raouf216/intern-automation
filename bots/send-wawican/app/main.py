@@ -1071,9 +1071,6 @@ def login_and_filter_availability(availability, base_url, product_name=None):
     mode = normalize_availability_mode(availability)
     product_name = (product_name or "").strip()
 
-    if product_name and mode != "ver":
-        raise RuntimeError("Opening a product detail preview currently supports availability='ver' only.")
-
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     before_login_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-before-login-{timestamp}.png")
     after_login_path = os.path.join(ARTIFACTS_DIR, f"send-wawican-after-login-{timestamp}.png")
